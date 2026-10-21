@@ -4,7 +4,7 @@ Group labels (F1, L1–L9) match `design.md` D15. Each group ends with a `review
 
 ## 1. F1 — Scaffold, security baseline, platform boundary
 
-- [ ] 1.1 Obtain approval gate G-1 (pinned dependency list from design D13, first commit on `main`, `reviewer2` session running) and verify the approval is recorded as a note here before any install
+- [ ] 1.1 Obtain approval gate G-1 (pinned dependency list from design D13, first commit on `master`, `reviewer2` session running) and verify the approval is recorded as a note here before any install
 - [ ] 1.2 Initialize the npm package, strict `tsconfig` set (main/preload/renderer/shared), `electron-vite` config, `.nvmrc`, and exact-pinned dependencies; verify `npm ci` succeeds from a clean checkout and `npm run typecheck` passes on an empty skeleton
 - [ ] 1.3 Add ESLint with `typescript-eslint`, `react-hooks`, and boundary rules (no `platform/linux|windows` imports and no `process.platform` outside the composition root and `platform/index.ts`); verify `npm run lint` passes and a fixture file violating each rule fails lint
 - [ ] 1.4 Create the main window with `contextIsolation`, `sandbox`, `nodeIntegration: false`, `webviewTag: false`, served via the `app://veydr/` protocol with the D2 CSP header; verify by E2E `[spec:desktop-shell/renderer-has-no-node-js-access]` that `require`, `process`, and `module` are undefined in the renderer
