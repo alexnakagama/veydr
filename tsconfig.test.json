@@ -1,0 +1,17 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "lib": ["ES2023", "DOM"],
+    "jsx": "react-jsx",
+    "types": ["node"]
+  },
+  "include": [
+    "test/**/*.ts",
+    "src/main/env.d.ts",
+    "src/renderer/src/env.d.ts",
+    "electron.vite.config.ts",
+    "vitest.config.ts",
+    "playwright.config.ts",
+    "playwright.perf.config.ts"
+  ]
+}
