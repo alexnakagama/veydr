@@ -1,0 +1,33 @@
+import type { VeydrApi } from '../../../shared/api'
+import { connectNoticeStore, createNoticeStore, type NoticeStore } from './notices'
+import { connectProcessStore, createProcessStore, type ProcessStore } from './processes'
+import { createProjectStore, loadProjects, type ProjectsState } from './projects'
+import type { WritableStore } from './store'
+
+export interface Stores {
+  readonly notices: NoticeStore
+  readonly projects: WritableStore<ProjectsState>
+  readonly processes: ProcessStore
+}
+
+/**
+ * Creates the renderer stores and connects them to main. Runs once per document, outside React,
+ * so a reload starts from a fresh snapshot and a fresh set of subscriptions.
+ */
+export function connectStores(api: VeydrApi): Stores {
+  const stores: Stores = {
+    notices: createNoticeStore(),
+    projects: createProjectStore(),
+    processes: createProcessStore(),
+  }
+  connectNoticeStore(stores.notices, api.app)
+  connectProcessStore(stores.processes, api.processes)
+  // Process states follow the configured commands: events of removed commands are ignored.
+  stores.projects.subscribe(() => {
+    const projects = stores.projects.getState()
+    if (projects.status !== 'ready') return
+    stores.processes.setCommands(projects.projects.flatMap((project) => project.commands.map((command) => command.id)))
+  })
+  void loadProjects(stores.projects, api.projects)
+  return stores
+}

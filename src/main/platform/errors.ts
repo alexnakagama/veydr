@@ -11,7 +11,7 @@ export class UnsupportedPlatformError extends Error {
   }
 }
 
-/** Raised by Linux operations whose implementation lands in a later task group. */
+/** Raised by operations (platform or IPC) whose implementation lands in a later task group. */
 export class NotImplementedError extends Error {
   override readonly name = 'NotImplementedError'
 

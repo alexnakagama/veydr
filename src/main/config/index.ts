@@ -6,6 +6,7 @@ export {
   ConfigValidationError,
   createConfigStore,
   type ConfigNotice,
+  type ConfigNoticeKind,
   type ConfigStatus,
   type ConfigStore,
   type LoadResult,

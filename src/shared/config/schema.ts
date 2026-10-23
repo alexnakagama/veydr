@@ -36,21 +36,34 @@ export function projectPathKey(path: string): string {
   return trimmed
 }
 
-const text = z.string().refine(noNul, { message: 'Must not contain NUL characters' })
-const nonEmptyText = text.refine((value) => value.length > 0, { message: 'Must not be empty' })
-const absolutePath = nonEmptyText.refine(isAbsolutePath, { message: 'Must be an absolute path' })
+// Field schemas are exported so IPC payloads (src/shared/api) validate exactly like stored configuration.
+export const textSchema = z.string().refine(noNul, { message: 'Must not contain NUL characters' })
+export const nonEmptyTextSchema = textSchema.refine((value) => value.length > 0, { message: 'Must not be empty' })
+export const absolutePathSchema = nonEmptyTextSchema.refine(isAbsolutePath, { message: 'Must be an absolute path' })
 
-const name = z
+export const nameSchema = z
   .string()
   .max(MAX_NAME_LENGTH, { message: `Must be at most ${MAX_NAME_LENGTH} characters` })
   .refine((value) => value.trim().length > 0, { message: 'Must not be empty' })
   .refine(noNul, { message: 'Must not contain NUL characters' })
 
-const id = z.uuid({ message: 'Must be a UUID' })
+export const idSchema = z.uuid({ message: 'Must be a UUID' })
+
+export const envKeySchema = nonEmptyTextSchema.refine((value) => !value.includes('='), { message: 'Must not contain "="' })
+
+/** Working directory relative to the project root; containment is verified when starting. */
+export const cwdSchema = nonEmptyTextSchema.refine((value) => !isAbsolutePath(value), {
+  message: 'Must be relative to the project root',
+})
+
+export const stopTimeoutMsSchema = z
+  .int({ message: 'Must be a whole number of milliseconds' })
+  .min(0, { message: 'Must not be negative' })
+  .max(MAX_STOP_TIMEOUT_MS, { message: `Must be at most ${MAX_STOP_TIMEOUT_MS} ms` })
 
 export const envEntrySchema = z.strictObject({
-  key: nonEmptyText.refine((value) => !value.includes('='), { message: 'Must not contain "="' }),
-  value: text,
+  key: envKeySchema,
+  value: textSchema,
   /** Masked in the UI and redacted from logs. Stored in plaintext (see docs/configuration.md). */
   secret: z.boolean(),
 })
@@ -58,31 +71,27 @@ export const envEntrySchema = z.strictObject({
 const directSchema = z.strictObject({
   mode: z.literal('direct'),
   /** Executable name (looked up on `PATH`) or path; never interpreted by a shell. */
-  file: nonEmptyText,
-  args: z.array(text),
+  file: nonEmptyTextSchema,
+  args: z.array(textSchema),
 })
 
 const shellSchema = z.strictObject({
   mode: z.literal('shell'),
   /** Absolute path of the shell that interprets `script` (`<shell> -c <script>`). */
-  shell: absolutePath,
-  script: nonEmptyText,
+  shell: absolutePathSchema,
+  script: nonEmptyTextSchema,
 })
 
 export const executionSchema = z.discriminatedUnion('mode', [directSchema, shellSchema])
 
 export const commandSchema = z
   .strictObject({
-    id,
-    name,
+    id: idSchema,
+    name: nameSchema,
     execution: executionSchema,
-    /** Working directory relative to the project root; containment is verified when starting. */
-    cwd: nonEmptyText.refine((value) => !isAbsolutePath(value), { message: 'Must be relative to the project root' }),
+    cwd: cwdSchema,
     env: z.array(envEntrySchema),
-    stopTimeoutMs: z
-      .int({ message: 'Must be a whole number of milliseconds' })
-      .min(0, { message: 'Must not be negative' })
-      .max(MAX_STOP_TIMEOUT_MS, { message: `Must be at most ${MAX_STOP_TIMEOUT_MS} ms` }),
+    stopTimeoutMs: stopTimeoutMsSchema,
   })
   .superRefine((command, ctx) => {
     const seen = new Set<string>()
@@ -95,17 +104,17 @@ export const commandSchema = z
   })
 
 export const projectSchema = z.strictObject({
-  id,
-  name,
+  id: idSchema,
+  name: nameSchema,
   /** Absolute path of the project root as registered (resolved with realpath by the main process). */
-  path: absolutePath,
+  path: absolutePathSchema,
   commands: z.array(commandSchema),
 })
 
 export const editorSchema = z
   .strictObject({
-    file: nonEmptyText,
-    args: z.array(text),
+    file: nonEmptyTextSchema,
+    args: z.array(textSchema),
   })
   .refine((editor) => editor.args.some((arg) => arg.includes(EDITOR_PATH_PLACEHOLDER)), {
     message: `One argument must contain ${EDITOR_PATH_PLACEHOLDER}`,

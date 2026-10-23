@@ -1,19 +1,23 @@
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { app, dialog, ipcMain, Menu, protocol, session, type BrowserWindow } from 'electron'
-import type { AppInfo } from '../shared/api'
+import { channels, type AppInfo } from '../shared/api'
 import { devContentSecurityPolicy } from './app/csp'
 import { resolveDevServerUrl } from './app/devserver'
 import { createDiagnosticLog } from './app/diagnostics'
 import { watchWindowHealth } from './app/health'
+import { createNoticeCenter, noticeFromConfig } from './app/notices'
 import { APP_ENTRY_URL, APP_ORIGIN, APP_SCHEME, createAppProtocolHandler } from './app/protocol'
 import { hardenSession, hardenWebContents } from './app/security'
 import { createMainWindow, preloadPathFor, rendererRootFor } from './app/window'
 import { createConfigStore } from './config'
-import { registerAppHandlers } from './ipc/app'
+import { createEventHub } from './ipc/events'
+import { createOperationHandlers } from './ipc/handlers'
+import { registerEventSubscriptions, registerOperations } from './ipc/operations'
 import { createIpcRegistry, originOf } from './ipc/register'
 import { selectPlatform } from './platform'
 import { runNetworkProbe } from './probe'
+import { createProcessStateRegistry } from './supervisor/state'
 
 // Composition root. A second instance must exit before touching any state,
 // so the lock is the very first thing that happens.
@@ -53,7 +57,17 @@ function start(): void {
     mainWindow.focus()
   })
 
-  app.on('web-contents-created', (_event, contents) => hardenWebContents(contents, log))
+  const hub = createEventHub(log)
+  const notices = createNoticeCenter(hub)
+  const processStates = createProcessStateRegistry((event) => hub.publish(channels.processes.onState, event))
+
+  app.on('web-contents-created', (_event, contents) => {
+    hardenWebContents(contents, log)
+    // Subscriptions end with their webContents or its renderer process (a reload is detected by the hub).
+    const id = contents.id
+    contents.once('destroyed', () => hub.drop(id))
+    contents.on('render-process-gone', () => hub.drop(id))
+  })
   // Must run at session creation: Chromium starts dictionary downloads before `ready`.
   app.on('session-created', (created) => hardenSession(created, log))
 
@@ -75,7 +89,8 @@ function start(): void {
     trustedOrigin,
     log,
   })
-  registerAppHandlers(registry, () => info)
+  registerEventSubscriptions(registry, hub)
+  registerOperations(registry, createOperationHandlers({ info, config: () => config.current(), processStates }))
 
   app.on('window-all-closed', () => app.quit())
 
@@ -104,10 +119,11 @@ function start(): void {
         fatal('The application files are incomplete (renderer bundle missing). Please reinstall Veydr.')
         return
       }
-      // Recovery and read-only notices are recorded in the diagnostic log; the UI shows them once
-      // `app.onNotice` exists (task group L2).
+      // Recovery and read-only notices reach the UI through `app.onNotice`; they are retained for the
+      // session, so the window receives them when it subscribes.
       try {
-        await config.load()
+        const loaded = await config.load()
+        for (const notice of loaded.notices) notices.add(noticeFromConfig(notice))
       } catch (error) {
         fatal(`The configuration in ${configDir} could not be loaded: ${error instanceof Error ? error.message : String(error)}`)
         return

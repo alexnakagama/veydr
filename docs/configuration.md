@@ -57,7 +57,7 @@ On startup Veydr checks `config.json`:
 - If `config.json` or its backup exists but cannot be read for a reason unrelated to its content (for example a permission or input/output error), Veydr does not treat it as damaged: it changes nothing and stops with an error naming the file, so a temporary failure never replaces your configuration.
 - If a damaged file cannot be moved aside (for example, the directory is not writable), Veydr changes nothing and disables configuration changes for that session, so the damaged file is not overwritten.
 
-In this pre-release, these messages are written to Veydr's diagnostic log (standard error, lines starting with `[veydr:warn] config.notice`). Showing them in the window comes with the application notice channel (task group L2 of the `establish-foundation` change).
+These messages appear as notices at the top of the window (problems that left you with an empty or unchangeable configuration as alerts, the others as status messages), together with the files involved, and are also written to Veydr's diagnostic log (standard error, lines starting with `[veydr:warn] config.notice`). Dismissing a notice hides it in the current window only: Veydr keeps the notices of the running session and shows them again after the window is reloaded.
 
 ## Schema versions
 

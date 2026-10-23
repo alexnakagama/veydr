@@ -169,6 +169,24 @@ test('[spec:desktop-shell/only-declared-operations-are-available] window.veydr e
 
   const result = await window.evaluate(() => globalThis.window.veydr.app.getInfo())
   expect(result.ok).toBe(true)
+
+  // Event subscriptions hand back an idempotent unsubscribe function.
+  const unsubscribe = await window.evaluate(() => {
+    const off = globalThis.window.veydr.processes.onState(() => undefined)
+    const type = typeof off
+    off()
+    off()
+    return type
+  })
+  expect(unsubscribe).toBe('function')
+
+  // Operations of later task groups answer with a typed error, not a rejected promise.
+  const pending = await window.evaluate(() => globalThis.window.veydr.ports.list())
+  expect(pending).toEqual({ ok: false, error: { code: 'not_implemented', message: 'ports.list is not implemented yet' } })
+  const invalid = await window.evaluate(() =>
+    globalThis.window.veydr.processes.start({ commandId: 'not-a-uuid' }),
+  )
+  expect(invalid).toMatchObject({ ok: false, error: { code: 'validation' } })
 })
 
 test('the Chromium sandbox is active for every process (not launched with --no-sandbox)', async ({ veydr }) => {

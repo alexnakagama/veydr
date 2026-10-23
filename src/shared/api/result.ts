@@ -1,4 +1,10 @@
-export type ApiErrorCode = 'validation' | 'forbidden' | 'unsupported_platform' | 'internal'
+export type ApiErrorCode =
+  | 'validation'
+  | 'forbidden'
+  | 'unsupported_platform'
+  /** The operation is declared in the API contract but lands in a later task group. */
+  | 'not_implemented'
+  | 'internal'
 
 export interface ApiError {
   readonly code: ApiErrorCode
