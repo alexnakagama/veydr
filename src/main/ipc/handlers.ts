@@ -2,6 +2,7 @@ import type { AppInfo } from '../../shared/api'
 import type { Config } from '../../shared/config'
 import { commandIds, projectViews } from '../projects/view'
 import type { ProcessStateRegistry } from '../supervisor/state'
+import type { Supervisor } from '../supervisor/supervisor'
 import { notImplemented, type OperationHandlers } from './operations'
 
 export interface HandlerServices {
@@ -9,14 +10,15 @@ export interface HandlerServices {
   /** The committed configuration (`ConfigStore.current`). */
   readonly config: () => Config
   readonly processStates: ProcessStateRegistry
+  readonly supervisor: Supervisor
 }
 
 /**
  * The handler of every operation in the contract. Operations whose services land in later task
  * groups answer with a `not_implemented` error until then: projects and settings changes (L5),
- * process lifecycle (L3) and survivors (L4), logs (L6), ports (L7).
+ * survivors (L4), logs (L6), ports (L7).
  */
-export function createOperationHandlers({ info, config, processStates }: HandlerServices): OperationHandlers {
+export function createOperationHandlers({ info, config, processStates, supervisor }: HandlerServices): OperationHandlers {
   return {
     app: {
       getInfo: () => info,
@@ -39,9 +41,9 @@ export function createOperationHandlers({ info, config, processStates }: Handler
     },
     processes: {
       snapshot: () => processStates.snapshot(commandIds(config())),
-      start: notImplemented('processes.start'),
-      stop: notImplemented('processes.stop'),
-      restart: notImplemented('processes.restart'),
+      start: ({ commandId }) => supervisor.start(commandId),
+      stop: ({ commandId }) => supervisor.stop(commandId),
+      restart: ({ commandId }) => supervisor.restart(commandId),
       resolveSurvivors: notImplemented('processes.resolveSurvivors'),
     },
     logs: {

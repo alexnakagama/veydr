@@ -35,12 +35,22 @@ export interface StopResult {
   readonly survivors: readonly ProcInfo[]
 }
 
+/** A started command: its leader process and every process attributed to it. */
 export interface ManagedProcess {
-  readonly pid: number | undefined
+  /** PID of the leader. */
+  readonly pid: number
   readonly identity: ProcessIdentity
   readonly stdout: Readable
   readonly stderr: Readable
+  /** `cb` runs once when the leader exits, or soon after registration if it already has. */
   onExit(cb: (e: ExitInfo) => void): void
+  /** Attributed processes still alive, including the leader until it has exited. */
+  remaining(): Promise<readonly ProcInfo[]>
+  /**
+   * Terminates every attributed process: graceful request, then forced after `graceMs`.
+   * Resolves once nothing attributed is alive (the leader's exit has been observed) or the forced
+   * stop gave up; concurrent calls share one stop.
+   */
   stop(opts: { graceMs: number }): Promise<StopResult>
 }
 
@@ -93,7 +103,8 @@ export interface PortSnapshot {
 }
 
 export interface ProcessTree {
-  spawn(plan: SpawnPlan): ManagedProcess
+  /** Starts `plan`; rejects with `SpawnError` (and creates no process) if it cannot be started. */
+  spawn(plan: SpawnPlan): Promise<ManagedProcess>
   launchDetached(plan: SpawnPlan): void
   findSurvivors(entries: readonly LedgerEntry[]): Promise<Survivor[]>
   terminateSurvivors(s: readonly Survivor[]): Promise<StopResult>
@@ -109,6 +120,11 @@ export interface EnvProvider {
 
 export interface PortInspector {
   list(): Promise<PortSnapshot>
+}
+
+/** Diagnostic sink for platform implementations (structurally the application diagnostic log). */
+export interface PlatformLog {
+  record(level: 'info' | 'warn' | 'error', event: string, detail?: Record<string, unknown>): void
 }
 
 /** Everything platform-dependent, selected once by the composition root. */

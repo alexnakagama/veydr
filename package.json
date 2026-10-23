@@ -21,6 +21,7 @@
     "test:integration": "node scripts/ensure-electron.cjs && npm run build && vitest run --project integration --passWithNoTests",
     "test:e2e": "node scripts/ensure-electron.cjs && npm run build && npm run build:probe && playwright test -c playwright.config.ts",
     "test:perf": "node scripts/ensure-electron.cjs && npm run build && playwright test -c playwright.perf.config.ts --pass-with-no-tests",
+    "measure": "vitest run --project measure --reporter=verbose",
     "spec-coverage": "node scripts/spec-coverage.mjs",
     "verify": "node scripts/verify.mjs"
   },

@@ -1,6 +1,7 @@
 import type { ZodType } from 'zod'
 import { fail, ok, type ApiResult } from '../../shared/api'
 import type { DiagnosticLog } from '../app/diagnostics'
+import { NotFoundError } from '../errors'
 import { NotImplementedError, UnsupportedPlatformError } from '../platform/errors'
 import type { EventSubscriber } from './events'
 
@@ -112,6 +113,7 @@ export function createIpcRegistry(options: IpcRegistryOptions): IpcRegistry {
         } catch (error) {
           if (error instanceof UnsupportedPlatformError) return fail('unsupported_platform', error.message)
           if (error instanceof NotImplementedError) return fail('not_implemented', error.message)
+          if (error instanceof NotFoundError) return fail('not_found', error.message)
           log.record('error', 'ipc.handler-failed', {
             channel,
             message: error instanceof Error ? error.message : String(error),

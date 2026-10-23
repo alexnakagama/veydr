@@ -4,9 +4,12 @@ import { createEventHub, type EventSubscriber } from '../../src/main/ipc/events'
 import { createOperationHandlers } from '../../src/main/ipc/handlers'
 import { registerEventSubscriptions, registerOperations } from '../../src/main/ipc/operations'
 import { createIpcRegistry, type InvokeEvent, type SenderFrame } from '../../src/main/ipc/register'
+import { findCommand } from '../../src/main/projects/lookup'
 import { createProcessStateRegistry } from '../../src/main/supervisor/state'
+import { createSupervisor } from '../../src/main/supervisor/supervisor'
 import { channels, contractEntries, internalChannels, type AppInfo } from '../../src/shared/api'
 import { command, config, project } from './support/config'
+import { FakeProcessTree } from './support/fake-process-tree'
 
 type Listener = (event: InvokeEvent, ...args: unknown[]) => unknown
 
@@ -44,15 +47,24 @@ function setup() {
   const plainCommand = command({ name: 'web', execution: { mode: 'shell', shell: '/bin/bash', script: 'npm run dev' } })
   const stored = config([project({ name: 'shop', path: '/home/dev/shop', commands: [secretCommand, plainCommand] })])
 
+  const tree = new FakeProcessTree()
+  const supervisor = createSupervisor({
+    processTree: tree,
+    states: processStates,
+    lookup: (commandId) => findCommand(stored, commandId),
+    plan: (target) => Promise.resolve({ ok: true, plan: { file: target.command.name, args: [], cwd: target.project.path, env: {} } }),
+    log,
+  })
+
   registerEventSubscriptions(registry, hub)
-  registerOperations(registry, createOperationHandlers({ info, config: () => stored, processStates }))
+  registerOperations(registry, createOperationHandlers({ info, config: () => stored, processStates, supervisor }))
 
   const invoke = (channel: string, ...args: unknown[]): Promise<unknown> => {
     const listener = listeners.get(channel)
     if (listener === undefined) throw new Error(`no handler for ${channel}`)
     return Promise.resolve(listener({ senderFrame: mainFrame, sender }, ...args))
   }
-  return { registry, invoke, hub, processStates, sent, stored, secretCommand, plainCommand, log }
+  return { registry, invoke, hub, processStates, sent, stored, secretCommand, plainCommand, log, tree }
 }
 
 const invokeChannels = contractEntries.filter(({ spec }) => spec.kind === 'invoke').map(({ spec }) => spec.channel)
@@ -110,7 +122,7 @@ describe('registered operations', () => {
     const requests: Record<string, unknown> = {
       [channels.projects.pickDirectory]: undefined,
       [channels.projects.add]: { path: '/home/dev/x', name: 'x' },
-      [channels.processes.start]: { commandId: '6f1f8a4c-3c1e-4e55-9a7b-0d6d1f2b9a01' },
+      [channels.processes.resolveSurvivors]: { action: 'dismiss' },
       [channels.ports.list]: undefined,
       [channels.logs.ack]: { batchId: 1 },
     }
@@ -119,6 +131,29 @@ describe('registered operations', () => {
       expect(result, channel).toMatchObject({ ok: false, error: { code: 'not_implemented' } })
     }
     expect(await invoke(channels.processes.start, { commandId: 'nope' })).toMatchObject({ ok: false, error: { code: 'validation' } })
+  })
+
+  it('starts, restarts, and stops commands, publishing every state to subscribers', async () => {
+    const { invoke, sent, secretCommand, tree } = setup()
+    expect(await invoke(internalChannels.subscribe, { topic: channels.processes.onState, token })).toEqual({ ok: true, value: null })
+
+    const started = await invoke(channels.processes.start, { commandId: secretCommand.id })
+    expect(started).toMatchObject({ ok: true, value: { commandId: secretCommand.id, status: 'running', pid: tree.last.pid } })
+    expect(await invoke(channels.processes.restart, { commandId: secretCommand.id })).toMatchObject({ ok: true, value: { status: 'running', pid: tree.last.pid } })
+    expect(await invoke(channels.processes.stop, { commandId: secretCommand.id })).toMatchObject({ ok: true, value: { status: 'exited' } })
+    expect(sent.map((m) => (m.payload as { status: string }).status)).toEqual(['starting', 'running', 'stopping', 'exited', 'starting', 'running', 'stopping', 'exited'])
+    expect(await invoke(channels.processes.snapshot)).toMatchObject({ ok: true, value: { commands: [{ status: 'exited', seq: 8 }, { status: 'idle' }] } })
+  })
+
+  it('answers lifecycle requests for unknown commands with not_found', async () => {
+    const { invoke, sent } = setup()
+    for (const channel of [channels.processes.start, channels.processes.stop, channels.processes.restart]) {
+      expect(await invoke(channel, { commandId: '9b0f2a1e-0000-4000-8000-000000000000' }), channel).toMatchObject({
+        ok: false,
+        error: { code: 'not_found', message: 'Command 9b0f2a1e-0000-4000-8000-000000000000 does not exist' },
+      })
+    }
+    expect(sent).toEqual([])
   })
 
   it('subscribes the sending webContents through the gated internal channel', async () => {

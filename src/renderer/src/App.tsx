@@ -1,6 +1,8 @@
-import { useEffect, useState, type JSX } from 'react'
-import type { ApiResult, AppInfo, CommandProcessState, Notice, ProjectView } from '../../shared/api'
+import { useEffect, useMemo, useState, type JSX } from 'react'
+import type { ApiResult, AppInfo, CommandProcessState, CommandView, Notice, ProjectView } from '../../shared/api'
+import { describeExit, describeSurvivors, formatUptime } from './process-format'
 import type { Stores } from './state'
+import { createLifecycleRequest, type LifecycleAction, type LifecycleRequest } from './state/lifecycle'
 import type { ProcessesState } from './state/processes'
 import type { ProjectsState } from './state/projects'
 import { UNREACHABLE, useStore } from './state/store'
@@ -39,6 +41,7 @@ export function App({ stores }: { stores: Stores }): JSX.Element {
   const notices = useStore(stores.notices)
   const projects = useStore(stores.projects)
   const processes = useStore(stores.processes)
+  const onLifecycle = useMemo(() => createLifecycleRequest(window.veydr.processes), [])
   return (
     <Shell
       info={info}
@@ -47,6 +50,7 @@ export function App({ stores }: { stores: Stores }): JSX.Element {
       onDismissNotice={(id) => stores.notices.dismiss(id)}
       projects={projects}
       processes={processes}
+      onLifecycle={onLifecycle}
     />
   )
 }
@@ -59,10 +63,11 @@ export interface ShellProps {
   readonly onDismissNotice: (id: string) => void
   readonly projects: ProjectsState
   readonly processes: ProcessesState
+  readonly onLifecycle: LifecycleRequest
 }
 
 /** The window layout for given states; separate from `App` so it renders without IPC. */
-export function Shell({ info, notices, noticeError, onDismissNotice, projects, processes }: ShellProps): JSX.Element {
+export function Shell({ info, notices, noticeError, onDismissNotice, projects, processes, onLifecycle }: ShellProps): JSX.Element {
   const [view, setView] = useState<View>('projects')
 
   return (
@@ -121,7 +126,7 @@ export function Shell({ info, notices, noticeError, onDismissNotice, projects, p
           </div>
         )}
         {notices.length > 0 && <Notices notices={notices} onDismiss={onDismissNotice} />}
-        {view === 'projects' ? <ProjectsView projects={projects} processes={processes} /> : <AboutView info={info} />}
+        {view === 'projects' ? <ProjectsView projects={projects} processes={processes} onLifecycle={onLifecycle} /> : <AboutView info={info} />}
       </main>
     </div>
   )
@@ -168,7 +173,12 @@ const statusLabels: Readonly<Record<CommandProcessState['status'], string>> = {
   failed: 'Failed',
 }
 
-function ProjectsView({ projects, processes }: { projects: ProjectsState; processes: ProcessesState }): JSX.Element {
+interface ProcessProps {
+  readonly processes: ProcessesState
+  readonly onLifecycle: LifecycleRequest
+}
+
+function ProjectsView({ projects, processes, onLifecycle }: { projects: ProjectsState } & ProcessProps): JSX.Element {
   return (
     <>
       <h1 id="view-title">Projects</h1>
@@ -195,13 +205,13 @@ function ProjectsView({ projects, processes }: { projects: ProjectsState; proces
             <p>Projects you register will appear here with their commands, logs, and ports.</p>
           </div>
         ) : (
-          projects.projects.map((project) => <ProjectSection key={project.id} project={project} processes={processes} />)
+          projects.projects.map((project) => <ProjectSection key={project.id} project={project} processes={processes} onLifecycle={onLifecycle} />)
         ))}
     </>
   )
 }
 
-function ProjectSection({ project, processes }: { project: ProjectView; processes: ProcessesState }): JSX.Element {
+function ProjectSection({ project, processes, onLifecycle }: { project: ProjectView } & ProcessProps): JSX.Element {
   const headingId = `project-${project.id}`
   return (
     <section className="project" aria-labelledby={headingId} data-testid="project">
@@ -211,21 +221,128 @@ function ProjectSection({ project, processes }: { project: ProjectView; processe
         <p className="muted">No commands</p>
       ) : (
         <ul className="command-list" aria-label={`Commands of ${project.name}`}>
-          {project.commands.map((command) => {
-            const state = processes.commands.get(command.id)
-            const label = processes.status === 'loading' ? '…' : statusLabels[state?.status ?? 'idle']
-            return (
-              <li key={command.id} className="command" data-testid="command" data-command-id={command.id}>
-                <span className="command-name">{command.name}</span>
-                <span className={`status status-${state?.status ?? 'idle'}`} data-testid="command-status">
-                  {label}
-                </span>
-              </li>
-            )
-          })}
+          {project.commands.map((command) => (
+            <CommandRow
+              key={command.id}
+              command={command}
+              state={processes.commands.get(command.id)}
+              loading={processes.status === 'loading'}
+              onLifecycle={onLifecycle}
+            />
+          ))}
         </ul>
       )}
     </section>
+  )
+}
+
+const actionLabels: Readonly<Record<LifecycleAction, string>> = { start: 'Start', stop: 'Stop', restart: 'Restart' }
+
+/** Current time, updated every second while `active`. */
+function useClock(active: boolean): number {
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    if (!active) return undefined
+    const timer = setInterval(() => setNow(Date.now()), 1000)
+    return () => clearInterval(timer)
+  }, [active])
+  return now
+}
+
+interface CommandRowProps {
+  readonly command: CommandView
+  readonly state: CommandProcessState | undefined
+  readonly loading: boolean
+  readonly onLifecycle: LifecycleRequest
+}
+
+function CommandRow({ command, state, loading, onLifecycle }: CommandRowProps): JSX.Element {
+  const [pending, setPending] = useState<LifecycleAction | null>(null)
+  const [actionError, setActionError] = useState<{ action: LifecycleAction; message: string } | null>(null)
+  const status = state?.status ?? 'idle'
+  const now = useClock(status === 'running')
+
+  const request = (action: LifecycleAction): void => {
+    setPending(action)
+    setActionError(null)
+    void onLifecycle(action, command.id).then((message) => {
+      setPending(null)
+      setActionError(message === null ? null : { action, message })
+    })
+  }
+
+  const enabled: Readonly<Record<LifecycleAction, boolean>> = {
+    start: status === 'idle' || status === 'exited' || status === 'failed',
+    stop: status === 'running',
+    restart: status === 'running',
+  }
+
+  return (
+    <li className="command" data-testid="command" data-command-id={command.id}>
+      <div className="command-main">
+        <span className="command-name">{command.name}</span>
+        <span className={`status status-${status}`} data-testid="command-status">
+          {loading ? '…' : statusLabels[status]}
+        </span>
+        <CommandDetail state={state} now={now} />
+        <span className="command-actions">
+          {(['start', 'stop', 'restart'] as const).map((action) => (
+            <button
+              key={action}
+              type="button"
+              className="command-action"
+              aria-label={`${actionLabels[action]} ${command.name}`}
+              disabled={loading || pending !== null || !enabled[action]}
+              onClick={() => request(action)}
+            >
+              {actionLabels[action]}
+            </button>
+          ))}
+        </span>
+      </div>
+      {state?.status === 'exited' && state.error !== null && (
+        <p className="command-problem" role="alert" data-testid="command-stop-error">
+          {state.error}
+        </p>
+      )}
+      {state !== undefined && state.survivors.length > 0 && (
+        <p className="command-problem" role="alert" data-testid="command-survivors">
+          {describeSurvivors(state.survivors)}
+        </p>
+      )}
+      {actionError !== null && (
+        <p className="command-problem" role="alert" data-testid="command-action-error">
+          {`${actionLabels[actionError.action]} failed: ${actionError.message}`}
+        </p>
+      )}
+    </li>
+  )
+}
+
+function CommandDetail({ state, now }: { state: CommandProcessState | undefined; now: number }): JSX.Element | null {
+  if (state === undefined) return null
+  let text: string | null = null
+  switch (state.status) {
+    case 'running':
+      text = `PID ${state.pid ?? '?'} · up ${formatUptime(now - (state.startedAt ?? now))}`
+      break
+    case 'stopping':
+      text = state.pid === null ? 'Stopping remaining processes…' : `Stopping PID ${state.pid}…`
+      break
+    case 'exited':
+      text = describeExit(state.exit)
+      break
+    case 'failed':
+      text = state.error ?? 'Could not start'
+      break
+    default:
+      text = null
+  }
+  if (text === null) return null
+  return (
+    <span className={`command-detail${state.status === 'failed' ? ' command-detail-error' : ''}`} data-testid="command-detail">
+      {text}
+    </span>
   )
 }
 

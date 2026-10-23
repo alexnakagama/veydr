@@ -3,7 +3,7 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
 import { Shell, type InfoState, type ShellProps } from '../../src/renderer/src/App'
 import type { ProcessesState } from '../../src/renderer/src/state/processes'
-import type { AppInfo, Notice, ProjectView } from '../../src/shared/api'
+import type { AppInfo, CommandProcessState, Notice, ProjectView } from '../../src/shared/api'
 
 const info = (overrides: Partial<AppInfo>): InfoState => ({
   status: 'ready',
@@ -28,6 +28,7 @@ const render = (state: InfoState, overrides: Partial<ShellProps> = {}): string =
       onDismissNotice: () => undefined,
       projects: { status: 'ready', projects: [] },
       processes: noProcesses,
+      onLifecycle: () => Promise.resolve(null),
       ...overrides,
     }),
   )
@@ -140,5 +141,85 @@ describe('renderer shell', () => {
     expect(html).toContain('Notices are unavailable: Invalid request')
     expect(html).toContain('Live process updates are unavailable, so states may be outdated: Could not reach the application.')
     expect(html.match(/role="alert"/g)).toHaveLength(2)
+  })
+
+  describe('command lifecycle', () => {
+    const withState = (state: Partial<CommandProcessState>): string =>
+      render(info({}), {
+        projects: { status: 'ready', projects: [shop] },
+        processes: {
+          status: 'ready',
+          error: null,
+          liveError: null,
+          commands: new Map([
+            [
+              commandId,
+              {
+                commandId,
+                runId: '0b7c9f7e-2a64-4d1a-8f0e-5f7d8c9b1a22',
+                seq: 1,
+                status: 'idle',
+                pid: null,
+                startedAt: null,
+                exit: null,
+                error: null,
+                survivors: [],
+                ...state,
+              },
+            ],
+          ]),
+        },
+      })
+
+    /** The labelled lifecycle buttons and whether each is enabled. */
+    const buttons = (html: string): Record<string, boolean> =>
+      Object.fromEntries([...html.matchAll(/<button[^>]*aria-label="(Start|Stop|Restart) [^"]*"[^>]*>/g)].map((m) => [m[1] ?? '', !m[0].includes('disabled')]))
+
+    it('offers start for an idle command, labelled with the command name', () => {
+      const html = withState({})
+      expect(buttons(html)).toEqual({ Start: true, Stop: false, Restart: false })
+      expect(html).toContain('aria-label="Start api &lt;b&gt;server&lt;/b&gt;"')
+    })
+
+    it('[spec:process-supervision/running-state-details] shows state, PID, and uptime of a running command', () => {
+      const html = withState({ status: 'running', pid: 4242, startedAt: Date.now() - 65_000 })
+      expect(html).toContain('Running')
+      expect(html).toMatch(/PID 4242 · up 1:0[5-6]/)
+      expect(buttons(html)).toEqual({ Start: false, Stop: true, Restart: true })
+    })
+
+    it('[spec:process-supervision/exit-details] shows the exit code or signal and whether termination was forced', () => {
+      expect(withState({ status: 'exited', exit: { code: 1, signal: null, forced: false } })).toContain('Exited with code 1')
+      expect(withState({ status: 'exited', exit: { code: null, signal: 'SIGKILL', forced: true } })).toContain('Terminated by SIGKILL (forced after the stop timeout)')
+      expect(buttons(withState({ status: 'exited', exit: { code: 0, signal: null, forced: false } }))).toEqual({ Start: true, Stop: false, Restart: false })
+    })
+
+    it('shows the reason of a failed start', () => {
+      const html = withState({ status: 'failed', error: 'Executable not found: npm (searched PATH)' })
+      expect(html).toContain('Failed')
+      expect(html).toContain('Executable not found: npm (searched PATH)')
+      expect(buttons(html)['Start']).toBe(true)
+    })
+
+    it('disables every action while a command is starting or stopping', () => {
+      expect(buttons(withState({ status: 'starting' }))).toEqual({ Start: false, Stop: false, Restart: false })
+      const stopping = withState({ status: 'stopping', pid: 7 })
+      expect(buttons(stopping)).toEqual({ Start: false, Stop: false, Restart: false })
+      expect(stopping).toContain('Stopping PID 7…')
+      expect(withState({ status: 'stopping', pid: null })).toContain('Stopping remaining processes…')
+    })
+
+    it('shows a stop that could not be verified as an alert', () => {
+      const html = withState({ status: 'exited', exit: { code: null, signal: null, forced: false }, error: 'Could not verify that the command stopped: EMFILE' })
+      expect(html).toContain('data-testid="command-stop-error"')
+      expect(html).toContain('Could not verify that the command stopped: EMFILE')
+      expect(withState({ status: 'exited', exit: { code: 0, signal: null, forced: false } })).not.toContain('command-stop-error')
+    })
+
+    it('[spec:process-supervision/process-could-not-be-terminated] lists survivors with PID and name as an alert', () => {
+      const html = withState({ status: 'exited', exit: { code: null, signal: null, forced: true }, survivors: [{ pid: 501, name: 'node' }] })
+      expect(html).toContain('role="alert"')
+      expect(html).toContain('Still running after the stop: PID 501 (node)')
+    })
   })
 })

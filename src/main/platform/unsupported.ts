@@ -17,7 +17,7 @@ export function createUnsupportedPlatform(name: PlatformName, osName: string): P
     name,
     supported: false,
     processTree: {
-      spawn: () => unsupported('processTree.spawn'),
+      spawn: () => rejected('processTree.spawn'),
       launchDetached: () => unsupported('processTree.launchDetached'),
       findSurvivors: () => rejected('processTree.findSurvivors'),
       terminateSurvivors: () => rejected('processTree.terminateSurvivors'),

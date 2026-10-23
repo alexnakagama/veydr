@@ -19,6 +19,15 @@ export default defineConfig({
           testTimeout: 60_000,
         },
       },
+      {
+        // Measurements recorded as task notes (`npm run measure`); not part of `verify`.
+        test: {
+          name: 'measure',
+          include: ['test/measure/**/*.measure.ts'],
+          environment: 'node',
+          testTimeout: 600_000,
+        },
+      },
     ],
   },
 })

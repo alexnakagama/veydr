@@ -57,7 +57,6 @@ describe('Windows platform', () => {
 
   it('fails synchronous operations synchronously (no partial behaviour)', () => {
     const windows = createWindowsPlatform()
-    expect(() => windows.processTree.spawn(plan)).toThrow(UnsupportedPlatformError)
     expect(() => windows.commandResolver.resolve(spec, {})).toThrow(UnsupportedPlatformError)
   })
 })
@@ -70,8 +69,12 @@ describe('other unsupported operating systems', () => {
   }
 })
 
+// processTree.spawn is implemented (L3) and covered by test/integration/linux-process-tree.test.ts.
+const linuxImplemented = new Set(['processTree.spawn'])
+
 describe('Linux placeholders', () => {
   for (const [name, run] of Object.entries(everyOperation(selectPlatform('linux')))) {
+    if (linuxImplemented.has(name)) continue
     it(`${name} reports that it is not implemented yet`, async () => {
       await expect(run()).rejects.toBeInstanceOf(NotImplementedError)
     })

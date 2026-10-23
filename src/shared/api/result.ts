@@ -1,6 +1,8 @@
 export type ApiErrorCode =
   | 'validation'
   | 'forbidden'
+  /** The request names something that does not exist (e.g. a removed command). */
+  | 'not_found'
   | 'unsupported_platform'
   /** The operation is declared in the API contract but lands in a later task group. */
   | 'not_implemented'

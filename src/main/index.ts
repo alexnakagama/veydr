@@ -17,7 +17,10 @@ import { registerEventSubscriptions, registerOperations } from './ipc/operations
 import { createIpcRegistry, originOf } from './ipc/register'
 import { selectPlatform } from './platform'
 import { runNetworkProbe } from './probe'
+import { findCommand } from './projects/lookup'
+import { createInterimPlanner } from './supervisor/plan'
 import { createProcessStateRegistry } from './supervisor/state'
+import { createSupervisor } from './supervisor/supervisor'
 
 // Composition root. A second instance must exit before touching any state,
 // so the lock is the very first thing that happens.
@@ -29,7 +32,7 @@ if (!app.requestSingleInstanceLock()) {
 
 function start(): void {
   const log = createDiagnosticLog()
-  const platform = selectPlatform()
+  const platform = selectPlatform(process.platform, { log })
   // `userData` honors XDG_CONFIG_HOME on Linux (~/.config/Veydr by default). The single-instance
   // lock above makes this process the only configuration writer.
   const configDir = app.getPath('userData')
@@ -60,6 +63,15 @@ function start(): void {
   const hub = createEventHub(log)
   const notices = createNoticeCenter(hub)
   const processStates = createProcessStateRegistry((event) => hub.publish(channels.processes.onState, event))
+  // Commands start only on an explicit user request (`processes.start`/`restart`); nothing is started here.
+  // Output is drained and discarded until the log pipeline (L6) consumes it.
+  const supervisor = createSupervisor({
+    processTree: platform.processTree,
+    states: processStates,
+    lookup: (commandId) => findCommand(config.current(), commandId),
+    plan: createInterimPlanner(process.env),
+    log,
+  })
 
   app.on('web-contents-created', (_event, contents) => {
     hardenWebContents(contents, log)
@@ -90,7 +102,7 @@ function start(): void {
     log,
   })
   registerEventSubscriptions(registry, hub)
-  registerOperations(registry, createOperationHandlers({ info, config: () => config.current(), processStates }))
+  registerOperations(registry, createOperationHandlers({ info, config: () => config.current(), processStates, supervisor }))
 
   app.on('window-all-closed', () => app.quit())
 

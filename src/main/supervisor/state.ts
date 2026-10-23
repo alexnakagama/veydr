@@ -19,7 +19,7 @@ export interface ProcessStateRegistry {
 }
 
 /**
- * Main-side source of truth for per-command process state (design D7). The supervisor (L3) records
+ * Main-side source of truth for per-command process state (design D7). The supervisor records
  * transitions here; `processes.snapshot` and `processes.onState` read from it.
  */
 export function createProcessStateRegistry(emit: (event: ProcessStateEvent) => void): ProcessStateRegistry {

@@ -2,11 +2,22 @@ import { readdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { connectStores } from '../../src/renderer/src/state'
+import { createLifecycleRequest } from '../../src/renderer/src/state/lifecycle'
 import { contractEntries, type VeydrApi } from '../../src/shared/api'
 
-// Operations with a real handler in this group (L2). Everything else answers `not_implemented`, so
-// no UI path may call it until its task group lands; extend this list when one does.
-const implemented = new Set(['app.getInfo', 'app.onNotice', 'projects.list', 'processes.snapshot', 'processes.onState', 'settings.get'])
+// Operations with a real handler (L2, L3). Everything else answers `not_implemented`, so no UI path
+// may call it until its task group lands; extend this list when one does.
+const implemented = new Set([
+  'app.getInfo',
+  'app.onNotice',
+  'projects.list',
+  'processes.snapshot',
+  'processes.onState',
+  'processes.start',
+  'processes.stop',
+  'processes.restart',
+  'settings.get',
+])
 
 /** An API whose every function records its use and answers like main does for the operation. */
 function recordingApi(used: Set<string>): VeydrApi {
@@ -43,6 +54,14 @@ describe('renderer use of staged operations', () => {
     connectStores(recordingApi(used))
     expect([...used].filter((op) => !implemented.has(op))).toEqual([])
     expect(used.size).toBeGreaterThan(0)
+  })
+
+  it('requests lifecycle actions through implemented operations only', async () => {
+    const used = new Set<string>()
+    const request = createLifecycleRequest(recordingApi(used).processes)
+    for (const action of ['start', 'stop', 'restart'] as const) await request(action, '6f1f8a4c-3c1e-4e55-9a7b-0d6d1f2b9a01')
+    expect([...used].sort()).toEqual(['processes.restart', 'processes.start', 'processes.stop'])
+    expect([...used].filter((op) => !implemented.has(op))).toEqual([])
   })
 
   it('references window.veydr only for implemented operations, and has no retry of failed requests', () => {

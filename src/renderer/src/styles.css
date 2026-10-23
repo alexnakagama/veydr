@@ -256,11 +256,67 @@ body {
 }
 
 .command {
+  padding: 8px 12px;
+}
+
+.command-main {
   display: flex;
   align-items: center;
-  justify-content: space-between;
   gap: 12px;
-  padding: 8px 12px;
+}
+
+.command-name {
+  font-weight: 500;
+}
+
+.command-detail {
+  flex: 1;
+  min-width: 0;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+.command-detail-error {
+  color: var(--error-text);
+}
+
+.command-actions {
+  display: flex;
+  gap: 6px;
+  margin-left: auto;
+}
+
+.command-action {
+  padding: 2px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: #20242c;
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.command-action:hover:not(:disabled) {
+  background: #2a303a;
+}
+
+.command-action:disabled {
+  color: var(--text-muted);
+  cursor: default;
+  opacity: 0.6;
+}
+
+.command-problem {
+  margin: 6px 0 0;
+  padding: 4px 8px;
+  border-radius: 6px;
+  background: var(--error-bg);
+  color: var(--error-text);
+  font-size: 12px;
+  overflow-wrap: anywhere;
 }
 
 .command + .command {

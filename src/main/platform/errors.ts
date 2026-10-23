@@ -11,6 +11,26 @@ export class UnsupportedPlatformError extends Error {
   }
 }
 
+export type SpawnFailure =
+  | 'executable-not-found'
+  | 'not-executable'
+  | 'cwd-missing'
+  | 'cwd-not-directory'
+  | 'cwd-inaccessible'
+  | 'other'
+
+/** A command could not be started; no process was created. `message` is meant for the user. */
+export class SpawnError extends Error {
+  override readonly name = 'SpawnError'
+
+  constructor(
+    readonly reason: SpawnFailure,
+    message: string,
+  ) {
+    super(message)
+  }
+}
+
 /** Raised by operations (platform or IPC) whose implementation lands in a later task group. */
 export class NotImplementedError extends Error {
   override readonly name = 'NotImplementedError'
