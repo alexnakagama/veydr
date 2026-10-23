@@ -9,6 +9,7 @@ import { watchWindowHealth } from './app/health'
 import { APP_ENTRY_URL, APP_ORIGIN, APP_SCHEME, createAppProtocolHandler } from './app/protocol'
 import { hardenSession, hardenWebContents } from './app/security'
 import { createMainWindow, preloadPathFor, rendererRootFor } from './app/window'
+import { createConfigStore } from './config'
 import { registerAppHandlers } from './ipc/app'
 import { createIpcRegistry, originOf } from './ipc/register'
 import { selectPlatform } from './platform'
@@ -25,6 +26,10 @@ if (!app.requestSingleInstanceLock()) {
 function start(): void {
   const log = createDiagnosticLog()
   const platform = selectPlatform()
+  // `userData` honors XDG_CONFIG_HOME on Linux (~/.config/Veydr by default). The single-instance
+  // lock above makes this process the only configuration writer.
+  const configDir = app.getPath('userData')
+  const config = createConfigStore({ dir: configDir, log })
 
   // The Vite dev server is used only by `electron-vite dev` (the flag is
   // compiled out of every other build); built and packaged apps always load
@@ -92,11 +97,19 @@ function start(): void {
 
   app
     .whenReady()
-    .then(() => {
+    .then(async () => {
       const rendererRoot = rendererRootFor(__dirname)
       // A missing UI file would otherwise be served as a 404 page, which Chromium does not report as a load failure.
       if (devOrigin === null && !existsSync(join(rendererRoot, 'index.html'))) {
         fatal('The application files are incomplete (renderer bundle missing). Please reinstall Veydr.')
+        return
+      }
+      // Recovery and read-only notices are recorded in the diagnostic log; the UI shows them once
+      // `app.onNotice` exists (task group L2).
+      try {
+        await config.load()
+      } catch (error) {
+        fatal(`The configuration in ${configDir} could not be loaded: ${error instanceof Error ? error.message : String(error)}`)
         return
       }
       protocol.handle(APP_SCHEME, createAppProtocolHandler(rendererRoot))

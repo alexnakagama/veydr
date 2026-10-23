@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 0,
+  "projects": [
+    {
+      "id": "3f1c2a4e-8b7d-4c6e-9a1f-2b3c4d5e6f70",
+      "title": "Shop",
+      "root": "/home/dev/shop"
+    },
+    {
+      "id": "7a2b9c1d-4e5f-4a6b-8c7d-9e0f1a2b3c4d",
+      "title": "Blog",
+      "root": "/home/dev/blog"
+    }
+  ]
+}

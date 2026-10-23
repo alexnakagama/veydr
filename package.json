@@ -18,7 +18,7 @@
     "typecheck": "tsc -p tsconfig.shared.json && tsc -p tsconfig.main.json && tsc -p tsconfig.preload.json && tsc -p tsconfig.renderer.json && tsc -p tsconfig.test.json",
     "lint": "eslint --max-warnings 0 .",
     "test": "vitest run --project unit",
-    "test:integration": "vitest run --project integration --passWithNoTests",
+    "test:integration": "node scripts/ensure-electron.cjs && npm run build && vitest run --project integration --passWithNoTests",
     "test:e2e": "node scripts/ensure-electron.cjs && npm run build && npm run build:probe && playwright test -c playwright.config.ts",
     "test:perf": "node scripts/ensure-electron.cjs && npm run build && playwright test -c playwright.perf.config.ts --pass-with-no-tests",
     "spec-coverage": "node scripts/spec-coverage.mjs",
