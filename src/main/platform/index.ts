@@ -10,7 +10,10 @@ export type * from './types'
  * Selects the platform implementation. Together with the composition root,
  * this is the only module allowed to read `process.platform`.
  */
-export function selectPlatform(os: NodeJS.Platform = process.platform, options: { readonly log?: PlatformLog } = {}): Platform {
+export function selectPlatform(
+  os: NodeJS.Platform = process.platform,
+  options: { readonly log?: PlatformLog; readonly inherited?: Readonly<Record<string, string | undefined>> } = {},
+): Platform {
   switch (os) {
     case 'linux':
       return createLinuxPlatform(options)

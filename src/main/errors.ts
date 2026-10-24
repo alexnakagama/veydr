@@ -7,3 +7,8 @@ export class NotFoundError extends Error {
 export class ShuttingDownError extends Error {
   override readonly name = 'ShuttingDownError'
 }
+
+/** A well-formed request was refused; `message` tells the user why (API error code `rejected`). */
+export class UserError extends Error {
+  override readonly name = 'UserError'
+}

@@ -17,12 +17,9 @@ export function commandView(command: CommandConfig): CommandView {
   }
 }
 
-export function projectView(project: ProjectConfig): ProjectView {
-  return { id: project.id, name: project.name, path: project.path, commands: project.commands.map(commandView) }
-}
-
-export function projectViews(config: Config): ProjectView[] {
-  return config.projects.map(projectView)
+/** `missing`: the folder was found missing (or not a directory) when checked for this view. */
+export function projectView(project: ProjectConfig, missing: boolean): ProjectView {
+  return { id: project.id, name: project.name, path: project.path, missing, commands: project.commands.map(commandView) }
 }
 
 /** Every configured command ID, in project and command order. */

@@ -64,6 +64,10 @@ export const environmentPreviewSchema = z.strictObject({
 })
 export type EnvironmentPreview = z.infer<typeof environmentPreviewSchema>
 
+/** `refresh` resolves the login environment anew (for every command) before previewing. */
+export const previewEnvironmentRequestSchema = z.strictObject({ commandId: idSchema, refresh: z.boolean() })
+export type PreviewEnvironmentRequest = z.infer<typeof previewEnvironmentRequestSchema>
+
 export const revealSecretRequestSchema = z.strictObject({ commandId: idSchema, key: envKeySchema })
 export type RevealSecretRequest = z.infer<typeof revealSecretRequestSchema>
 

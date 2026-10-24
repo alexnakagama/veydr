@@ -4,7 +4,9 @@ import { createEventHub, type EventSubscriber } from '../../src/main/ipc/events'
 import { createOperationHandlers } from '../../src/main/ipc/handlers'
 import { registerEventSubscriptions, registerOperations } from '../../src/main/ipc/operations'
 import { createIpcRegistry, type InvokeEvent, type SenderFrame } from '../../src/main/ipc/register'
+import { createEnvironmentService } from '../../src/main/projects/environment'
 import { findCommand } from '../../src/main/projects/lookup'
+import { createProjectService } from '../../src/main/projects/service'
 import { createProcessStateRegistry } from '../../src/main/supervisor/state'
 import { createSupervisor } from '../../src/main/supervisor/supervisor'
 import { channels, contractEntries, internalChannels, type AppInfo } from '../../src/shared/api'
@@ -45,13 +47,20 @@ function setup() {
     ],
   })
   const plainCommand = command({ name: 'web', execution: { mode: 'shell', shell: '/bin/bash', script: 'npm run dev' } })
-  const stored = config([project({ name: 'shop', path: '/home/dev/shop', commands: [secretCommand, plainCommand] })])
+  let stored = config([project({ name: 'shop', path: '/home/dev/shop', commands: [secretCommand, plainCommand] })])
+  const store = {
+    current: () => stored,
+    update: (change: (c: typeof stored) => typeof stored) => {
+      stored = change(stored)
+      return Promise.resolve(stored)
+    },
+  }
 
   const tree = new FakeProcessTree()
   const supervisor = createSupervisor({
     processTree: tree,
     states: processStates,
-    lookup: (commandId) => findCommand(stored, commandId),
+    lookup: (commandId) => findCommand(store.current(), commandId),
     plan: (target) => Promise.resolve({ ok: true, plan: { file: target.command.name, args: [], cwd: target.project.path, env: {} } }),
     log,
   })
@@ -64,14 +73,27 @@ function setup() {
       return Promise.resolve(action === 'terminate' ? [{ pid: 4321, name: 'node' }] : [])
     },
   }
-  registerOperations(registry, createOperationHandlers({ info, config: () => stored, processStates, supervisor, recovery }))
+  const environment = createEnvironmentService({
+    provider: { base: () => Promise.resolve({ env: { PATH: '/usr/bin', PORT: '80' }, warnings: ['login shell failed'] }) },
+  })
+  const projects = createProjectService({ store, activeCommands: () => new Set(supervisor.active().map((run) => run.commandId)) })
+  const opened: string[] = []
+  const desktop = {
+    pickDirectory: () => Promise.resolve('/home/dev/picked'),
+    openFolder: (projectId: string) => {
+      opened.push(projectId)
+      return Promise.resolve()
+    },
+    openInEditor: () => Promise.reject(new Error('not used')),
+  }
+  registerOperations(registry, createOperationHandlers({ info, config: () => store.current(), processStates, supervisor, recovery, projects, environment, desktop }))
 
   const invoke = (channel: string, ...args: unknown[]): Promise<unknown> => {
     const listener = listeners.get(channel)
     if (listener === undefined) throw new Error(`no handler for ${channel}`)
     return Promise.resolve(listener({ senderFrame: mainFrame, sender }, ...args))
   }
-  return { registry, invoke, hub, processStates, sent, stored, secretCommand, plainCommand, log, tree, resolutions, supervisor }
+  return { registry, invoke, hub, processStates, sent, stored, secretCommand, plainCommand, log, tree, resolutions, supervisor, opened }
 }
 
 const invokeChannels = contractEntries.filter(({ spec }) => spec.kind === 'invoke').map(({ spec }) => spec.channel)
@@ -104,7 +126,8 @@ describe('registered operations', () => {
     })
 
     const list = await invoke(channels.projects.list)
-    expect(list).toMatchObject({ ok: true, value: [{ id: stored.projects[0]?.id, name: 'shop', path: '/home/dev/shop' }] })
+    // The folder does not exist on the test machine, so the project is listed as missing.
+    expect(list).toMatchObject({ ok: true, value: [{ id: stored.projects[0]?.id, name: 'shop', path: '/home/dev/shop', missing: true }] })
     expect(JSON.stringify(list)).not.toContain('hunter2-very-secret')
     expect(list).toMatchObject({
       value: [
@@ -124,11 +147,34 @@ describe('registered operations', () => {
     })
   })
 
+  it('previews the environment with secrets masked, reveals a secret on request, and refuses invalid project changes', async () => {
+    const { invoke, secretCommand, stored, opened } = setup()
+    expect(await invoke(channels.commands.previewEnvironment, { commandId: secretCommand.id, refresh: false })).toEqual({
+      ok: true,
+      value: {
+        entries: [
+          { key: 'API_TOKEN', secret: true, value: null, source: 'override' },
+          { key: 'PATH', secret: false, value: '/usr/bin', source: 'base' },
+          { key: 'PORT', secret: false, value: '3000', source: 'override' },
+        ],
+        warnings: ['login shell failed'],
+      },
+    })
+    expect(await invoke(channels.commands.revealSecret, { commandId: secretCommand.id, key: 'API_TOKEN' })).toEqual({ ok: true, value: { value: 'hunter2-very-secret' } })
+    expect(await invoke(channels.commands.revealSecret, { commandId: secretCommand.id, key: 'PORT' })).toMatchObject({ ok: false, error: { code: 'not_found' } })
+    expect(await invoke(channels.projects.add, { path: '/veydr/no/such/dir', name: 'x' })).toEqual({
+      ok: false,
+      error: { code: 'rejected', message: '/veydr/no/such/dir does not exist.' },
+    })
+    expect(await invoke(channels.projects.pickDirectory)).toEqual({ ok: true, value: '/home/dev/picked' })
+    const projectId = stored.projects[0]?.id ?? ''
+    expect(await invoke(channels.projects.openFolder, { projectId })).toEqual({ ok: true, value: null })
+    expect(opened).toEqual([projectId])
+  })
+
   it('answers operations of later task groups with not_implemented, after validating the request', async () => {
     const { invoke } = setup()
     const requests: Record<string, unknown> = {
-      [channels.projects.pickDirectory]: undefined,
-      [channels.projects.add]: { path: '/home/dev/x', name: 'x' },
       [channels.ports.list]: undefined,
       [channels.logs.ack]: { batchId: 1 },
     }

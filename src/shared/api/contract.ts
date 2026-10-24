@@ -5,6 +5,7 @@ import { channels, eventTopics, internalChannels, type EventTopic } from './chan
 import {
   commandRefSchema,
   environmentPreviewSchema,
+  previewEnvironmentRequestSchema,
   revealedSecretSchema,
   revealSecretRequestSchema,
   upsertCommandRequestSchema,
@@ -82,7 +83,7 @@ export const contract = {
   commands: {
     upsert: invoke(channels.commands.upsert, upsertCommandRequestSchema, commandViewSchema),
     remove: invoke(channels.commands.remove, commandRefSchema, done),
-    previewEnvironment: invoke(channels.commands.previewEnvironment, commandRefSchema, environmentPreviewSchema),
+    previewEnvironment: invoke(channels.commands.previewEnvironment, previewEnvironmentRequestSchema, environmentPreviewSchema),
     revealSecret: invoke(channels.commands.revealSecret, revealSecretRequestSchema, revealedSecretSchema),
   },
   processes: {

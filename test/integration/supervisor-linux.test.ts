@@ -3,7 +3,9 @@ import { mkdirSync, readFileSync, readlinkSync } from 'node:fs'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { createLinuxProcessTree } from '../../src/main/platform/linux/process-tree'
-import { createInterimPlanner } from '../../src/main/supervisor/plan'
+import { createLinuxCommandResolver } from '../../src/main/platform/linux/resolver'
+import { withoutRuntimeVariables } from '../../src/main/platform/runtime-env'
+import { createPlanner } from '../../src/main/supervisor/plan'
 import { createProcessStateRegistry } from '../../src/main/supervisor/state'
 import { createSupervisor, type LaunchTarget, type OutputSink } from '../../src/main/supervisor/supervisor'
 import type { ProcessStateEvent } from '../../src/shared/api'
@@ -33,7 +35,10 @@ function harness(s: Scenario, cmd: Partial<CommandConfig>, output?: OutputSink) 
     processTree: createLinuxProcessTree(),
     states,
     lookup: (id) => (id === config.id ? target : null),
-    plan: createInterimPlanner(process.env),
+    plan: createPlanner({
+      resolver: createLinuxCommandResolver(),
+      environment: { base: () => Promise.resolve({ env: withoutRuntimeVariables(process.env), warnings: [] }) },
+    }),
     log: quietLog(),
     ...(output === undefined ? {} : { output }),
   })

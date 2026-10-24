@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
 export const fixturesDir = resolve(__dirname, '../fixtures/proc')
-export const fixture = (name: 'tree' | 'escape' | 'flood' | 'listen' | 'sentinel'): string => join(fixturesDir, `${name}.mjs`)
+export const fixture = (name: 'tree' | 'escape' | 'flood' | 'listen' | 'sentinel' | 'inspect'): string => join(fixturesDir, `${name}.mjs`)
 
 /** Environment variable every fixture process inherits; its value identifies one test's processes. */
 export const TAG_VARIABLE = 'VEYDR_FIXTURE_TAG'

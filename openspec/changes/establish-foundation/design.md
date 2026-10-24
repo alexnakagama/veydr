@@ -104,7 +104,7 @@ Event subscriptions return an unsubscribe function; listeners are removed on unl
 ```ts
 interface ProcessTree {
   spawn(plan: SpawnPlan): ManagedProcess
-  launchDetached(plan: SpawnPlan): void
+  launchDetached(plan: SpawnPlan): Promise<void>   // resolves once started
   findSurvivors(entries: LedgerEntry[]): Promise<Survivor[]>
   terminateSurvivors(s: Survivor[]): Promise<StopResult>
 }
@@ -117,7 +117,7 @@ interface ManagedProcess {
 }
 type StopResult = { graceful: 'yes' | 'no' | 'unsupported'; forced: boolean; survivors: ProcInfo[] }
 type ExitInfo  = { code: number | null; signal: string | null; forced: boolean }
-interface CommandResolver { resolve(spec: CommandSpec, env: Env): ResolveResult }   // plan | diagnostics
+interface CommandResolver { resolve(spec: CommandSpec, env: Env): Promise<ResolveResult> }   // plan | diagnostics
 interface EnvProvider     { base(): Promise<{ env: Env; warnings: string[] }> }
 interface PortInspector   { list(): Promise<PortSnapshot> }                          // owner: known|restricted|unknown
 ```

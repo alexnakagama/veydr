@@ -34,6 +34,8 @@ export const projectViewSchema = z.strictObject({
   id: idSchema,
   name: nameSchema,
   path: absolutePathSchema,
+  /** The folder did not exist (or was not a directory) when the project was listed; its commands cannot start. */
+  missing: z.boolean(),
   commands: z.array(commandViewSchema),
 })
 export type ProjectView = z.infer<typeof projectViewSchema>

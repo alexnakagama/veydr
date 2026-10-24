@@ -29,5 +29,7 @@ export function connectStores(api: VeydrApi): Stores {
     stores.processes.setCommands(projects.projects.flatMap((project) => project.commands.map((command) => command.id)))
   })
   void loadProjects(stores.projects, api.projects)
+  // Folders may be deleted or restored while Veydr runs: check again when the window regains focus.
+  if (typeof window !== 'undefined') window.addEventListener('focus', () => void loadProjects(stores.projects, api.projects))
   return stores
 }

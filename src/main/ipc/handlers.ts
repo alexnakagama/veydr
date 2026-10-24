@@ -1,6 +1,11 @@
 import type { AppInfo } from '../../shared/api'
 import type { Config } from '../../shared/config'
-import { commandIds, projectViews } from '../projects/view'
+import type { DesktopActions } from '../projects/desktop'
+import { previewEntries, type EnvironmentService } from '../projects/environment'
+import { findCommand } from '../projects/lookup'
+import type { ProjectService } from '../projects/service'
+import { commandIds } from '../projects/view'
+import { NotFoundError } from '../errors'
 import type { CrashRecovery } from '../supervisor/recovery'
 import type { ProcessStateRegistry } from '../supervisor/state'
 import type { Supervisor } from '../supervisor/supervisor'
@@ -13,33 +18,53 @@ export interface HandlerServices {
   readonly processStates: ProcessStateRegistry
   readonly supervisor: Supervisor
   readonly recovery: Pick<CrashRecovery, 'resolve'>
+  readonly projects: ProjectService
+  readonly environment: EnvironmentService
+  readonly desktop: DesktopActions
 }
 
 /**
  * The handler of every operation in the contract. Operations whose services land in later task
- * groups answer with a `not_implemented` error until then: projects and settings changes (L5),
- * logs (L6), ports (L7).
+ * groups answer with a `not_implemented` error until then: logs (L6), ports (L7).
  */
-export function createOperationHandlers({ info, config, processStates, supervisor, recovery }: HandlerServices): OperationHandlers {
+export function createOperationHandlers(services: HandlerServices): OperationHandlers {
+  const { info, config, processStates, supervisor, recovery, projects, environment, desktop } = services
   return {
     app: {
       getInfo: () => info,
     },
     projects: {
-      list: () => projectViews(config()),
-      pickDirectory: notImplemented('projects.pickDirectory'),
-      add: notImplemented('projects.add'),
-      update: notImplemented('projects.update'),
-      remove: notImplemented('projects.remove'),
-      relocate: notImplemented('projects.relocate'),
-      openFolder: notImplemented('projects.openFolder'),
-      openInEditor: notImplemented('projects.openInEditor'),
+      list: () => projects.list(),
+      pickDirectory: () => desktop.pickDirectory(),
+      add: (request) => projects.add(request),
+      update: (request) => projects.rename(request),
+      remove: async ({ projectId }) => {
+        await projects.remove(projectId)
+        return null
+      },
+      relocate: (request) => projects.relocate(request),
+      openFolder: async ({ projectId }) => {
+        await desktop.openFolder(projectId)
+        return null
+      },
+      openInEditor: async ({ projectId }) => {
+        await desktop.openInEditor(projectId)
+        return null
+      },
     },
     commands: {
-      upsert: notImplemented('commands.upsert'),
-      remove: notImplemented('commands.remove'),
-      previewEnvironment: notImplemented('commands.previewEnvironment'),
-      revealSecret: notImplemented('commands.revealSecret'),
+      upsert: ({ projectId, command }) => projects.upsertCommand(projectId, command),
+      remove: async ({ commandId }) => {
+        await projects.removeCommand(commandId)
+        return null
+      },
+      previewEnvironment: async ({ commandId, refresh }) => {
+        const found = findCommand(config(), commandId)
+        if (found === null) throw new NotFoundError(`Command ${commandId} does not exist`)
+        const base = await (refresh ? environment.refresh() : environment.base())
+        return { entries: previewEntries(base.env, found.command), warnings: [...base.warnings] }
+      },
+      revealSecret: ({ commandId, key }) => ({ value: projects.revealSecret(commandId, key) }),
     },
     processes: {
       snapshot: () => processStates.snapshot(commandIds(config())),
@@ -58,7 +83,7 @@ export function createOperationHandlers({ info, config, processStates, superviso
     },
     settings: {
       get: () => config().settings,
-      setEditor: notImplemented('settings.setEditor'),
+      setEditor: ({ editor }) => projects.setEditor(editor),
     },
   }
 }

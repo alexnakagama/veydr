@@ -107,8 +107,8 @@ describe('notice center (app.onNotice)', () => {
 
   it('maps every configuration notice kind to a notice kind with a severity', () => {
     const kinds: readonly ConfigNoticeKind[] = ['recovered-from-backup', 'reset-to-empty', 'newer-schema', 'preservation-failed', 'save-failed']
-    // The other notice kinds come from crash recovery and quitting (L4).
-    expect([...kinds, 'crash-survivors', 'ledger-problem', 'quitting'].sort()).toEqual([...noticeKinds].sort())
+    // The other notice kinds come from crash recovery and quitting (L4) and the login environment (L5).
+    expect([...kinds, 'crash-survivors', 'ledger-problem', 'quitting', 'environment'].sort()).toEqual([...noticeKinds].sort())
     for (const kind of kinds) {
       const notice = noticeFromConfig({ kind, message: 'm', files: ['/a'] })
       expect(notice.kind).toBe(kind)

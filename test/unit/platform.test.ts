@@ -54,11 +54,6 @@ describe('Windows platform', () => {
       expect(error).toMatchObject({ code: 'unsupported_platform', platform: 'win32', operation: name })
     })
   }
-
-  it('fails synchronous operations synchronously (no partial behaviour)', () => {
-    const windows = createWindowsPlatform()
-    expect(() => windows.commandResolver.resolve(spec, {})).toThrow(UnsupportedPlatformError)
-  })
 })
 
 describe('other unsupported operating systems', () => {
@@ -70,8 +65,16 @@ describe('other unsupported operating systems', () => {
 })
 
 // processTree.spawn is implemented (L3) and covered by test/integration/linux-process-tree.test.ts;
-// the survivor operations (L4) by test/unit/linux-survivors.test.ts and test/integration/crash-recovery.test.ts.
-const linuxImplemented = new Set(['processTree.spawn', 'processTree.findSurvivors', 'processTree.terminateSurvivors'])
+// the survivor operations (L4) by test/unit/linux-survivors.test.ts and test/integration/crash-recovery.test.ts;
+// launchDetached, the resolver, and the environment (L5) by test/integration/linux-commands.test.ts.
+const linuxImplemented = new Set([
+  'processTree.spawn',
+  'processTree.launchDetached',
+  'processTree.findSurvivors',
+  'processTree.terminateSurvivors',
+  'commandResolver.resolve',
+  'envProvider.base',
+])
 
 describe('Linux placeholders', () => {
   for (const [name, run] of Object.entries(everyOperation(selectPlatform('linux')))) {

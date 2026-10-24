@@ -8,6 +8,8 @@ export type ApiErrorCode =
   | 'not_implemented'
   /** Veydr is quitting and no longer starts commands. */
   | 'shutting_down'
+  /** The request is well-formed but refused; the message explains why (e.g. a duplicate project folder). */
+  | 'rejected'
   | 'internal'
 
 export interface ApiError {

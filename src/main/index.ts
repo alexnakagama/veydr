@@ -1,6 +1,6 @@
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
-import { app, dialog, ipcMain, Menu, protocol, session, type BrowserWindow } from 'electron'
+import { app, dialog, ipcMain, Menu, protocol, session, shell, type BrowserWindow } from 'electron'
 import { channels, type AppInfo } from '../shared/api'
 import { devContentSecurityPolicy } from './app/csp'
 import { resolveDevServerUrl } from './app/devserver'
@@ -18,9 +18,12 @@ import { registerEventSubscriptions, registerOperations } from './ipc/operations
 import { createIpcRegistry, originOf } from './ipc/register'
 import { selectPlatform } from './platform'
 import { runNetworkProbe } from './probe'
+import { createDesktopActions } from './projects/desktop'
+import { createEnvironmentService } from './projects/environment'
 import { findCommand } from './projects/lookup'
+import { createProjectService } from './projects/service'
 import { createRunLedger } from './supervisor/ledger'
-import { createInterimPlanner } from './supervisor/plan'
+import { createPlanner } from './supervisor/plan'
 import { createCrashRecovery } from './supervisor/recovery'
 import { createProcessStateRegistry } from './supervisor/state'
 import { createSupervisor } from './supervisor/supervisor'
@@ -36,7 +39,7 @@ if (!app.requestSingleInstanceLock()) {
 
 function start(): void {
   const log = createDiagnosticLog()
-  const platform = selectPlatform(process.platform, { log })
+  const platform = selectPlatform(process.platform, { log, inherited: process.env })
   // `userData` honors XDG_CONFIG_HOME on Linux (~/.config/Veydr by default). The single-instance
   // lock above makes this process the only configuration writer.
   const configDir = app.getPath('userData')
@@ -79,13 +82,23 @@ function start(): void {
         files: [],
       }),
   })
+  // The login environment is read on the first start or preview, not at launch (design D6).
+  const environmentNotices: string[] = []
+  const environment = createEnvironmentService({
+    provider: platform.envProvider,
+    // A resolution replaces the warnings of the previous one (e.g. a successful refresh withdraws them).
+    onWarnings: (warnings) => {
+      for (const id of environmentNotices.splice(0)) notices.withdraw(id)
+      for (const message of warnings) environmentNotices.push(notices.add({ kind: 'environment', severity: 'warning', message, files: [] }).id)
+    },
+  })
   // Commands start only on an explicit user request (`processes.start`/`restart`); nothing is started here.
   // Output is drained and discarded until the log pipeline (L6) consumes it.
   const supervisor = createSupervisor({
     processTree: platform.processTree,
     states: processStates,
     lookup: (commandId) => findCommand(config.current(), commandId),
-    plan: createInterimPlanner(process.env),
+    plan: createPlanner({ resolver: platform.commandResolver, environment }),
     ledger,
     log,
   })
@@ -120,7 +133,22 @@ function start(): void {
     log,
   })
   registerEventSubscriptions(registry, hub)
-  registerOperations(registry, createOperationHandlers({ info, config: () => config.current(), processStates, supervisor, recovery }))
+  const projects = createProjectService({
+    store: config,
+    activeCommands: () => new Set(supervisor.active().map((run) => run.commandId)),
+  })
+  const desktop = createDesktopActions({
+    config: () => config.current(),
+    showDirectoryPicker: () => pickDirectory(mainWindow),
+    openPath: (path) => shell.openPath(path),
+    launcher: platform.processTree,
+    resolver: platform.commandResolver,
+    environment,
+  })
+  registerOperations(
+    registry,
+    createOperationHandlers({ info, config: () => config.current(), processStates, supervisor, recovery, projects, environment, desktop }),
+  )
 
   // Quitting stops every running command first (design D10); see `app/quit.ts`.
   const orchestrator = createQuitOrchestrator({
@@ -262,6 +290,13 @@ function start(): void {
       }
     })
     .catch((error: unknown) => fatal(`Startup failed: ${error instanceof Error ? error.message : String(error)}`))
+}
+
+/** The native folder picker; `null` if cancelled. */
+async function pickDirectory(window: BrowserWindow | null): Promise<string | null> {
+  const options = { title: 'Choose a project folder', properties: ['openDirectory' as const] }
+  const { canceled, filePaths } = window === null || window.isDestroyed() ? await dialog.showOpenDialog(options) : await dialog.showOpenDialog(window, options)
+  return canceled ? null : (filePaths[0] ?? null)
 }
 
 /** Lists what could not be stopped and asks the user to retry or quit anyway (design D10). */

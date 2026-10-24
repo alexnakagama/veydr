@@ -26,7 +26,8 @@ export const getInfoRequestSchema = z.undefined()
  *   (listed in `processes`); the user resolves them with `processes.resolveSurvivors`;
  * - `ledger-problem`: the record of running commands could not be read, written, or checked, so
  *   such processes may go unnoticed;
- * - `quitting`: Veydr is stopping every running command before it exits.
+ * - `quitting`: Veydr is stopping every running command before it exits;
+ * - `environment`: the login shell environment could not be read, so commands get Veydr's own.
  */
 export const noticeKinds = [
   'recovered-from-backup',
@@ -37,6 +38,7 @@ export const noticeKinds = [
   'crash-survivors',
   'ledger-problem',
   'quitting',
+  'environment',
 ] as const
 export type NoticeKind = (typeof noticeKinds)[number]
 

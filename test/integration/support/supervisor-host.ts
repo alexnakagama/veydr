@@ -11,7 +11,9 @@ import { createInterface } from 'node:readline'
 import { createDiagnosticLog } from '../../../src/main/app/diagnostics'
 import { createLinuxProcessTree } from '../../../src/main/platform/linux/process-tree'
 import { createRunLedger } from '../../../src/main/supervisor/ledger'
-import { createInterimPlanner } from '../../../src/main/supervisor/plan'
+import { createLinuxCommandResolver } from '../../../src/main/platform/linux/resolver'
+import { withoutRuntimeVariables } from '../../../src/main/platform/runtime-env'
+import { createPlanner } from '../../../src/main/supervisor/plan'
 import { createProcessStateRegistry } from '../../../src/main/supervisor/state'
 import { createSupervisor, type LaunchTarget } from '../../../src/main/supervisor/supervisor'
 
@@ -30,7 +32,10 @@ const supervisor = createSupervisor({
   processTree: createLinuxProcessTree({ log, scanIntervalMs: 100 }),
   states: createProcessStateRegistry(() => undefined),
   lookup: (id) => (id === options.target.command.id ? options.target : null),
-  plan: createInterimPlanner(process.env),
+  plan: createPlanner({
+    resolver: createLinuxCommandResolver(),
+    environment: { base: () => Promise.resolve({ env: withoutRuntimeVariables(process.env), warnings: [] }) },
+  }),
   ledger,
   log,
 })

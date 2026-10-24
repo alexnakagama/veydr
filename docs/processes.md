@@ -6,8 +6,11 @@ This page describes how Veydr starts, tracks, and stops the commands you configu
 
 Veydr starts a command only when you press **Start** or **Restart** for it. Nothing is started automatically, and a command that exits on its own is never restarted.
 
-- **Direct mode** runs the executable with its arguments exactly as configured; no shell interprets them. A name without `/` is looked up on `PATH`; a path containing `/` is relative to the working directory.
+- **Direct mode** runs the executable with its arguments exactly as configured; no shell interprets them. A name without `/` is looked up on the command's `PATH` (your login environment with your overrides) before anything is started; a path containing `/` is relative to the working directory.
 - **Shell mode** runs `<shell> -c <script>` with the shell you selected.
+- The command gets your login shell's environment, without Veydr's own runtime variables, with your overrides applied last. See [commands.md](commands.md) for modes, the environment, and secrets.
+- The project folder must exist, and the working directory must stay inside it, also after resolving symbolic links.
+- The command receives only standard input, output, and error (descriptors 0–2); descriptors Veydr itself holds open are closed before the command runs.
 - Standard input is not connected (`/dev/null`). Standard output and error are always read, even when nobody looks at them, so a command never blocks on writing output.
 - Each command runs in its own session and process group (its first process, the *leader*, has PID = process group ID = session ID). This keeps signals for the command away from Veydr and from everything else you run.
 
@@ -15,6 +18,8 @@ If a command cannot be started, it shows **Failed** with the reason, and no proc
 
 | Reason shown | Cause |
 |---|---|
+| `The project folder is missing: <path>` | The project's folder was deleted or moved; relocate the project. |
+| `The working directory "<dir>" is outside the project folder <path>` | The working directory leaves the project folder (directly, or through a symbolic link). |
 | `Executable not found: <name> (searched PATH)` / `Executable not found: <path>` | No such executable. |
 | `Permission denied: <path> is not executable` | The file exists but is not executable. |
 | `Working directory does not exist: <path>` | The working directory is missing. |
@@ -123,5 +128,5 @@ Evidence: `test/unit/linux-process-tree.test.ts` › "reports a process it is no
 
 These parts of process management are scheduled for later steps of the Linux MVP and do not exist in this build:
 
-- **Command resolution and environment.** Commands get Veydr's own environment (without Electron's variables) plus your overrides, not your login shell's environment, and the working directory is checked only lexically (`..` cannot leave the project folder; symbolic links are not resolved yet). Variables an AppImage runtime adds to existing ones (for example `LD_LIBRARY_PATH`, `PYTHONPATH`, `XDG_DATA_DIRS`) are not cleaned yet.
+- **AppImage variables.** Variables an AppImage runtime adds to existing ones (for example `LD_LIBRARY_PATH`, `PYTHONPATH`, `XDG_DATA_DIRS`) are not cleaned yet (packaging step).
 - **Logs.** Output is read and discarded; it is not shown yet.

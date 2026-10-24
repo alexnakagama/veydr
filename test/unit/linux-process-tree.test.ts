@@ -99,7 +99,8 @@ class SimulatedSystem {
       scanIntervalMs: 60_000,
       log: quietLog(),
     })
-    return tree.spawn({ file: '/usr/bin/p500', args: [], cwd: '/', env: {} })
+    // The executable and directory are checked on the real file system before the (simulated) spawn.
+    return tree.spawn({ file: process.execPath, args: [], cwd: '/', env: {} })
   }
 
   signalled(pid: number): string[] {

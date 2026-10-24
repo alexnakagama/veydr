@@ -1,10 +1,11 @@
-import { spawn as nodeSpawn, type ChildProcess, type SpawnOptions } from 'node:child_process'
+import type { ChildProcess } from 'node:child_process'
 import { once } from 'node:events'
 import { constants } from 'node:fs'
 import { access, stat } from 'node:fs/promises'
 import type { Readable } from 'node:stream'
 import { SpawnError } from '../errors'
 import type { ExitInfo, ManagedProcess, PlatformLog, ProcInfo, ProcessIdentity, ProcessTree, SpawnPlan, StopResult } from '../types'
+import { createCleanSpawner, findExecutable, spawnChildDirectly, type CleanSpawner, type SpawnChild } from './executable'
 import { createProcReader, type ProcReader } from './proc-reader'
 import { displayName, isLive, type ProcStat } from './procfs'
 
@@ -12,7 +13,8 @@ export interface LinuxProcessTreeOptions {
   readonly proc?: ProcReader
   /** Sends a signal (`process.kill`); a negative target is a process group. */
   readonly kill?: (target: number, signal: NodeJS.Signals) => void
-  readonly spawnChild?: (file: string, args: readonly string[], options: SpawnOptions) => ChildProcess
+  /** Spawns the exec wrapper (or the program itself where the wrapper is unavailable). */
+  readonly spawnChild?: SpawnChild
   /** Attribution scan interval while runs are active (design D8: 2 s). */
   readonly scanIntervalMs?: number
   /** Poll interval while waiting for a stopped tree to end (design D8: 100 ms). */
@@ -74,9 +76,11 @@ export function parseLinuxIdentity(identity: ProcessIdentity): { readonly bootId
  * parent links (tracked by PID and start time), which catches descendants that later change
  * group or session while Veydr watched.
  */
-export function createLinuxProcessTree(options: LinuxProcessTreeOptions = {}): Pick<ProcessTree, 'spawn'> {
+export function createLinuxProcessTree(options: LinuxProcessTreeOptions = {}): Pick<ProcessTree, 'spawn' | 'launchDetached'> {
   const proc = options.proc ?? createProcReader()
-  const spawnChild = options.spawnChild ?? ((file, args, opts) => nodeSpawn(file, args, opts))
+  const spawner = createCleanSpawner(options.spawnChild ?? spawnChildDirectly, () =>
+    options.log?.record('warn', 'process.exec-wrapper-unavailable', { reason: 'bash or env not found; nothing is started' }),
+  )
   let scans = 0
   const scan = async (): Promise<Scan> => {
     const seq = ++scans
@@ -94,27 +98,15 @@ export function createLinuxProcessTree(options: LinuxProcessTreeOptions = {}): P
 
   return {
     async spawn(plan) {
-      await checkWorkingDirectory(plan.cwd)
       // Everything that can fail without a process is done before one exists.
+      const file = await checkLaunch(plan)
       let bootId: string
       try {
         bootId = proc.bootId()
       } catch (error) {
         throw new SpawnError('other', `Could not start ${plan.file}: ${messageOf(error)}`)
       }
-      let child: ChildProcess
-      try {
-        child = spawnChild(plan.file, plan.args, {
-          cwd: plan.cwd,
-          env: { ...plan.env },
-          detached: true,
-          stdio: ['ignore', 'pipe', 'pipe'],
-          shell: false,
-        })
-      } catch (error) {
-        // Invalid arguments are rejected synchronously by Node, before any process exists.
-        throw new SpawnError('other', `Could not start ${plan.file}: ${messageOf(error)}`)
-      }
+      const child = await spawnChecked(spawner, file, plan, { detached: true, stdio: ['ignore', 'pipe', 'pipe'] })
 
       const pid = child.pid
       if (pid === undefined) {
@@ -138,6 +130,40 @@ export function createLinuxProcessTree(options: LinuxProcessTreeOptions = {}): P
       }
       return new LinuxRun(child, leader, bootId, ctx)
     },
+
+    async launchDetached(plan) {
+      const file = await checkLaunch(plan)
+      // Its own session and no pipes: the program is neither tracked nor signalled by Veydr and
+      // keeps running when Veydr quits.
+      const child = await spawnChecked(spawner, file, plan, { detached: true, stdio: 'ignore' })
+      if (child.pid === undefined) {
+        const [error] = (await once(child, 'error')) as [unknown]
+        throw await spawnFailure(error, plan)
+      }
+      child.on('error', (error) => ctx.log?.record('warn', 'process.detached-error', { message: error.message }))
+      child.unref()
+    },
+  }
+}
+
+/** Checks the working directory and the executable of `plan`; returns the executable's absolute path. */
+async function checkLaunch(plan: SpawnPlan): Promise<string> {
+  await checkWorkingDirectory(plan.cwd)
+  return findExecutable(plan.file, plan.cwd, plan.env)
+}
+
+/** Spawns through the exec wrapper; invalid arguments are rejected by Node before any process exists. */
+async function spawnChecked(
+  spawner: CleanSpawner,
+  file: string,
+  plan: SpawnPlan,
+  options: { readonly detached: true; readonly stdio: 'ignore' | ['ignore', 'pipe', 'pipe'] },
+): Promise<ChildProcess> {
+  try {
+    return await spawner.spawn(file, plan.args, { cwd: plan.cwd, env: { ...plan.env }, shell: false, ...options })
+  } catch (error) {
+    if (error instanceof SpawnError) throw error
+    throw new SpawnError('other', `Could not start ${plan.file}: ${messageOf(error)}`)
   }
 }
 

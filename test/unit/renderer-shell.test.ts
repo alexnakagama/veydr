@@ -2,6 +2,7 @@ import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
 import { Shell, type InfoState, type ShellProps } from '../../src/renderer/src/App'
+import type { ProjectActions } from '../../src/renderer/src/state/actions'
 import type { ProcessesState } from '../../src/renderer/src/state/processes'
 import type { AppInfo, CommandProcessState, Notice, ProjectView } from '../../src/shared/api'
 
@@ -17,6 +18,9 @@ const info = (overrides: Partial<AppInfo>): InfoState => ({
   },
 })
 
+/** Project actions that fail; rendering never calls them. */
+const noActions = new Proxy({} as ProjectActions, { get: () => () => Promise.resolve({ ok: false, message: 'unused' }) })
+
 const noProcesses: ProcessesState = { status: 'ready', error: null, liveError: null, commands: new Map() }
 
 const render = (state: InfoState, overrides: Partial<ShellProps> = {}): string =>
@@ -30,6 +34,7 @@ const render = (state: InfoState, overrides: Partial<ShellProps> = {}): string =
       projects: { status: 'ready', projects: [] },
       processes: noProcesses,
       onLifecycle: () => Promise.resolve(null),
+      actions: noActions,
       ...overrides,
     }),
   )
@@ -39,6 +44,7 @@ const shop: ProjectView = {
   id: '7a2e9b5d-4d2f-4f66-8b8c-1e7e2a3c0b12',
   name: 'shop',
   path: '/home/dev/shop',
+  missing: false,
   commands: [
     {
       id: commandId,
@@ -267,6 +273,23 @@ describe('renderer shell', () => {
       expect(html).toContain('data-testid="command-stop-error"')
       expect(html).toContain('Could not verify that the command stopped: EMFILE')
       expect(withState({ status: 'exited', exit: { code: 0, signal: null, forced: false } })).not.toContain('command-stop-error')
+    })
+
+    it('[spec:project-registry/directory-missing] shows a project whose folder is missing and disables starting its commands', () => {
+      const html = render(info({}), { projects: { status: 'ready', projects: [{ ...shop, missing: true }] } })
+      expect(html).toContain('data-testid="project-missing-badge"')
+      expect(html).toContain('Folder missing')
+      expect(buttons(html)).toEqual({ Start: false, Stop: false, Restart: false })
+      expect(buttons(withState({}))).toEqual({ Start: true, Stop: false, Restart: false })
+    })
+
+    it('[spec:project-registry/shell-mode-labelled] labels a shell command with its shell in the command list', () => {
+      const shellCommand = { ...shop.commands[0], execution: { mode: 'shell' as const, shell: '/bin/bash', script: 'npm run dev | tee log' } } as ProjectView['commands'][number]
+      const html = render(info({}), { projects: { status: 'ready', projects: [{ ...shop, commands: [shellCommand] }] } })
+      expect(html).toContain('data-testid="command-shell-label"')
+      expect(html).toContain('Shell: /bin/bash')
+      expect(html).toContain('npm run dev | tee log')
+      expect(render(info({}), { projects: { status: 'ready', projects: [shop] } })).not.toContain('command-shell-label')
     })
 
     it('[spec:process-supervision/process-could-not-be-terminated] lists survivors with PID and name as an alert', () => {

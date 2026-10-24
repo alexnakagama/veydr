@@ -113,7 +113,11 @@ export interface PortSnapshot {
 export interface ProcessTree {
   /** Starts `plan`; rejects with `SpawnError` (and creates no process) if it cannot be started. */
   spawn(plan: SpawnPlan): Promise<ManagedProcess>
-  launchDetached(plan: SpawnPlan): void
+  /**
+   * Starts `plan` unsupervised (e.g. an editor): never tracked, signalled, or stopped by Veydr, and
+   * it keeps running when Veydr quits. Resolves once started; rejects with `SpawnError` otherwise.
+   */
+  launchDetached(plan: SpawnPlan): Promise<void>
   /**
    * Processes of recorded runs that are still alive, each verified to be the recorded process
    * (design D9). Runs recorded during another boot have none. Nothing is signalled.
@@ -127,10 +131,15 @@ export interface ProcessTree {
 }
 
 export interface CommandResolver {
-  resolve(spec: CommandSpec, env: Env): ResolveResult
+  /** How to start `spec` with `env`, or why it cannot start (diagnostics meant for the user). */
+  resolve(spec: CommandSpec, env: Env): Promise<ResolveResult>
 }
 
 export interface EnvProvider {
+  /**
+   * The environment commands start from (the user's login environment without Veydr's runtime
+   * variables), resolved anew on every call; `warnings` explain a fallback.
+   */
   base(): Promise<{ env: Env; warnings: string[] }>
 }
 
