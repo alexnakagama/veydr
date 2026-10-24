@@ -13,17 +13,31 @@ export interface NoticeCenter {
    * so `list()` (and a reloaded window) will not include it.
    */
   add(notice: Omit<Notice, 'id'>): Notice
+  /**
+   * Stops retaining a notice that no longer applies (e.g. resolved survivors), so documents that
+   * subscribe later do not receive it. Documents that already show it are not told; the one that
+   * resolved it hides it.
+   */
+  withdraw(id: string): void
   list(): readonly Notice[]
 }
 
 const severityRank: Readonly<Record<NoticeSeverity, number>> = { info: 0, warning: 1, error: 2 }
+
+const sameProcesses = (a: Notice['processes'], b: Notice['processes']): boolean =>
+  (a ?? []).length === (b ?? []).length &&
+  (a ?? []).every((p, i) => {
+    const other = b?.[i]
+    return other !== undefined && p.pid === other.pid && p.name === other.name && p.commandLine === other.commandLine
+  })
 
 const sameNotice = (a: Omit<Notice, 'id'>, b: Omit<Notice, 'id'>): boolean =>
   a.kind === b.kind &&
   a.severity === b.severity &&
   a.message === b.message &&
   a.files.length === b.files.length &&
-  a.files.every((file, i) => file === b.files[i])
+  a.files.every((file, i) => file === b.files[i]) &&
+  sameProcesses(a.processes, b.processes)
 
 /**
  * Session notices for `app.onNotice`. Every subscribing document first receives all retained
@@ -52,12 +66,21 @@ export function createNoticeCenter(hub: EventHub): NoticeCenter {
     add(notice) {
       const existing = notices.find((retained) => sameNotice(retained, notice))
       if (existing !== undefined) return existing
-      const recorded: Notice = { ...notice, files: [...notice.files], id: `notice-${next}` }
+      const recorded: Notice = {
+        ...notice,
+        files: [...notice.files],
+        ...(notice.processes === undefined ? {} : { processes: notice.processes.map((p) => ({ ...p })) }),
+        id: `notice-${next}`,
+      }
       next += 1
       notices.push(recorded)
       if (notices.length > MAX_NOTICES) evict()
       hub.publish(topic, recorded)
       return recorded
+    },
+    withdraw(id) {
+      const index = notices.findIndex((notice) => notice.id === id)
+      if (index >= 0) notices.splice(index, 1)
     },
     list: () => notices.slice(),
   }

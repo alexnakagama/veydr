@@ -1,5 +1,5 @@
 import { PassThrough } from 'node:stream'
-import type { ExitInfo, ManagedProcess, ProcInfo, ProcessTree, SpawnPlan, StopResult } from '../../../src/main/platform/types'
+import type { ExitInfo, ManagedProcess, ProcInfo, ProcessIdentity, ProcessTree, SpawnPlan, StopResult } from '../../../src/main/platform/types'
 
 /** How the next spawned fake process behaves. */
 export interface FakeBehavior {
@@ -33,6 +33,7 @@ const delay = (ms: number): Promise<void> => new Promise((done) => setTimeout(do
 /** A fake run: a leader plus a count of live descendants. */
 export class FakeProcess implements ManagedProcess {
   readonly identity
+  readonly sessionId: number
   readonly stdout = new PassThrough()
   readonly stderr = new PassThrough()
   leaderAlive = true
@@ -41,6 +42,7 @@ export class FakeProcess implements ManagedProcess {
   stopGraceMs: number[] = []
   private exitInfo: ExitInfo | null = null
   private readonly listeners: ((e: ExitInfo) => void)[] = []
+  private readonly descendantListeners: ((d: readonly ProcessIdentity[]) => void)[] = []
   private stopping: Promise<StopResult> | null = null
 
   constructor(
@@ -51,6 +53,7 @@ export class FakeProcess implements ManagedProcess {
     descendants = 2,
   ) {
     this.identity = { pid, token: `fake:${pid}` }
+    this.sessionId = pid
     this.descendants = descendants
   }
 
@@ -65,6 +68,15 @@ export class FakeProcess implements ManagedProcess {
       return
     }
     this.listeners.push(cb)
+  }
+
+  onDescendantsChange(cb: (d: readonly ProcessIdentity[]) => void): void {
+    this.descendantListeners.push(cb)
+  }
+
+  /** Simulates an observation that found `descendants`. */
+  observeDescendants(descendants: readonly ProcessIdentity[]): void {
+    for (const cb of this.descendantListeners) cb(descendants)
   }
 
   /** The leader exits on its own, leaving `behavior.leftovers` descendants. */

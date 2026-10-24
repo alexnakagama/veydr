@@ -1,6 +1,7 @@
 import { NotImplementedError } from '../errors'
 import type { Platform, PlatformLog } from '../types'
 import { createLinuxProcessTree } from './process-tree'
+import { createLinuxSurvivors } from './survivors'
 
 const notYet = (operation: string): never => {
   throw new NotImplementedError(operation)
@@ -13,20 +14,22 @@ export interface LinuxPlatformOptions {
 }
 
 /**
- * Linux platform. Process trees are implemented (L3); the remaining operations are placeholders
- * until their task groups land (survivors in L4, detached launch, resolver and environment in L5,
- * ports in L7).
+ * Linux platform. Process trees (L3) and crash survivors (L4) are implemented; the remaining
+ * operations are placeholders until their task groups land (detached launch, resolver and
+ * environment in L5, ports in L7).
  */
 export function createLinuxPlatform(options: LinuxPlatformOptions = {}): Platform {
-  const tree = createLinuxProcessTree(options.log === undefined ? {} : { log: options.log })
+  const logOption = options.log === undefined ? {} : { log: options.log }
+  const tree = createLinuxProcessTree(logOption)
+  const survivors = createLinuxSurvivors(logOption)
   return {
     name: 'linux',
     supported: true,
     processTree: {
       spawn: (plan) => tree.spawn(plan),
       launchDetached: () => notYet('processTree.launchDetached'),
-      findSurvivors: () => notYetAsync('processTree.findSurvivors'),
-      terminateSurvivors: () => notYetAsync('processTree.terminateSurvivors'),
+      findSurvivors: (entries) => survivors.findSurvivors(entries),
+      terminateSurvivors: (found) => survivors.terminateSurvivors(found),
     },
     commandResolver: {
       resolve: () => notYet('commandResolver.resolve'),

@@ -1,7 +1,9 @@
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
+import { QUIT_DEADLINE_MARGIN_MS, SIGNAL_DEADLINE_MS } from '../../src/main/app/quit'
 import { KILL_WAIT_MS, POLL_INTERVAL_MS, SCAN_INTERVAL_MS } from '../../src/main/platform/linux/process-tree'
+import { LEDGER_DIR, LEDGER_FILE, LEDGER_UPDATE_INTERVAL_MS } from '../../src/main/supervisor/ledger'
 import { DEFAULT_STOP_TIMEOUT_MS, MAX_STOP_TIMEOUT_MS } from '../../src/shared/config'
 
 const root = join(__dirname, '../..')
@@ -25,10 +27,21 @@ describe('docs/processes.md matches the implementation', () => {
     expect(doc).toContain(`${DEFAULT_STOP_TIMEOUT_MS / 1000} seconds by default, configurable per command from 0 to ${MAX_STOP_TIMEOUT_MS / 1000} seconds`)
   })
 
-  it('states the escaped-descendant and PID-race limitations (the crash limitation follows in L4, task 5.6)', () => {
-    const titles = limitations().map((l) => l.title)
-    expect(titles).toContain('Escaped descendants')
-    expect(titles).toContain('PID reuse between check and signal')
+  it('documents quit, signal, and crash-recovery timing and files', () => {
+    expect(doc).toContain(`the longest stop timeout of those commands plus ${QUIT_DEADLINE_MARGIN_MS / 1000} seconds`)
+    expect(doc).toContain(`exits within ${SIGNAL_DEADLINE_MS / 1000} seconds`)
+    expect(doc).toContain(`then \`SIGKILL\` after ${DEFAULT_STOP_TIMEOUT_MS / 1000} seconds`)
+    expect(doc).toContain(`\`${LEDGER_DIR}/${LEDGER_FILE}\``)
+    expect(LEDGER_UPDATE_INTERVAL_MS).toBe(1000)
+    expect(doc).toContain('at most once per second')
+    expect(doc).toContain(`observes descendants every ${SCAN_INTERVAL_MS / 1000} seconds`)
+  })
+
+  it('[spec:process-supervision/limitation-documented] states the crash, escaped-descendant, and PID-race limitations', () => {
+    const found = limitations()
+    expect(found.map((l) => l.title)).toEqual(expect.arrayContaining(['Escaped descendants', 'PID reuse between check and signal', 'After an abnormal exit']))
+    expect(found.find((l) => l.title === 'After an abnormal exit')?.body).toContain('keep running **until Veydr is started again**')
+    expect(found.find((l) => l.title === 'Escaped descendants')?.body).toContain('Veydr cannot stop it')
   })
 
   it('backs every documented limitation with an existing test or recorded measurement', () => {

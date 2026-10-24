@@ -80,9 +80,35 @@ describe('notice center (app.onNotice)', () => {
     expect(window.sent).toHaveLength(2)
   })
 
+  it('tells notices apart by the processes they list, and copies them', () => {
+    const { notices } = setup()
+    const node = { pid: 10, name: 'node', commandLine: 'node server.js' }
+    const survivors: Omit<Notice, 'id'> = { kind: 'crash-survivors', severity: 'warning', message: '1 process is still running.', files: [], processes: [node] }
+    const first = notices.add(survivors)
+    expect(notices.add({ ...survivors, processes: [{ ...node }] })).toBe(first)
+    expect(notices.add({ ...survivors, processes: [{ ...node, pid: 11 }] })).not.toBe(first)
+    expect(notices.add({ ...survivors, processes: [] })).not.toBe(first)
+    expect(first.processes).toEqual([node])
+    expect(first.processes?.[0]).not.toBe(node)
+    expect(noticeSchema.safeParse(first).success).toBe(true)
+  })
+
+  it('withdraws a notice so later subscribers do not receive it', () => {
+    const { hub, notices } = setup()
+    const kept = notices.add(recovered)
+    const withdrawn = notices.add({ ...recovered, kind: 'crash-survivors', processes: [{ pid: 3, name: 'x', commandLine: 'x' }] })
+    notices.withdraw(withdrawn.id)
+    notices.withdraw('notice-unknown')
+    expect(notices.list()).toEqual([kept])
+    const window = contents(2)
+    hub.subscribe(window, topic, token)
+    expect(window.sent.map((m) => (m as Notice).id)).toEqual([kept.id])
+  })
+
   it('maps every configuration notice kind to a notice kind with a severity', () => {
     const kinds: readonly ConfigNoticeKind[] = ['recovered-from-backup', 'reset-to-empty', 'newer-schema', 'preservation-failed', 'save-failed']
-    expect([...kinds].sort()).toEqual([...noticeKinds].sort())
+    // The other notice kinds come from crash recovery and quitting (L4).
+    expect([...kinds, 'crash-survivors', 'ledger-problem', 'quitting'].sort()).toEqual([...noticeKinds].sort())
     for (const kind of kinds) {
       const notice = noticeFromConfig({ kind, message: 'm', files: ['/a'] })
       expect(notice.kind).toBe(kind)

@@ -1,9 +1,10 @@
 import { randomUUID } from 'node:crypto'
 import type { CommandProcessState, RunState } from '../../shared/api'
 import type { CommandConfig, ProjectConfig } from '../../shared/config'
-import { NotFoundError } from '../errors'
+import { NotFoundError, ShuttingDownError } from '../errors'
 import { SpawnError, UnsupportedPlatformError } from '../platform/errors'
 import type { ExitInfo, ManagedProcess, PlatformLog, ProcInfo, ProcessTree, SpawnPlan, StopResult } from '../platform/types'
+import type { RunLedger } from './ledger'
 import type { ProcessStateRegistry } from './state'
 
 /** A configured command together with its project. */
@@ -31,6 +32,8 @@ export interface SupervisorDeps {
   readonly lookup: (commandId: string) => LaunchTarget | null
   readonly plan: (target: LaunchTarget) => Promise<PlanResult>
   readonly output?: OutputSink
+  /** Durable record of runs whose processes may be alive (crash recovery, design D9). */
+  readonly ledger?: Pick<RunLedger, 'add' | 'updateDescendants' | 'remove'>
   readonly log: PlatformLog
   readonly now?: () => number
   readonly newRunId?: () => string
@@ -47,6 +50,22 @@ export interface Supervisor {
   stop(commandId: string): Promise<CommandProcessState>
   /** Stops the current run completely, then starts a new one (spec: restart a running command). */
   restart(commandId: string): Promise<CommandProcessState>
+  /**
+   * Quit (design D10): from now on starts and restarts are refused (`ShuttingDownError`); stops
+   * every command's current run in parallel, each with its own stop timeout. Resolves once every
+   * command has processed its stop; how it went is in the states and the ledger.
+   */
+  stopAll(): Promise<void>
+  /**
+   * Commands with a run whose processes may be alive, including a run still being started (being
+   * planned or spawned), with the stop timeout that applies to each.
+   */
+  active(): readonly ActiveRun[]
+}
+
+export interface ActiveRun {
+  readonly commandId: string
+  readonly graceMs: number
 }
 
 interface Run {
@@ -66,12 +85,15 @@ interface CommandActor {
   start(): Promise<void>
   stop(): Promise<void>
   restart(): Promise<void>
+  /** Stop timeout of the run whose processes may be alive or that is being started, or `null` if there is none. */
+  activeGraceMs(): number | null
 }
 
 const errorMessage = (error: unknown): string => (error instanceof Error ? error.message : String(error))
 
 export function createSupervisor(deps: SupervisorDeps): Supervisor {
   const actors = new Map<string, CommandActor>()
+  let shuttingDown = false
 
   const stateOf = (commandId: string): CommandProcessState => {
     const [state] = deps.states.snapshot([commandId]).commands
@@ -95,10 +117,30 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
     return stateOf(commandId)
   }
 
+  const refuseWhenShuttingDown = (): void => {
+    if (shuttingDown) throw new ShuttingDownError('Veydr is quitting; commands cannot be started.')
+  }
+
   return {
-    start: (commandId) => act(commandId, (actor) => actor.start()),
+    start: async (commandId) => {
+      refuseWhenShuttingDown()
+      return act(commandId, (actor) => actor.start())
+    },
     stop: (commandId) => act(commandId, (actor) => actor.stop()),
-    restart: (commandId) => act(commandId, (actor) => actor.restart()),
+    restart: async (commandId) => {
+      refuseWhenShuttingDown()
+      return act(commandId, (actor) => actor.restart())
+    },
+    async stopAll() {
+      shuttingDown = true
+      // A start queued before this point runs first; the stop queued here then ends its run.
+      await Promise.all([...actors.values()].map((actor) => actor.stop()))
+    },
+    active: () =>
+      [...actors.entries()].flatMap(([commandId, actor]) => {
+        const graceMs = actor.activeGraceMs()
+        return graceMs === null ? [] : [{ commandId, graceMs }]
+      }),
   }
 }
 
@@ -121,6 +163,8 @@ function createCommandActor(commandId: string, deps: SupervisorDeps): CommandAct
   let status: Status = 'idle'
   /** The run whose processes may be alive; set from spawn until the run has ended. */
   let current: Run | null = null
+  /** Stop timeout of a run being planned or spawned (not yet `current`). */
+  let startingGraceMs: number | null = null
   let tail: Promise<unknown> = Promise.resolve()
 
   const enqueue = (action: () => Promise<void>): Promise<void> => {
@@ -152,10 +196,15 @@ function createCommandActor(commandId: string, deps: SupervisorDeps): CommandAct
     readable.on('error', (error) => deps.log.record('warn', 'supervisor.output-error', { commandId, runId: run.runId, stream, message: error.message }))
   }
 
-  /** Ends `run`. `error` says why the end could not be verified (the stop itself failed). */
+  /**
+   * Ends `run`. `error` says why the end could not be verified (the stop itself failed). The run
+   * leaves the ledger only if nothing of it is known to be alive; otherwise the next launch after
+   * a crash still finds its survivors.
+   */
   const finish = (run: Run, forced: boolean, survivors: readonly ProcInfo[], error: string | null = null): void => {
     run.ended = true
     if (current === run) current = null
+    if (survivors.length === 0 && error === null) deps.ledger?.remove(run.runId)
     const exit = run.leaderExit
     record(run.runId, {
       status: 'exited',
@@ -216,6 +265,7 @@ function createCommandActor(commandId: string, deps: SupervisorDeps): CommandAct
     const runId = newRunId()
     record(runId, { status: 'starting' })
     let process: ManagedProcess
+    startingGraceMs = target.command.stopTimeoutMs
     try {
       const planned = await deps.plan(target)
       if (!planned.ok) return record(runId, { status: 'failed', error: planned.reason })
@@ -225,6 +275,8 @@ function createCommandActor(commandId: string, deps: SupervisorDeps): CommandAct
       if (error instanceof UnsupportedPlatformError) throw error
       if (!(error instanceof SpawnError)) deps.log.record('error', 'supervisor.start-failed', { commandId, runId, message: errorMessage(error) })
       return
+    } finally {
+      startingGraceMs = null
     }
 
     const run: Run = { runId, process, startedAt: now(), graceMs: target.command.stopTimeoutMs, leaderExit: null, ended: false }
@@ -237,6 +289,12 @@ function createCommandActor(commandId: string, deps: SupervisorDeps): CommandAct
         deps.log.record('error', 'supervisor.exit-handling-failed', { commandId, runId, message: errorMessage(error) }),
       )
     })
+    // The run is reported running only once its record is on disk. A crash between spawn and the
+    // end of that write (normally a few milliseconds) leaves the run unrecorded (docs/processes.md).
+    // Descendants are forwarded after the entry exists, so none observed meanwhile is dropped.
+    const recorded = deps.ledger?.add({ commandId, runId, leader: process.identity, sessionId: process.sessionId, descendants: [] })
+    process.onDescendantsChange((descendants) => deps.ledger?.updateDescendants(runId, descendants))
+    await recorded
     record(runId, { status: 'running', pid: process.pid, startedAt: run.startedAt })
   }
 
@@ -253,5 +311,6 @@ function createCommandActor(commandId: string, deps: SupervisorDeps): CommandAct
     stop: () => enqueue(async () => void (await stop())),
     // A run that could not be stopped completely is not replaced: the survivors are reported instead.
     restart: () => enqueue(async () => ((await stop()) ? start() : undefined)),
+    activeGraceMs: () => (current === null ? startingGraceMs : graceFor(current)),
   }
 }

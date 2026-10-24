@@ -6,6 +6,7 @@ import { createLifecycleRequest, type LifecycleAction, type LifecycleRequest } f
 import type { ProcessesState } from './state/processes'
 import type { ProjectsState } from './state/projects'
 import { UNREACHABLE, useStore } from './state/store'
+import { createSurvivorRequest, type SurvivorAction, type SurvivorRequest } from './state/survivors'
 
 type View = 'projects' | 'about'
 
@@ -42,12 +43,14 @@ export function App({ stores }: { stores: Stores }): JSX.Element {
   const projects = useStore(stores.projects)
   const processes = useStore(stores.processes)
   const onLifecycle = useMemo(() => createLifecycleRequest(window.veydr.processes), [])
+  const onResolveSurvivors = useMemo(() => createSurvivorRequest(window.veydr.processes), [])
   return (
     <Shell
       info={info}
       notices={notices.visible}
       noticeError={notices.error}
       onDismissNotice={(id) => stores.notices.dismiss(id)}
+      onResolveSurvivors={onResolveSurvivors}
       projects={projects}
       processes={processes}
       onLifecycle={onLifecycle}
@@ -61,78 +64,90 @@ export interface ShellProps {
   /** Why notices cannot be received, if they cannot. */
   readonly noticeError: string | null
   readonly onDismissNotice: (id: string) => void
+  readonly onResolveSurvivors: SurvivorRequest
   readonly projects: ProjectsState
   readonly processes: ProcessesState
   readonly onLifecycle: LifecycleRequest
 }
 
 /** The window layout for given states; separate from `App` so it renders without IPC. */
-export function Shell({ info, notices, noticeError, onDismissNotice, projects, processes, onLifecycle }: ShellProps): JSX.Element {
+export function Shell({ info, notices, noticeError, onDismissNotice, onResolveSurvivors, projects, processes, onLifecycle }: ShellProps): JSX.Element {
   const [view, setView] = useState<View>('projects')
+  const quitting = notices.find((notice) => notice.kind === 'quitting')
+  const banners = notices.filter((notice) => notice.kind !== 'quitting')
 
   return (
-    <div className="shell">
-      <aside className="sidebar" aria-label="Sidebar">
-        <div className="brand">Veydr</div>
-        <nav aria-label="Main">
-          <ul className="nav-list">
-            {views.map((v) => (
-              <li key={v.id}>
-                <button
-                  type="button"
-                  className="nav-item"
-                  aria-current={view === v.id ? 'page' : undefined}
-                  onClick={() => setView(v.id)}
-                >
-                  {v.label}
-                </button>
-              </li>
-            ))}
-          </ul>
-        </nav>
-        <section className="sidebar-section" aria-labelledby="sidebar-projects">
-          <h2 id="sidebar-projects" className="sidebar-heading">
-            Projects
-          </h2>
-          {projects.status === 'ready' && projects.projects.length > 0 ? (
-            <ul className="sidebar-projects" data-testid="sidebar-projects">
-              {projects.projects.map((project) => (
-                <li key={project.id}>{project.name}</li>
+    <>
+      <div className="shell" inert={quitting !== undefined}>
+        <aside className="sidebar" aria-label="Sidebar">
+          <div className="brand">Veydr</div>
+          <nav aria-label="Main">
+            <ul className="nav-list">
+              {views.map((v) => (
+                <li key={v.id}>
+                  <button
+                    type="button"
+                    className="nav-item"
+                    aria-current={view === v.id ? 'page' : undefined}
+                    onClick={() => setView(v.id)}
+                  >
+                    {v.label}
+                  </button>
+                </li>
               ))}
             </ul>
-          ) : (
-            <p className="sidebar-empty">{projects.status === 'loading' ? 'Loading…' : 'No projects'}</p>
-          )}
-        </section>
-        <footer className="sidebar-footer" data-testid="app-info-summary">
-          {info.status === 'ready' ? `${info.info.name} ${info.info.version} · ${info.info.platform}` : ' '}
-        </footer>
-      </aside>
+          </nav>
+          <section className="sidebar-section" aria-labelledby="sidebar-projects">
+            <h2 id="sidebar-projects" className="sidebar-heading">
+              Projects
+            </h2>
+            {projects.status === 'ready' && projects.projects.length > 0 ? (
+              <ul className="sidebar-projects" data-testid="sidebar-projects">
+                {projects.projects.map((project) => (
+                  <li key={project.id}>{project.name}</li>
+                ))}
+              </ul>
+            ) : (
+              <p className="sidebar-empty">{projects.status === 'loading' ? 'Loading…' : 'No projects'}</p>
+            )}
+          </section>
+          <footer className="sidebar-footer" data-testid="app-info-summary">
+            {info.status === 'ready' ? `${info.info.name} ${info.info.version} · ${info.info.platform}` : ' '}
+          </footer>
+        </aside>
 
-      <main className="content" aria-labelledby="view-title">
-        {info.status === 'ready' && !info.info.platformSupported && (
-          <div className="banner" role="alert">
-            Process features are not available on this platform.
-          </div>
-        )}
-        {info.status === 'error' && (
-          <div className="banner" role="alert">
-            {info.message}
-          </div>
-        )}
-        {noticeError !== null && (
-          <div className="banner" role="alert">
-            Notices are unavailable: {noticeError}
-          </div>
-        )}
-        {notices.length > 0 && <Notices notices={notices} onDismiss={onDismissNotice} />}
-        {view === 'projects' ? <ProjectsView projects={projects} processes={processes} onLifecycle={onLifecycle} /> : <AboutView info={info} />}
-      </main>
-    </div>
+        <main className="content" aria-labelledby="view-title">
+          {info.status === 'ready' && !info.info.platformSupported && (
+            <div className="banner" role="alert">
+              Process features are not available on this platform.
+            </div>
+          )}
+          {info.status === 'error' && (
+            <div className="banner" role="alert">
+              {info.message}
+            </div>
+          )}
+          {noticeError !== null && (
+            <div className="banner" role="alert">
+              Notices are unavailable: {noticeError}
+            </div>
+          )}
+          {banners.length > 0 && <Notices notices={banners} onDismiss={onDismissNotice} onResolveSurvivors={onResolveSurvivors} />}
+          {view === 'projects' ? <ProjectsView projects={projects} processes={processes} onLifecycle={onLifecycle} /> : <AboutView info={info} />}
+        </main>
+      </div>
+      {quitting !== undefined && <QuitOverlay notice={quitting} projects={projects} processes={processes} />}
+    </>
   )
 }
 
-function Notices({ notices, onDismiss }: { notices: readonly Notice[]; onDismiss: (id: string) => void }): JSX.Element {
+interface NoticesProps {
+  readonly notices: readonly Notice[]
+  readonly onDismiss: (id: string) => void
+  readonly onResolveSurvivors: SurvivorRequest
+}
+
+function Notices({ notices, onDismiss, onResolveSurvivors }: NoticesProps): JSX.Element {
   return (
     <section className="notices" aria-label="Notices">
       {notices.map((notice) => (
@@ -154,13 +169,86 @@ function Notices({ notices, onDismiss }: { notices: readonly Notice[]; onDismiss
                 ))}
               </ul>
             )}
+            {notice.processes !== undefined && notice.processes.length > 0 && (
+              <ul className="notice-processes" aria-label="Processes" data-testid="notice-processes">
+                {notice.processes.map((p) => (
+                  <li key={p.pid} data-testid="notice-process">
+                    <span className="notice-process-name">{p.name}</span> <span className="muted">PID {p.pid}</span>
+                    <code className="notice-process-command">{p.commandLine === '' ? '(command line unavailable)' : p.commandLine}</code>
+                  </li>
+                ))}
+              </ul>
+            )}
           </div>
-          <button type="button" className="notice-dismiss" onClick={() => onDismiss(notice.id)}>
-            Dismiss
-          </button>
+          {notice.kind === 'crash-survivors' ? (
+            <SurvivorActions onResolve={onResolveSurvivors} onResolved={() => onDismiss(notice.id)} />
+          ) : (
+            <button type="button" className="notice-dismiss" onClick={() => onDismiss(notice.id)}>
+              Dismiss
+            </button>
+          )}
         </div>
       ))}
     </section>
+  )
+}
+
+const survivorLabels: Readonly<Record<SurvivorAction, string>> = { terminate: 'Terminate', dismiss: 'Leave running' }
+
+/** Survivors are terminated only on this explicit choice (spec: survivors after crash). */
+function SurvivorActions({ onResolve, onResolved }: { onResolve: SurvivorRequest; onResolved: () => void }): JSX.Element {
+  const [pending, setPending] = useState<SurvivorAction | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const resolve = (action: SurvivorAction): void => {
+    setPending(action)
+    setError(null)
+    void onResolve(action).then((outcome) => {
+      setPending(null)
+      // Survivors that could not be terminated arrive as a new notice.
+      if (outcome.ok) onResolved()
+      else setError(outcome.message)
+    })
+  }
+  return (
+    <div className="notice-actions">
+      {(['terminate', 'dismiss'] as const).map((action) => (
+        <button key={action} type="button" className="notice-dismiss" disabled={pending !== null} onClick={() => resolve(action)}>
+          {pending === action ? `${survivorLabels[action]}…` : survivorLabels[action]}
+        </button>
+      ))}
+      {error !== null && (
+        <p className="notice-action-error" role="alert">
+          {error}
+        </p>
+      )}
+    </div>
+  )
+}
+
+const activeStatuses: ReadonlySet<CommandProcessState['status']> = new Set(['starting', 'running', 'stopping'])
+
+/** Covers the window while Veydr stops every command before quitting (design D10). */
+function QuitOverlay({ notice, projects, processes }: { notice: Notice; projects: ProjectsState; processes: ProcessesState }): JSX.Element {
+  const commands = projects.status === 'ready' ? projects.projects.flatMap((project) => project.commands) : []
+  const active = commands.filter((command) => {
+    const status = processes.commands.get(command.id)?.status
+    return status !== undefined && activeStatuses.has(status)
+  })
+  return (
+    <div className="quit-overlay" role="alertdialog" aria-modal="true" aria-labelledby="quit-overlay-title" data-testid="quit-overlay">
+      <div className="quit-overlay-panel">
+        <h2 id="quit-overlay-title">{notice.message}</h2>
+        {active.length > 0 && (
+          <ul className="quit-overlay-list" aria-label="Commands being stopped">
+            {active.map((command) => (
+              <li key={command.id}>
+                {command.name} <span className="muted">{statusLabels[processes.commands.get(command.id)?.status ?? 'idle']}</span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    </div>
   )
 }
 

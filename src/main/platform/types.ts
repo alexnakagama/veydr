@@ -40,10 +40,18 @@ export interface ManagedProcess {
   /** PID of the leader. */
   readonly pid: number
   readonly identity: ProcessIdentity
+  /** Session the run's processes belong to (Linux: the leader's PID); `null` where the platform has none. */
+  readonly sessionId: number | null
   readonly stdout: Readable
   readonly stderr: Readable
   /** `cb` runs once when the leader exits, or soon after registration if it already has. */
   onExit(cb: (e: ExitInfo) => void): void
+  /**
+   * `cb` runs with every observed descendant (not the leader) each time an observation changes
+   * that set, and soon after registration if descendants were observed before it (for the
+   * crash-recovery ledger, design D9).
+   */
+  onDescendantsChange(cb: (descendants: readonly ProcessIdentity[]) => void): void
   /** Attributed processes still alive, including the leader until it has exited. */
   remaining(): Promise<readonly ProcInfo[]>
   /**
@@ -106,7 +114,15 @@ export interface ProcessTree {
   /** Starts `plan`; rejects with `SpawnError` (and creates no process) if it cannot be started. */
   spawn(plan: SpawnPlan): Promise<ManagedProcess>
   launchDetached(plan: SpawnPlan): void
+  /**
+   * Processes of recorded runs that are still alive, each verified to be the recorded process
+   * (design D9). Runs recorded during another boot have none. Nothing is signalled.
+   */
   findSurvivors(entries: readonly LedgerEntry[]): Promise<Survivor[]>
+  /**
+   * Terminates survivors found by `findSurvivors`: graceful request, then forced; each process is
+   * re-verified before every signal. `survivors` of the result are those still alive afterwards.
+   */
   terminateSurvivors(s: readonly Survivor[]): Promise<StopResult>
 }
 

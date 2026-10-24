@@ -2,3 +2,8 @@
 export class NotFoundError extends Error {
   override readonly name = 'NotFoundError'
 }
+
+/** A lifecycle action was refused because Veydr is quitting (design D10). */
+export class ShuttingDownError extends Error {
+  override readonly name = 'ShuttingDownError'
+}

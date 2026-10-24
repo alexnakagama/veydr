@@ -129,6 +129,28 @@ describe('Linux process tree stop logic (simulated /proc)', () => {
     expect(run.identity).toEqual({ pid: LEADER, token: `${BOOT}:${1000 + LEADER}` })
   })
 
+  it('reports observed descendants (not the leader) for the crash ledger whenever the set changes', async () => {
+    const sim = system()
+    sim.add(501)
+    sim.add(600, { session: 600, pgrp: 600, ppid: 501 }) // left the session, linked by parent
+    const run = await sim.spawn()
+    expect(run.sessionId).toBe(LEADER)
+    const reports: string[][] = []
+    run.onDescendantsChange((descendants) => reports.push(descendants.map((d) => `${d.pid}=${d.token}`)))
+    await run.remaining()
+    expect(reports).toEqual([[`501=${BOOT}:1501`, `600=${BOOT}:1600`]])
+    await run.remaining()
+    expect(reports).toHaveLength(1)
+    // A listener registered after the descendants were observed receives them too.
+    const late: number[][] = []
+    run.onDescendantsChange((descendants) => late.push(descendants.map((d) => d.pid)))
+    await Promise.resolve()
+    expect(late).toEqual([[501, 600]])
+    sim.processes.delete(600)
+    await run.remaining()
+    expect(reports.at(-1)).toEqual([`501=${BOOT}:1501`])
+  })
+
   it('[spec:process-supervision/pid-reused-by-unrelated-process] never signals a tracked PID that now belongs to another process', async () => {
     const sim = system()
     sim.add(600, { session: 600, pgrp: 600 }) // a descendant that left the session; tracked through its parent link

@@ -26,6 +26,7 @@ const render = (state: InfoState, overrides: Partial<ShellProps> = {}): string =
       notices: [],
       noticeError: null,
       onDismissNotice: () => undefined,
+      onResolveSurvivors: () => Promise.resolve({ ok: true as const, remaining: [] }),
       projects: { status: 'ready', projects: [] },
       processes: noProcesses,
       onLifecycle: () => Promise.resolve(null),
@@ -83,6 +84,58 @@ describe('renderer shell', () => {
     expect(html).toContain('Loaded the backup.')
     expect(html).toContain('/c/config.corrupt-1.json')
     expect(html.match(/Dismiss/g)).toHaveLength(2)
+  })
+
+  it('[spec:process-supervision/survivors-after-crash] lists survivors of an earlier session with name, PID, and command line, offering to terminate them', () => {
+    const notices: Notice[] = [
+      {
+        id: 'notice-3',
+        kind: 'crash-survivors',
+        severity: 'warning',
+        message: '2 processes started by Veydr in an earlier session are still running. Nothing was restarted.',
+        files: [],
+        processes: [
+          { pid: 4242, name: 'node', commandLine: 'node server.js --port 3000' },
+          { pid: 4243, name: '<b>x</b>', commandLine: '' },
+        ],
+      },
+    ]
+    const html = render(info({}), { notices })
+    expect(html).toContain('2 processes started by Veydr in an earlier session are still running.')
+    expect(html).toContain('PID 4242')
+    expect(html).toContain('node server.js --port 3000')
+    expect(html).toContain('&lt;b&gt;x&lt;/b&gt;')
+    expect(html).toContain('(command line unavailable)')
+    expect(html).toContain('>Terminate<')
+    expect(html).toContain('>Leave running<')
+    expect(html).not.toContain('Dismiss')
+  })
+
+  it('covers the window with a stopping overlay while quitting, listing the commands still being stopped', () => {
+    const running = (status: CommandProcessState['status']): CommandProcessState => ({
+      commandId,
+      runId: '0b7c9f7e-2a64-4d1a-8f0e-5f7d8c9b1a22',
+      seq: 3,
+      status,
+      pid: 1,
+      startedAt: 1,
+      exit: null,
+      error: null,
+      survivors: [],
+    })
+    const quitting: Notice = { id: 'notice-9', kind: 'quitting', severity: 'info', message: 'Stopping running commands before quitting…', files: [] }
+    const html = render(info({}), {
+      notices: [quitting],
+      projects: { status: 'ready', projects: [shop] },
+      processes: { status: 'ready', error: null, liveError: null, commands: new Map([[commandId, running('stopping')]]) },
+    })
+    expect(html).toContain('data-testid="quit-overlay"')
+    expect(html).toContain('role="alertdialog"')
+    expect(html).toMatch(/<div class="shell" inert="">/)
+    expect(html).toMatch(/Commands being stopped.*api &lt;b&gt;server&lt;\/b&gt; <span class="muted">Stopping/)
+    // The quitting notice is not shown as a banner.
+    expect(html).not.toContain('data-kind="quitting"')
+    expect(render(info({}))).not.toContain('quit-overlay')
   })
 
   it('lists projects and their commands with the state from the process store', () => {

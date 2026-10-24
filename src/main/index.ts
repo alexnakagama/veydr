@@ -8,6 +8,7 @@ import { createDiagnosticLog } from './app/diagnostics'
 import { watchWindowHealth } from './app/health'
 import { createNoticeCenter, noticeFromConfig } from './app/notices'
 import { APP_ENTRY_URL, APP_ORIGIN, APP_SCHEME, createAppProtocolHandler } from './app/protocol'
+import { createQuitOrchestrator, SIGNAL_DEADLINE_MS, type QuitChoice } from './app/quit'
 import { hardenSession, hardenWebContents } from './app/security'
 import { createMainWindow, preloadPathFor, rendererRootFor } from './app/window'
 import { createConfigStore } from './config'
@@ -18,9 +19,12 @@ import { createIpcRegistry, originOf } from './ipc/register'
 import { selectPlatform } from './platform'
 import { runNetworkProbe } from './probe'
 import { findCommand } from './projects/lookup'
+import { createRunLedger } from './supervisor/ledger'
 import { createInterimPlanner } from './supervisor/plan'
+import { createCrashRecovery } from './supervisor/recovery'
 import { createProcessStateRegistry } from './supervisor/state'
 import { createSupervisor } from './supervisor/supervisor'
+import type { Survivor } from './platform/types'
 
 // Composition root. A second instance must exit before touching any state,
 // so the lock is the very first thing that happens.
@@ -63,6 +67,18 @@ function start(): void {
   const hub = createEventHub(log)
   const notices = createNoticeCenter(hub)
   const processStates = createProcessStateRegistry((event) => hub.publish(channels.processes.onState, event))
+  // Runs whose processes may be alive, so a launch after a crash can find survivors (design D9).
+  const ledger = createRunLedger({
+    dir: configDir,
+    log,
+    onWriteError: (message) =>
+      notices.add({
+        kind: 'ledger-problem',
+        severity: 'warning',
+        message: `Veydr could not record its running commands (${message}). If Veydr ends unexpectedly, it may not find processes it started.`,
+        files: [],
+      }),
+  })
   // Commands start only on an explicit user request (`processes.start`/`restart`); nothing is started here.
   // Output is drained and discarded until the log pipeline (L6) consumes it.
   const supervisor = createSupervisor({
@@ -70,8 +86,10 @@ function start(): void {
     states: processStates,
     lookup: (commandId) => findCommand(config.current(), commandId),
     plan: createInterimPlanner(process.env),
+    ledger,
     log,
   })
+  const recovery = createCrashRecovery({ processTree: platform.processTree, ledger, notices, log })
 
   app.on('web-contents-created', (_event, contents) => {
     hardenWebContents(contents, log)
@@ -102,21 +120,81 @@ function start(): void {
     log,
   })
   registerEventSubscriptions(registry, hub)
-  registerOperations(registry, createOperationHandlers({ info, config: () => config.current(), processStates, supervisor }))
+  registerOperations(registry, createOperationHandlers({ info, config: () => config.current(), processStates, supervisor, recovery }))
 
+  // Quitting stops every running command first (design D10); see `app/quit.ts`.
+  const orchestrator = createQuitOrchestrator({
+    supervisor,
+    ledger,
+    processTree: platform.processTree,
+    showProgress: () => notices.add({ kind: 'quitting', severity: 'info', message: 'Stopping running commands before quitting…', files: [] }),
+    confirm: (survivors) => confirmQuit(mainWindow, survivors),
+    log,
+  })
+  /** `running` until a quit starts; `done` once it may proceed (Electron then quits normally). */
+  let quitState: 'running' | 'quitting' | 'done' = 'running'
+  const exitAfter = (shutdown: Promise<void>, code: number): void => {
+    void shutdown
+      .catch((error: unknown) => log.record('error', 'quit.failed', { message: error instanceof Error ? error.message : String(error) }))
+      .finally(() => {
+        quitState = 'done'
+        app.exit(code)
+      })
+  }
+
+  app.on('before-quit', (event) => {
+    if (quitState === 'done') return
+    event.preventDefault()
+    if (quitState === 'quitting') return
+    quitState = 'quitting'
+    void orchestrator
+      .quit()
+      .catch((error: unknown) => log.record('error', 'quit.failed', { message: error instanceof Error ? error.message : String(error) }))
+      .finally(() => {
+        quitState = 'done'
+        app.quit()
+      })
+  })
   app.on('window-all-closed', () => app.quit())
 
-  // The bundled UI is unusable if it cannot load or its renderer dies: tell the user and exit.
+  // Session logout, `kill`, Ctrl+C: the same stop-all, bounded, without questions (design D9).
+  // Electron installs its own handlers for these signals (they call `app.quit()`, which would ask
+  // questions) after this script has run; Node's handler, installed when the first listener is
+  // added, replaces them, so the listeners are added once the app is ready. A signal before that
+  // takes Electron's path, when nothing can be running yet.
+  // Exits with the shell convention 128 + signal number; a second signal exits at once (what is
+  // not verified as stopped stays in the ledger).
+  let signalled = false
+  const handleSignals = (): void => {
+    for (const [signal, number] of [['SIGTERM', 15], ['SIGINT', 2], ['SIGHUP', 1]] as const) {
+      process.on(signal, () => {
+        if (quitState === 'done') return
+        if (signalled) {
+          log.record('warn', 'app.signal-repeated', { signal })
+          app.exit(128 + number)
+          return
+        }
+        signalled = true
+        log.record('warn', 'app.signal', { signal })
+        quitState = 'quitting'
+        exitAfter(orchestrator.shutdown(SIGNAL_DEADLINE_MS), 128 + number)
+      })
+    }
+  }
+
+  // The bundled UI is unusable if it cannot load or its renderer dies: tell the user, stop what
+  // is running (bounded like a signal), and exit.
   let failing = false
   const fatal = (message: string): void => {
     if (failing) return
     failing = true
     log.record('error', 'app.fatal', { message })
+    // Started before the (blocking) error box, so commands are stopped while it is shown.
+    const shutdown = orchestrator.shutdown(SIGNAL_DEADLINE_MS)
     dialog.showErrorBox('Veydr cannot continue', message)
-    app.exit(1)
+    exitAfter(shutdown, 1)
   }
-  // An uncaught exception leaves the main process in an undefined state. Quit orchestration
-  // for supervised processes (L4) must replace the bare exit here.
+  // An uncaught exception leaves the main process in an undefined state.
   process.on('uncaughtException', (error) => fatal(`Unexpected error: ${error.message}`))
   process.on('unhandledRejection', (reason) =>
     log.record('error', 'app.unhandled-rejection', { reason: reason instanceof Error ? reason.message : String(reason) }),
@@ -125,6 +203,7 @@ function start(): void {
   app
     .whenReady()
     .then(async () => {
+      handleSignals()
       const rendererRoot = rendererRootFor(__dirname)
       // A missing UI file would otherwise be served as a 404 page, which Chromium does not report as a load failure.
       if (devOrigin === null && !existsSync(join(rendererRoot, 'index.html'))) {
@@ -140,6 +219,17 @@ function start(): void {
         fatal(`The configuration in ${configDir} could not be loaded: ${error instanceof Error ? error.message : String(error)}`)
         return
       }
+      // Processes of an earlier session that are still running are shown, never restarted.
+      const recorded = await ledger.load()
+      if (recorded.problem !== null) {
+        notices.add({
+          kind: 'ledger-problem',
+          severity: 'warning',
+          message: `Veydr could not read its record of running commands: ${recorded.problem}. Processes it started in an earlier session may still be running.`,
+          files: [],
+        })
+      }
+      await recovery.check(recorded.entries)
       protocol.handle(APP_SCHEME, createAppProtocolHandler(rendererRoot))
 
       if (devOrigin !== null) {
@@ -156,6 +246,12 @@ function start(): void {
         onLoadError: (error) => log.record('error', 'window.load-rejected', { message: String(error) }),
       })
       watchWindowHealth(mainWindow.webContents, log, fatal)
+      // Closing the window quits; the window stays open (showing progress) until commands are stopped.
+      mainWindow.on('close', (event) => {
+        if (quitState === 'done') return
+        event.preventDefault()
+        app.quit()
+      })
       mainWindow.on('closed', () => {
         mainWindow = null
       })
@@ -166,4 +262,24 @@ function start(): void {
       }
     })
     .catch((error: unknown) => fatal(`Startup failed: ${error instanceof Error ? error.message : String(error)}`))
+}
+
+/** Lists what could not be stopped and asks the user to retry or quit anyway (design D10). */
+async function confirmQuit(window: BrowserWindow | null, survivors: readonly Survivor[]): Promise<QuitChoice> {
+  const detail =
+    survivors.length === 0
+      ? 'Veydr could not verify that every command stopped.'
+      : survivors.map(({ info }) => `${info.name} (PID ${info.pid}): ${info.commandLine}`).join('\n')
+  const options = {
+    type: 'warning' as const,
+    title: 'Veydr',
+    message: 'Some processes could not be stopped.',
+    detail: `${detail}\n\nIf you quit anyway, they keep running and Veydr lists them again the next time it starts.`,
+    buttons: ['Retry', 'Quit anyway'],
+    defaultId: 0,
+    cancelId: 0,
+    noLink: true,
+  }
+  const { response } = window === null || window.isDestroyed() ? await dialog.showMessageBox(options) : await dialog.showMessageBox(window, options)
+  return response === 1 ? 'quit' : 'retry'
 }

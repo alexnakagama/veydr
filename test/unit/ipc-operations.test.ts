@@ -57,14 +57,21 @@ function setup() {
   })
 
   registerEventSubscriptions(registry, hub)
-  registerOperations(registry, createOperationHandlers({ info, config: () => stored, processStates, supervisor }))
+  const resolutions: string[] = []
+  const recovery = {
+    resolve: (action: 'terminate' | 'dismiss') => {
+      resolutions.push(action)
+      return Promise.resolve(action === 'terminate' ? [{ pid: 4321, name: 'node' }] : [])
+    },
+  }
+  registerOperations(registry, createOperationHandlers({ info, config: () => stored, processStates, supervisor, recovery }))
 
   const invoke = (channel: string, ...args: unknown[]): Promise<unknown> => {
     const listener = listeners.get(channel)
     if (listener === undefined) throw new Error(`no handler for ${channel}`)
     return Promise.resolve(listener({ senderFrame: mainFrame, sender }, ...args))
   }
-  return { registry, invoke, hub, processStates, sent, stored, secretCommand, plainCommand, log, tree }
+  return { registry, invoke, hub, processStates, sent, stored, secretCommand, plainCommand, log, tree, resolutions, supervisor }
 }
 
 const invokeChannels = contractEntries.filter(({ spec }) => spec.kind === 'invoke').map(({ spec }) => spec.channel)
@@ -122,7 +129,6 @@ describe('registered operations', () => {
     const requests: Record<string, unknown> = {
       [channels.projects.pickDirectory]: undefined,
       [channels.projects.add]: { path: '/home/dev/x', name: 'x' },
-      [channels.processes.resolveSurvivors]: { action: 'dismiss' },
       [channels.ports.list]: undefined,
       [channels.logs.ack]: { batchId: 1 },
     }
@@ -131,6 +137,23 @@ describe('registered operations', () => {
       expect(result, channel).toMatchObject({ ok: false, error: { code: 'not_implemented' } })
     }
     expect(await invoke(channels.processes.start, { commandId: 'nope' })).toMatchObject({ ok: false, error: { code: 'validation' } })
+  })
+
+  it('resolves crash survivors through the recovery service', async () => {
+    const { invoke, resolutions } = setup()
+    expect(await invoke(channels.processes.resolveSurvivors, { action: 'terminate' })).toEqual({ ok: true, value: { remaining: [{ pid: 4321, name: 'node' }] } })
+    expect(await invoke(channels.processes.resolveSurvivors, { action: 'dismiss' })).toEqual({ ok: true, value: { remaining: [] } })
+    expect(await invoke(channels.processes.resolveSurvivors, { action: 'kill' })).toMatchObject({ ok: false, error: { code: 'validation' } })
+    expect(resolutions).toEqual(['terminate', 'dismiss'])
+  })
+
+  it('answers starts and restarts during quit with shutting_down', async () => {
+    const { invoke, secretCommand, tree, supervisor } = setup()
+    await supervisor.stopAll()
+    for (const channel of [channels.processes.start, channels.processes.restart]) {
+      expect(await invoke(channel, { commandId: secretCommand.id }), channel).toMatchObject({ ok: false, error: { code: 'shutting_down' } })
+    }
+    expect(tree.spawnCalls).toBe(0)
   })
 
   it('starts, restarts, and stops commands, publishing every state to subscribers', async () => {

@@ -338,3 +338,57 @@ body {
 .status-failed {
   color: var(--error-text);
 }
+
+.notice-processes {
+  margin: 6px 0 0;
+  padding-left: 18px;
+  overflow-wrap: anywhere;
+}
+
+.notice-process-command {
+  display: block;
+  font-size: 12px;
+}
+
+.notice-actions {
+  flex: none;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+  max-width: 40%;
+}
+
+.notice-action-error {
+  flex-basis: 100%;
+  margin: 0;
+  text-align: right;
+}
+
+.quit-overlay {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgb(0 0 0 / 60%);
+}
+
+.quit-overlay-panel {
+  min-width: 320px;
+  max-width: 560px;
+  padding: 20px 24px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-raised);
+}
+
+.quit-overlay-panel h2 {
+  margin: 0 0 8px;
+  font-size: 16px;
+}
+
+.quit-overlay-list {
+  margin: 0;
+  padding-left: 18px;
+}

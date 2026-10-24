@@ -54,6 +54,19 @@ const errnoOf = (error: unknown): string | undefined => (error as NodeJS.ErrnoEx
 const messageOf = (error: unknown): string => (error instanceof Error ? error.message : String(error))
 const delay = (ms: number): Promise<void> => new Promise((done) => setTimeout(done, ms))
 
+/** Linux process identity (design D8): PID, start time (`/proc/<pid>/stat` field 22) and boot ID. */
+export function linuxIdentity(bootId: string, stat: Pick<ProcStat, 'pid' | 'starttime'>): ProcessIdentity {
+  return { pid: stat.pid, token: `${bootId}:${stat.starttime}` }
+}
+
+/** The boot ID and start time of a Linux identity token; `null` if it is not one. */
+export function parseLinuxIdentity(identity: ProcessIdentity): { readonly bootId: string; readonly starttime: number } | null {
+  const match = /^([0-9a-f-]{36}):(\d+)$/.exec(identity.token)
+  if (match === null) return null
+  const starttime = Number(match[2])
+  return Number.isSafeInteger(starttime) ? { bootId: match[1] ?? '', starttime } : null
+}
+
 /**
  * Linux process trees (design D8). Each command runs in its own session (`detached: true` makes
  * libuv call `setsid()`), so the leader's PID is also its process group and session ID. A run's
@@ -123,7 +136,7 @@ export function createLinuxProcessTree(options: LinuxProcessTreeOptions = {}): P
         child.stderr?.destroy()
         throw new SpawnError('other', `Could not verify the started process ${pid} (/proc unreadable)`)
       }
-      return new LinuxRun(child, leader, { pid, token: `${bootId}:${leader.starttime}` }, ctx)
+      return new LinuxRun(child, leader, bootId, ctx)
     },
   }
 }
@@ -225,6 +238,8 @@ function createScanner(read: () => Promise<Scan>, intervalMs: number, log: Platf
 
 class LinuxRun implements ManagedProcess {
   readonly pid: number
+  readonly identity: ProcessIdentity
+  readonly sessionId: number
   readonly stdout: Readable
   readonly stderr: Readable
   /** Start time of the leader; nothing attributed to the run can be older. */
@@ -237,6 +252,7 @@ class LinuxRun implements ManagedProcess {
   private observedSeq = 0
   private exitInfo: ExitInfo | null = null
   private readonly exitListeners: ((e: ExitInfo) => void)[] = []
+  private readonly descendantListeners: ((descendants: readonly ProcessIdentity[]) => void)[] = []
   private forced = false
   private stopping: Promise<StopResult> | null = null
   /** Processes (`pid:starttime`) and whether the group/leader already received each signal. */
@@ -248,11 +264,14 @@ class LinuxRun implements ManagedProcess {
   constructor(
     child: ChildProcess,
     leader: ProcStat,
-    readonly identity: ProcessIdentity,
+    private readonly bootId: string,
     private readonly ctx: TreeContext,
   ) {
     if (child.stdout === null || child.stderr === null) throw new Error('spawned without output pipes')
     this.pid = leader.pid
+    this.identity = linuxIdentity(bootId, leader)
+    // `detached: true` made the leader a session leader (checked in `spawn`).
+    this.sessionId = leader.pid
     this.startTime = leader.starttime
     this.stdout = child.stdout
     this.stderr = child.stderr
@@ -271,6 +290,12 @@ class LinuxRun implements ManagedProcess {
     const info = this.exitInfo
     if (info === null) this.exitListeners.push(cb)
     else queueMicrotask(() => cb(info))
+  }
+
+  onDescendantsChange(cb: (descendants: readonly ProcessIdentity[]) => void): void {
+    this.descendantListeners.push(cb)
+    // The scan started at spawn may already have observed descendants.
+    if (this.tracked.size > 0) queueMicrotask(() => this.report(cb))
   }
 
   async remaining(): Promise<readonly ProcInfo[]> {
@@ -309,10 +334,13 @@ class LinuxRun implements ManagedProcess {
       else siblings.push(s)
       if (s.session === this.pid && s.starttime >= this.startTime) members.set(s.pid, s)
     }
+    let changed = false
     for (const [pid, starttime] of this.tracked) {
       const s = byPid.get(pid)
-      if (s === undefined || s.starttime !== starttime || !isLive(s)) this.tracked.delete(pid)
-      else members.set(pid, s)
+      if (s === undefined || s.starttime !== starttime || !isLive(s)) {
+        this.tracked.delete(pid)
+        changed = true
+      } else members.set(pid, s)
     }
     const queue = [...members.values()]
     for (let parent = queue.pop(); parent !== undefined; parent = queue.pop()) {
@@ -323,9 +351,26 @@ class LinuxRun implements ManagedProcess {
         queue.push(child)
       }
     }
-    for (const s of members.values()) if (s.pid !== this.pid) this.tracked.set(s.pid, s.starttime)
+    for (const s of members.values()) {
+      if (s.pid === this.pid || this.tracked.get(s.pid) === s.starttime) continue
+      this.tracked.set(s.pid, s.starttime)
+      changed = true
+    }
     this.members = members
+    if (changed) this.notifyDescendants()
     if (this.finished()) this.ctx.scanner.remove(this)
+  }
+
+  private notifyDescendants(): void {
+    for (const cb of this.descendantListeners) this.report(cb)
+  }
+
+  private report(cb: (descendants: readonly ProcessIdentity[]) => void): void {
+    try {
+      cb([...this.tracked].map(([pid, starttime]) => linuxIdentity(this.bootId, { pid, starttime })))
+    } catch (error) {
+      this.ctx.log?.record('error', 'process.descendants-listener-failed', { leader: this.pid, message: messageOf(error) })
+    }
   }
 
   /**

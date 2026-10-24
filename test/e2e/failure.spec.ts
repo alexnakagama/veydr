@@ -55,6 +55,7 @@ test('an incomplete installation (renderer bundle missing) is reported and exits
     expect(result.output).toContain('app.fatal')
     expect(result.output).toContain('renderer bundle missing')
   } finally {
-    rmSync(dir, { recursive: true, force: true })
+    // Chromium helper processes may still write into the profile briefly after the main process exited.
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
   }
 })

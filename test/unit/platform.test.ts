@@ -69,8 +69,9 @@ describe('other unsupported operating systems', () => {
   }
 })
 
-// processTree.spawn is implemented (L3) and covered by test/integration/linux-process-tree.test.ts.
-const linuxImplemented = new Set(['processTree.spawn'])
+// processTree.spawn is implemented (L3) and covered by test/integration/linux-process-tree.test.ts;
+// the survivor operations (L4) by test/unit/linux-survivors.test.ts and test/integration/crash-recovery.test.ts.
+const linuxImplemented = new Set(['processTree.spawn', 'processTree.findSurvivors', 'processTree.terminateSurvivors'])
 
 describe('Linux placeholders', () => {
   for (const [name, run] of Object.entries(everyOperation(selectPlatform('linux')))) {

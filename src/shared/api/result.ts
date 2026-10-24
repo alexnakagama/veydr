@@ -6,6 +6,8 @@ export type ApiErrorCode =
   | 'unsupported_platform'
   /** The operation is declared in the API contract but lands in a later task group. */
   | 'not_implemented'
+  /** Veydr is quitting and no longer starts commands. */
+  | 'shutting_down'
   | 'internal'
 
 export interface ApiError {

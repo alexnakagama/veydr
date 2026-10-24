@@ -23,6 +23,8 @@ The integration test `test/integration/config-location.test.ts` launches the bui
 | `config.bak.corrupt-<timestamp>.json` | A damaged `config.json.bak`, moved aside when neither file was usable. Never deleted by Veydr. |
 | `config.pre-migration-v<version>-<timestamp>.json` | A copy of a configuration file from an older schema version, taken before the upgraded file is written. Never deleted by Veydr. |
 | `config.json.tmp`, `config.json.bak.tmp` | Temporary files that exist only while a save is in progress. A leftover one (after a crash) is ignored and replaced by the next save. |
+| `runtime/ledger.json` | Not configuration: the record of commands whose processes may be running, used to find them after Veydr ended abnormally. Written the same way as `config.json` (mode `0600`, directory `runtime/` mode `0700`). See [Processes](processes.md#crash-recovery). |
+| `runtime/ledger.damaged-<timestamp>.json` | A record of running commands that could not be read, moved aside at startup so the next write does not destroy it. Never deleted by Veydr. |
 
 `<timestamp>` is the UTC time in the form `2026-10-23T09-15-02-123Z`; if a file with that name already exists, `-1`, `-2`, … is appended to the timestamp. You can delete the corrupt and pre-migration copies yourself once you no longer need them.
 

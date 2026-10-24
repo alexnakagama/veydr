@@ -60,6 +60,33 @@ If Veydr cannot read `/proc` while stopping (for example because it ran out of f
 
 Output of a run is read until every process holding its output pipes has closed them, also after the run has ended; it always stays attributed to the run that produced it.
 
+## Quitting
+
+When you quit Veydr (or close its window) while commands are running, Veydr stops all of them before it exits:
+
+1. The window shows **Stopping running commands before quitting…** with the commands still being stopped, and accepts no other input. Starting or restarting a command is refused from now on.
+2. Every running command is stopped at the same time, each the usual way with its own stop timeout (see [Stopping](#stopping)).
+3. Veydr waits at most the longest stop timeout of those commands plus 2 seconds, then checks which processes of this session's commands are still alive.
+4. If none are, Veydr exits. Otherwise a dialog lists them (name, PID, and command line) with **Retry** and **Quit anyway**. **Retry** sends `SIGTERM` to the listed processes, then `SIGKILL` after 5 seconds, and checks again. **Quit anyway** exits and leaves them running; the next launch lists them again (see [Crash recovery](#crash-recovery)). Closing the dialog with Esc counts as **Retry**: quitting without stopping is never the default.
+
+The same applies to processes that survived an earlier stop in this session: they are listed when you quit.
+
+### Signals
+
+When Veydr itself receives `SIGTERM`, `SIGINT`, or `SIGHUP` (for example when you log out, or press Ctrl+C in the terminal that started it), it stops every running command the same way, without asking, and exits within 10 seconds. Whatever it could not verify as stopped by then stays recorded, and the next launch lists it. A second signal makes Veydr exit at once, without waiting. The exit status is 128 plus the signal number (143 for `SIGTERM`), as for a process ended by that signal.
+
+## Crash recovery
+
+Veydr records every command it starts in `runtime/ledger.json` in its [configuration directory](configuration.md): the command, the run, and the leader, session, and observed descendants of the run, each identified by PID, start time, and boot. A run is recorded right after it starts; changes to its observed descendants are written at most once per second. A run is removed from the record once none of its processes is alive. After a clean quit, the record holds no runs.
+
+If Veydr ends abnormally (a crash, or `SIGKILL`), the processes of its running commands keep running. On the next launch, Veydr checks the record:
+
+- A recorded process counts only if it is still the same process: same boot, same PID, same start time. A PID that now belongs to another process is ignored and never signalled; so is everything recorded before the last reboot. Besides the recorded processes, every live process in a recorded command's session that started no earlier than its leader counts, unless the leader's PID now belongs to another process.
+- Processes that still run are listed (name, PID, and command line) in a notice. **Veydr does not start, restart, or signal anything on its own.** You choose **Terminate** (`SIGTERM`, then `SIGKILL` after 5 seconds; processes that still survive are listed again) or **Leave running**. Leave running takes effect at once, without a further question: Veydr stops tracking those processes, does not list them again, and will not stop them when it quits; ending them is then up to you.
+- Runs of which nothing is alive any more are removed from the record.
+
+If the record cannot be read, written, or checked, a notice says so (a record that cannot be read is kept as `runtime/ledger.damaged-<timestamp>.json`); processes from the earlier session may then still be running unnoticed.
+
 ## Limitations
 
 ### Escaped descendants
@@ -76,6 +103,16 @@ Linux lets a process ID be reused once the process has ended. Veydr re-reads a p
 
 Evidence: `test/integration/signal-safety.test.ts` › "never signals a recorded PID whose start time no longer matches"; `test/unit/linux-process-tree.test.ts` › "re-verifies the start time immediately before each signal".
 
+### After an abnormal exit
+
+When Veydr ends abnormally, the processes of its running commands keep running **until Veydr is started again** (and you terminate them). Linux offers Node.js no way to have them ended together with Veydr. Only what Veydr recorded can be found then:
+
+- a descendant that appeared in the last few seconds before the crash may not be recorded yet (Veydr observes descendants every 2 seconds and writes the record at most once per second); it is still found if it stayed in the command's session;
+- a descendant that left the command's session before Veydr observed it (see [Escaped descendants](#escaped-descendants)) is not found;
+- a command that was being started at the moment of the crash may not be recorded at all (a run is reported as running only once its record is written, which normally takes a few milliseconds after the start; if the disk stops responding, the command stays in **Starting** until the write completes or fails).
+
+Evidence: `test/integration/crash-recovery.test.ts` › "finds every surviving process after the supervisor host is SIGKILLed"; `test/e2e/recovery.spec.ts` › "after a crash, survivors are listed and terminated only on confirmation".
+
 ### Processes Veydr may not signal
 
 A process of the command that runs as another user (for example through `sudo` or a setuid program), or that is stuck in the kernel and ignores even `SIGKILL`, cannot be stopped by Veydr. It is listed as still running after the stop.
@@ -86,6 +123,5 @@ Evidence: `test/unit/linux-process-tree.test.ts` › "reports a process it is no
 
 These parts of process management are scheduled for later steps of the Linux MVP and do not exist in this build:
 
-- **Quitting with running commands and crash recovery.** Veydr does not stop running commands when it quits, and it does not yet record running commands to find them after a crash. Commands keep running after Veydr exits until you stop them yourself.
 - **Command resolution and environment.** Commands get Veydr's own environment (without Electron's variables) plus your overrides, not your login shell's environment, and the working directory is checked only lexically (`..` cannot leave the project folder; symbolic links are not resolved yet). Variables an AppImage runtime adds to existing ones (for example `LD_LIBRARY_PATH`, `PYTHONPATH`, `XDG_DATA_DIRS`) are not cleaned yet.
 - **Logs.** Output is read and discarded; it is not shown yet.
