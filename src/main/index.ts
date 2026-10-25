@@ -4,12 +4,13 @@ import { app, dialog, ipcMain, Menu, protocol, session, shell, type BrowserWindo
 import { channels, type AppInfo } from '../shared/api'
 import { devContentSecurityPolicy } from './app/csp'
 import { resolveDevServerUrl } from './app/devserver'
-import { createDiagnosticLog } from './app/diagnostics'
+import { createDiagnosticLog, type DiagnosticLog } from './app/diagnostics'
 import { watchWindowHealth } from './app/health'
 import { createNoticeCenter, noticeFromConfig } from './app/notices'
 import { APP_ENTRY_URL, APP_ORIGIN, APP_SCHEME, createAppProtocolHandler } from './app/protocol'
 import { createQuitOrchestrator, SIGNAL_DEADLINE_MS, type QuitChoice } from './app/quit'
 import { hardenSession, hardenWebContents } from './app/security'
+import { formatSmokeReport, runSmokeTest, SMOKE_TEST_SWITCH, type SmokeReport, type SmokeUi } from './app/smoke'
 import { createMainWindow, preloadPathFor, rendererRootFor } from './app/window'
 import { createConfigStore } from './config'
 import { createEventHub } from './ipc/events'
@@ -33,10 +34,31 @@ import type { Survivor } from './platform/types'
 
 // Composition root. A second instance must exit before touching any state,
 // so the lock is the very first thing that happens.
+const smokeTest = app.commandLine.hasSwitch(SMOKE_TEST_SWITCH)
+// Read before `app.enableSandbox()`, which removes the switch from Electron's view of the command line.
+const noSandbox = app.commandLine.hasSwitch('no-sandbox')
 if (!app.requestSingleInstanceLock()) {
-  app.exit(0)
+  // A smoke test must not pass by handing over to a running instance.
+  // Chromium also refuses the lock if it cannot create it in the configuration directory.
+  if (smokeTest) process.stderr.write('veydr --smoke-test: no single-instance lock: another Veydr instance is running, or the configuration directory is not writable\n')
+  app.exit(smokeTest ? 1 : 0)
+} else if (smokeTest) {
+  startSmokeTest()
+} else if (noSandbox) {
+  refuseNoSandbox()
 } else {
   start()
+}
+
+/** Settings shared by the app and the smoke test; must run before `ready`. */
+function prepareApp(log: DiagnosticLog): void {
+  app.enableSandbox()
+  protocol.registerSchemesAsPrivileged([
+    { scheme: APP_SCHEME, privileges: { standard: true, secure: true, supportFetchAPI: false } },
+  ])
+  Menu.setApplicationMenu(null)
+  // Must run at session creation: Chromium starts dictionary downloads before `ready`.
+  app.on('session-created', (created) => hardenSession(created, log))
 }
 
 function start(): void {
@@ -54,11 +76,7 @@ function start(): void {
   const devOrigin = devUrl === undefined ? null : originOf(devUrl)
   const trustedOrigin = devOrigin ?? APP_ORIGIN
 
-  app.enableSandbox()
-  protocol.registerSchemesAsPrivileged([
-    { scheme: APP_SCHEME, privileges: { standard: true, secure: true, supportFetchAPI: false } },
-  ])
-  Menu.setApplicationMenu(null)
+  prepareApp(log)
 
   let mainWindow: BrowserWindow | null = null
 
@@ -124,8 +142,6 @@ function start(): void {
     contents.once('destroyed', () => hub.drop(id))
     contents.on('render-process-gone', () => hub.drop(id))
   })
-  // Must run at session creation: Chromium starts dictionary downloads before `ready`.
-  app.on('session-created', (created) => hardenSession(created, log))
 
   const info: AppInfo = {
     name: app.getName(),
@@ -304,6 +320,116 @@ function start(): void {
     })
     .catch((error: unknown) => fatal(`Startup failed: ${error instanceof Error ? error.message : String(error)}`))
 }
+
+/**
+ * `--smoke-test` (task 9.2): loads the bundled UI in a hidden window and checks the configuration
+ * directory and the platform implementation, then exits 0 if every check passed. It creates no
+ * supervisor and never reads or writes the configuration or the run ledger, so nothing can start.
+ */
+function startSmokeTest(): void {
+  const log = createDiagnosticLog()
+  const platform = selectPlatform(process.platform, { log, inherited: process.env })
+  const report = (result: SmokeReport): void => {
+    process.stdout.write(`${formatSmokeReport(result)}\n`)
+    app.exit(result.result === 'pass' ? 0 : 1)
+  }
+  const deps = {
+    packaged: app.isPackaged,
+    appPath: app.getAppPath(),
+    configDir: () => app.getPath('userData'),
+    implementation: platform,
+    noSandbox,
+    loadUi: () => loadSmokeUi(log),
+  }
+  // Without the sandbox only that failure is reported; nothing else is set up (see `refuseNoSandbox`).
+  if (noSandbox) {
+    void runSmokeTest(deps).then(report)
+    return
+  }
+  prepareApp(log)
+  app.on('web-contents-created', (_event, contents) => hardenWebContents(contents, log))
+  // The test exits explicitly once its report is written.
+  app.on('window-all-closed', () => undefined)
+
+  app
+    .whenReady()
+    .then(async () => report(await runSmokeTest(deps)))
+    .catch((error: unknown) => {
+      process.stderr.write(`veydr --smoke-test failed: ${error instanceof Error ? error.message : String(error)}\n`)
+      app.exit(1)
+    })
+}
+
+/** Loads the bundled UI as the app does, in a window that is never shown, and reads what it shows. */
+async function loadSmokeUi(log: DiagnosticLog): Promise<SmokeUi> {
+  const rendererRoot = rendererRootFor(__dirname)
+  if (!existsSync(join(rendererRoot, 'index.html'))) throw new Error(`renderer bundle missing in ${rendererRoot}`)
+  protocol.handle(APP_SCHEME, createAppProtocolHandler(rendererRoot))
+  const win = createMainWindow({
+    preloadPath: preloadPathFor(__dirname),
+    url: APP_ENTRY_URL,
+    devTools: !app.isPackaged,
+    show: false,
+    onLoadError: (error) => log.record('error', 'window.load-rejected', { message: String(error) }),
+  })
+  const contents = win.webContents
+  try {
+    await new Promise<void>((resolve, reject) => {
+      contents.once('did-finish-load', () => resolve())
+      contents.on('did-fail-load', (_event, code, description, url, isMainFrame) => {
+        if (isMainFrame) reject(new Error(`${url} failed to load: ${description} (${code})`))
+      })
+      contents.once('render-process-gone', (_event, details) => reject(new Error(`renderer process gone: ${details.reason}`)))
+    })
+    const read = (): Promise<{ url: string; bridge: string[]; rendered: boolean }> =>
+      contents.executeJavaScript(
+        `({ url: location.href, bridge: Object.keys(window.veydr ?? {}), rendered: (document.getElementById('root')?.childElementCount ?? 0) > 0 })`,
+      ) as Promise<{ url: string; bridge: string[]; rendered: boolean }>
+    // React renders right after the bundle runs; allow it a few seconds on a slow machine.
+    let page = await read()
+    for (let waited = 0; !page.rendered && waited < 5_000; waited += 100) {
+      await new Promise((resolve) => setTimeout(resolve, 100))
+      page = await read()
+    }
+    // `getLastWebPreferences` is real but absent from Electron's type definitions; it does not report `devTools`.
+    const prefs = (contents as unknown as { getLastWebPreferences(): Record<string, unknown> | null }).getLastWebPreferences() ?? {}
+    // Packaged builds create the window without DevTools, so asking for them must do nothing.
+    let devToolsOpened: boolean | null = null
+    if (app.isPackaged) {
+      contents.openDevTools({ mode: 'detach', activate: false })
+      await new Promise((resolve) => setTimeout(resolve, 1_000))
+      devToolsOpened = contents.isDevToolsOpened()
+    }
+    return {
+      ...page,
+      sandbox: prefs['sandbox'] === true,
+      contextIsolation: prefs['contextIsolation'] === true,
+      devToolsOpened,
+    }
+  } finally {
+    win.destroy()
+  }
+}
+
+/**
+ * Veydr never runs without Chromium's sandbox (design D2, task 9.4); electron-builder's AppImage
+ * launcher adds --no-sandbox where it cannot create a user namespace. Nothing is set up (no
+ * sandbox switch, which would conflict with it, no configuration, no window): the reason is shown
+ * and Veydr exits with an error.
+ */
+function refuseNoSandbox(): void {
+  createDiagnosticLog().record('error', 'app.no-sandbox-refused', {})
+  app
+    .whenReady()
+    .then(() => dialog.showErrorBox('Veydr cannot start', NO_SANDBOX_MESSAGE))
+    .catch((error: unknown) => process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`))
+    .finally(() => app.exit(1))
+}
+
+const NO_SANDBOX_MESSAGE =
+  "Veydr was started with --no-sandbox and does not run without Chromium's sandbox. " +
+  'The AppImage adds this option when the system does not let it create user namespaces (for example on Ubuntu 24.04); ' +
+  'install the .deb package instead, which includes the AppArmor profile the sandbox needs.'
 
 /** The native folder picker; `null` if cancelled. */
 async function pickDirectory(window: BrowserWindow | null): Promise<string | null> {

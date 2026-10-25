@@ -1,0 +1,11 @@
+abi <abi/4.0>,
+include <tunables/global>
+
+# Lets Chromium's sandbox create user namespaces where AppArmor restricts them for unprivileged
+# programs (Ubuntu 24.04: kernel.apparmor_restrict_unprivileged_userns=1). Unconfined otherwise.
+profile ${executable} /opt/${sanitizedProductName}/${executable} flags=(unconfined) {
+  userns,
+
+  # Site-specific additions and overrides. See local/README for details.
+  include if exists <local/${executable}>
+}

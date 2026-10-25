@@ -14,3 +14,14 @@ F1 verifies the unpackaged build (`electron .` on the built `out/`, and `electro
 | Dev-server mode | Verified manually once (2026-10-22): `electron-vite dev` window loads `http://localhost:5173/`, IPC works, no Node globals, CSP header present, inline script and navigation blocked. Not part of the automated suite. | n/a |
 
 Tasks 9.1, 9.4 and 9.5 in `tasks.md` reference this list.
+
+## Status after L8 (2026-10-25)
+
+| Area | Outcome | Evidence |
+|---|---|---|
+| Electron fuses | Done. The six fuses are set; run-as-node, `NODE_OPTIONS`, `--inspect`, and an `app` folder are ignored by the packaged binary (controls with the stock binary). Limitation: Electron does not validate `app.asar` integrity on Linux, so the integrity fuse has no effect there (see `security-baseline.md`). | `test/packaging/fuses.test.ts` |
+| Packaged behavior | Done. In the packaged app DevTools do not open when requested; the UI is served from `app.asar`; the dev-server override is absent from the bundle. | `--smoke-test` (`test/packaging/smoke.test.ts`), `test/packaging/package-contents.test.ts` |
+| Packaging contents | Done. The archive holds `out/main`, `out/preload`, `out/renderer`, `package.json`, and `zod` only; no probe strings, source maps, docs, or tests; no update metadata. | `test/packaging/package-contents.test.ts` |
+| Process sandbox on target distros | Veydr now refuses `--no-sandbox`; the AppImage's desktop entry no longer adds it. The `.deb` ships the AppArmor profile and sets `chrome-sandbox` setuid only without user namespaces. Container results: `install-linux.md`. A real Ubuntu 24.04 host (AppArmor restriction): **BLOCKED**, no host available (task 9.6). | `test/packaging/package-contents.test.ts`, E2E `failure.spec.ts`, `scripts/smoke-linux.sh` |
+| Single instance / focus | Not re-checked in L8: the containers run `--smoke-test` only, under Xvfb (X11), which takes the lock but does not exercise a second launch. Remains as in F1. | — |
+| Network isolation at OS level | Not done in L8: no packet capture or network-namespace run of the packaged app. Remains for L9. | — |

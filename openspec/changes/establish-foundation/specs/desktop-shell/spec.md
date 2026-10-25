@@ -56,7 +56,7 @@ The user interface SHALL be served with a content security policy that forbids r
 - **THEN** the script does not execute
 
 ### Requirement: Hardened packaged runtime
-Packaged builds SHALL disable the ability to run the application binary as a plain Node.js runtime, SHALL ignore Node.js option environment variables and inspector command-line arguments, and SHALL only load application code from the packaged archive with integrity validation enabled.
+Packaged builds SHALL disable the ability to run the application binary as a plain Node.js runtime, SHALL ignore Node.js option environment variables and inspector command-line arguments, and SHALL only load application code from the packaged archive with integrity validation enabled. On Linux, Electron does not validate the archive's integrity: the setting is enabled, but the archive's integrity is not checked there, which SHALL be documented as a known limitation.
 
 #### Scenario: Run-as-node disabled
 - **WHEN** the packaged application binary is started with the environment variable that would normally make it behave as Node.js

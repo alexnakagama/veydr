@@ -4,6 +4,7 @@
   "version": "0.0.0",
   "private": true,
   "description": "Local-first desktop supervisor for development commands",
+  "desktopName": "veydr.desktop",
   "license": "MIT",
   "author": "alexnakagama",
   "main": "out/main/index.js",
@@ -23,7 +24,9 @@
     "test:perf": "node scripts/ensure-electron.cjs && npm run build && playwright test -c playwright.perf.config.ts --pass-with-no-tests",
     "measure": "vitest run --project measure --reporter=verbose",
     "spec-coverage": "node scripts/spec-coverage.mjs",
-    "verify": "node scripts/verify.mjs"
+    "verify": "node scripts/verify.mjs",
+    "dist:linux": "node scripts/ensure-electron.cjs && npm run build && electron-builder --linux --publish never",
+    "test:packaging": "npm run dist:linux && vitest run --project packaging"
   },
   "dependencies": {
     "zod": "4.6.7"

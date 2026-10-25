@@ -15,7 +15,12 @@ All eight entries are one advisory, `sprintf-js` ≤ 1.1.3 DoS through unbounded
 * `npm audit --omit=dev` reports **0 vulnerabilities**: the shipped dependency tree (`zod`) is clean.
 * Build-time only: `electron-builder` is a devDependency and none of this ships in the application. Electron's own downloader is `@electron/get@5.1.0`, which is not affected.
 * Not exploitable in practice: it needs attacker-controlled format strings in `roarr` logging inside `global-agent`, which is active only behind proxy environment variables.
-* The only fix `npm audit` offers is a downgrade of `electron-builder` to 26.5.0, which trades an unreachable DoS for older tooling. Not applied. **Revisit before packaging (task 9.1)**.
+* The only fix `npm audit` offers is a downgrade of `electron-builder` to 26.5.0, which trades an unreachable DoS for older tooling. Not applied.
+* **Revisited at packaging (task 9.1, 2026-10-25)**: with the unchanged lockfile, `npm audit` and `npm audit --omit=dev` both report **0 vulnerabilities**; nothing to apply.
+
+## Packaging toolchain (task 9.1)
+
+`npm run dist:linux` runs `electron-builder`, which downloads its Linux tools on first use into `~/.cache/electron-builder` from the `electron-userland/electron-builder-binaries` GitHub releases, each checked against a SHA-256 hash pinned in `app-builder-lib`: `appimage-12.0.1` (AppImage runtime and `mksquashfs`), `fpm-1.17.0-ruby-3.4.3-linux-amd64` (builds the `.deb`), and `7zip`. It also fetches the Electron 44.9.3 release archive for the package through `@electron/get` (checksum-verified). The user approved these downloads in chat on 2026-10-25, together with gate G-5. No new npm dependency was added: fuses are applied by electron-builder's own `@electron/fuses`, and the packaging tests parse the fuse wire and the ASAR header themselves.
 
 ## Version choices
 

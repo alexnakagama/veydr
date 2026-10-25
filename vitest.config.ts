@@ -20,6 +20,17 @@ export default defineConfig({
         },
       },
       {
+        // Inspects and runs the Linux packages in dist/ (`npm run test:packaging` builds them first).
+        test: {
+          name: 'packaging',
+          include: ['test/packaging/**/*.test.ts'],
+          environment: 'node',
+          testTimeout: 180_000,
+          hookTimeout: 180_000,
+          fileParallelism: false,
+        },
+      },
+      {
         // Measurements recorded as task notes (`npm run measure`); not part of `verify`.
         test: {
           name: 'measure',

@@ -125,9 +125,3 @@ Evidence: `test/integration/crash-recovery.test.ts` › "finds every surviving p
 A process of the command that runs as another user (for example through `sudo` or a setuid program), or that is stuck in the kernel and ignores even `SIGKILL`, cannot be stopped by Veydr. It is listed as still running after the stop.
 
 Evidence: `test/unit/linux-process-tree.test.ts` › "reports a process it is not permitted to signal as a survivor"; `test/unit/linux-process-tree.test.ts` › "lists processes alive after the forced stop with PID and command name".
-
-## Not implemented yet
-
-These parts of process management are scheduled for later steps of the Linux MVP and do not exist in this build:
-
-- **AppImage variables.** Variables an AppImage runtime adds to existing ones (for example `LD_LIBRARY_PATH`, `PYTHONPATH`, `XDG_DATA_DIRS`) are not cleaned yet (packaging step).
