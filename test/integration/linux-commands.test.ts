@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process'
-import { chmodSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdirSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { createDesktopActions } from '../../src/main/projects/desktop'
@@ -113,14 +113,25 @@ describe('Linux exec wrapper', () => {
     const wrapper = await findExecWrapper()
     expect(wrapper, 'bash and env are required on the supported distributions').not.toBeNull()
     if (wrapper === null) return
-    const command = wrappedCommand(wrapper, '/bin/sh', ['-c', 'ls /proc/$$/fd | sort -n | tr "\\n" " "'], { PATH: '/usr/bin:/bin' })
+    // The wrapper execs `sleep` in place (same PID); its descriptors are read from /proc here. A
+    // shell listing its own descriptors would race with the pipes it opens for a pipeline.
+    const command = wrappedCommand(wrapper, '/bin/sleep', ['30'], { PATH: '/usr/bin:/bin' })
     // Descriptors 3–12 of this child are pipes without close-on-exec (libuv dup2s them), like
     // Electron's Chromium descriptors.
     const child = spawn(command.file, command.args, { stdio: ['ignore', 'pipe', 'pipe', ...Array<'pipe'>(10).fill('pipe')], env: {} })
-    let output = ''
-    child.stdout?.on('data', (chunk: Buffer) => (output += chunk.toString()))
-    await new Promise((done) => child.on('close', done))
-    expect(output.trim()).toBe('0 1 2')
+    try {
+      const pid = child.pid ?? 0
+      await waitUntil(() => {
+        try {
+          return readlinkSync(`/proc/${pid}/exe`) === realpathSync('/bin/sleep')
+        } catch {
+          return false
+        }
+      }, 'sleep running in place of the wrapper')
+      expect(readdirSync(`/proc/${pid}/fd`).map(Number).sort((a, b) => a - b)).toEqual([0, 1, 2])
+    } finally {
+      child.kill('SIGKILL')
+    }
   })
 
   it('passes the environment exactly, including names a shell cannot export, and runs a path containing "="', async () => {

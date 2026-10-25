@@ -34,7 +34,8 @@ export function createStore<S>(initial: S): WritableStore<S> {
 }
 
 export function useStore<S>(store: Store<S>): S {
-  return useSyncExternalStore(store.subscribe, store.getState)
+  // The third argument serves static rendering (unit tests); in the window it is not used.
+  return useSyncExternalStore(store.subscribe, store.getState, store.getState)
 }
 
 /** Message shown when a request to the main process fails without a typed error. */

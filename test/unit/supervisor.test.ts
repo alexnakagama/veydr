@@ -19,7 +19,7 @@ interface Harness {
   readonly commandId: string
   readonly target: LaunchTarget
   readonly supervisor: ReturnType<typeof createSupervisor>
-  readonly output: [string, OutputStream, string][]
+  readonly output: [string, OutputStream | 'open' | 'close', string][]
   plans: number
   /** Status sequence of the emitted events. */
   statuses(): string[]
@@ -36,7 +36,7 @@ function harness(
   const cmd = command({ stopTimeoutMs: 1234, ...options.command })
   const proj = project({ commands: [cmd] })
   let target: LaunchTarget | null = { project: proj, command: cmd }
-  const output: [string, OutputStream, string][] = []
+  const output: [string, OutputStream | 'open' | 'close', string][] = []
   const h: Harness = {
     tree,
     events,
@@ -56,9 +56,13 @@ function harness(
         h.plans++
         return options.plan?.() ?? Promise.resolve({ ok: true, plan: { file: t.command.name, args: [], cwd: t.project.path, env: {} } })
       },
-      output: (_commandId, runId, stream, chunk) => {
-        if (chunk.toString() === 'boom') throw new Error('sink failed')
-        output.push([runId, stream, chunk.toString()])
+      output: {
+        open: (_commandId, runId, opened) => output.push([runId, 'open', opened.id]),
+        write: (_commandId, runId, stream, chunk) => {
+          if (chunk.toString() === 'boom') throw new Error('sink failed')
+          output.push([runId, stream, chunk.toString()])
+        },
+        close: (_commandId, runId, stream) => output.push([runId, 'close', stream]),
       },
       log: quietLog(),
       now: () => 42_000,
@@ -250,10 +254,18 @@ describe('supervisor state machine', () => {
     h.tree.last.stdout.write('out')
     h.tree.last.stderr.write('boom')
     h.tree.last.stderr.write('err')
+    h.tree.last.stdout.end()
+    h.tree.last.stderr.destroy()
     await settle()
-    expect(h.output).toEqual([
+    expect(h.output.slice(0, 3)).toEqual([
+      [state.runId, 'open', h.commandId],
       [state.runId, 'stdout', 'out'],
       [state.runId, 'stderr', 'err'],
+    ])
+    // Each stream reports its end once, whether it ended or was destroyed.
+    expect(h.output.slice(3).sort()).toEqual([
+      [state.runId, 'close', 'stderr'],
+      [state.runId, 'close', 'stdout'],
     ])
   })
 

@@ -3,6 +3,7 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
 import { Shell, type InfoState, type ShellProps } from '../../src/renderer/src/App'
 import type { ProjectActions } from '../../src/renderer/src/state/actions'
+import { createLogViewStore } from '../../src/renderer/src/state/logs'
 import type { ProcessesState } from '../../src/renderer/src/state/processes'
 import type { AppInfo, CommandProcessState, Notice, ProjectView } from '../../src/shared/api'
 
@@ -35,6 +36,7 @@ const render = (state: InfoState, overrides: Partial<ShellProps> = {}): string =
       processes: noProcesses,
       onLifecycle: () => Promise.resolve(null),
       actions: noActions,
+      logs: createLogViewStore({ read: () => new Promise(() => undefined), clear: () => new Promise(() => undefined) }),
       ...overrides,
     }),
   )

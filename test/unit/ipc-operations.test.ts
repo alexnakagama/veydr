@@ -4,12 +4,13 @@ import { createEventHub, type EventSubscriber } from '../../src/main/ipc/events'
 import { createOperationHandlers } from '../../src/main/ipc/handlers'
 import { registerEventSubscriptions, registerOperations } from '../../src/main/ipc/operations'
 import { createIpcRegistry, type InvokeEvent, type SenderFrame } from '../../src/main/ipc/register'
+import { createLogService } from '../../src/main/logs/service'
 import { createEnvironmentService } from '../../src/main/projects/environment'
 import { findCommand } from '../../src/main/projects/lookup'
 import { createProjectService } from '../../src/main/projects/service'
 import { createProcessStateRegistry } from '../../src/main/supervisor/state'
 import { createSupervisor } from '../../src/main/supervisor/supervisor'
-import { channels, contractEntries, internalChannels, type AppInfo } from '../../src/shared/api'
+import { channels, contractEntries, internalChannels, type AppInfo, type LogBatch } from '../../src/shared/api'
 import { command, config, project } from './support/config'
 import { FakeProcessTree } from './support/fake-process-tree'
 
@@ -57,11 +58,15 @@ function setup() {
   }
 
   const tree = new FakeProcessTree()
+  const logs = createLogService({
+    delivery: { active: () => hub.subscriberCount(channels.logs.onBatch) > 0, send: (batch) => hub.publish(channels.logs.onBatch, batch) },
+  })
   const supervisor = createSupervisor({
     processTree: tree,
     states: processStates,
     lookup: (commandId) => findCommand(store.current(), commandId),
     plan: (target) => Promise.resolve({ ok: true, plan: { file: target.command.name, args: [], cwd: target.project.path, env: {} } }),
+    output: logs,
     log,
   })
 
@@ -86,14 +91,14 @@ function setup() {
     },
     openInEditor: () => Promise.reject(new Error('not used')),
   }
-  registerOperations(registry, createOperationHandlers({ info, config: () => store.current(), processStates, supervisor, recovery, projects, environment, desktop }))
+  registerOperations(registry, createOperationHandlers({ info, config: () => store.current(), processStates, supervisor, recovery, projects, environment, desktop, logs }))
 
   const invoke = (channel: string, ...args: unknown[]): Promise<unknown> => {
     const listener = listeners.get(channel)
     if (listener === undefined) throw new Error(`no handler for ${channel}`)
     return Promise.resolve(listener({ senderFrame: mainFrame, sender }, ...args))
   }
-  return { registry, invoke, hub, processStates, sent, stored, secretCommand, plainCommand, log, tree, resolutions, supervisor, opened }
+  return { registry, invoke, hub, processStates, sent, stored, secretCommand, plainCommand, log, tree, resolutions, supervisor, opened, logs }
 }
 
 const invokeChannels = contractEntries.filter(({ spec }) => spec.kind === 'invoke').map(({ spec }) => spec.channel)
@@ -176,13 +181,46 @@ describe('registered operations', () => {
     const { invoke } = setup()
     const requests: Record<string, unknown> = {
       [channels.ports.list]: undefined,
-      [channels.logs.ack]: { batchId: 1 },
     }
     for (const [channel, request] of Object.entries(requests)) {
       const result = await (request === undefined ? invoke(channel) : invoke(channel, request))
       expect(result, channel).toMatchObject({ ok: false, error: { code: 'not_implemented' } })
     }
     expect(await invoke(channels.processes.start, { commandId: 'nope' })).toMatchObject({ ok: false, error: { code: 'validation' } })
+  })
+
+  it('streams output as redacted batches and answers logs.read, logs.clear, and logs.ack', async () => {
+    const { invoke, sent, secretCommand, tree, logs } = setup()
+    expect(await invoke(internalChannels.subscribe, { topic: channels.logs.onBatch, token })).toEqual({ ok: true, value: null })
+    const started = (await invoke(channels.processes.start, { commandId: secretCommand.id })) as { ok: true; value: { runId: string } }
+    const runId = started.value.runId
+    tree.last.stdout.write('token=hunter2-very-secret\r\nsecond')
+    tree.last.stderr.write('oops\n')
+    await new Promise((done) => setTimeout(done, 200))
+
+    const batches = sent.filter((m) => m.channel === channels.logs.onBatch).map((m) => m.payload as LogBatch)
+    const lines = batches.flatMap((b) => b.lines)
+    expect(lines.map((l) => [l.seq, l.stream, l.text])).toEqual([
+      [1, 'stdout', 'token=[redacted]'],
+      [2, 'stderr', 'oops'],
+      [3, 'stdout', 'second'],
+    ])
+    expect(JSON.stringify(sent)).not.toContain('hunter2')
+
+    expect(await invoke(channels.logs.read, { runId, fromSeq: 2, limit: 10 })).toMatchObject({
+      ok: true,
+      value: { runId, firstRetainedSeq: 1, nextSeq: 4, discarded: 0, lines: [{ seq: 2 }, { seq: 3 }] },
+    })
+    for (const batch of batches) expect(await invoke(channels.logs.ack, { batchId: batch.batchId })).toEqual({ ok: true, value: null })
+    expect(logs.batcher.stats().unacked).toBe(0)
+    expect(await invoke(channels.logs.clear, { runId })).toEqual({ ok: true, value: { clearedThroughSeq: 3 } })
+    expect(await invoke(channels.logs.read, { runId, fromSeq: 1, limit: 10 })).toMatchObject({ ok: true, value: { lines: [], firstRetainedSeq: null, nextSeq: 4 } })
+    expect(await invoke(channels.logs.read, { runId: '9b0f2a1e-0000-4000-8000-000000000000', fromSeq: 1, limit: 10 })).toMatchObject({
+      ok: false,
+      error: { code: 'not_found' },
+    })
+    expect(await invoke(channels.logs.read, { runId, fromSeq: 1, limit: 5001 })).toMatchObject({ ok: false, error: { code: 'validation' } })
+    logs.dispose()
   })
 
   it('resolves crash survivors through the recovery service', async () => {

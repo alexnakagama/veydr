@@ -44,6 +44,7 @@ An override can be marked **Secret**.
 - Saving a command without retyping a secret keeps its stored value.
 - Secret values are **stored unencrypted** in Veydr's configuration file, protected only by its file permissions (`0600`); see [configuration.md](configuration.md). The editor says so next to the variables.
 - The command itself receives the real value.
+- When the command prints the exact value, its output shows `[redacted]` instead (best effort; values shorter than 4 characters are not redacted, and the editor warns about them). See [logs.md](logs.md#secret-values-in-output).
 
 ## Editor
 

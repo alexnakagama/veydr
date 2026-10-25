@@ -2,7 +2,7 @@ import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
 import { describeExecution } from '../../src/renderer/src/App'
-import { CommandEditor, SECRET_STORAGE_DISCLOSURE } from '../../src/renderer/src/CommandEditor'
+import { CommandEditor, isUnredactableSecret, SECRET_REDACTION_NOTE, SECRET_STORAGE_DISCLOSURE, SHORT_SECRET_WARNING } from '../../src/renderer/src/CommandEditor'
 import { folderName } from '../../src/renderer/src/ProjectDialogs'
 import { shortcutFor } from '../../src/renderer/src/shortcuts'
 import { createProjectActions } from '../../src/renderer/src/state/actions'
@@ -40,6 +40,22 @@ describe('command editor', () => {
     expect(html).toContain('placeholder="unchanged (hidden)"')
     expect(html).toMatch(/<input type="text" aria-label="Variable 2 value"[^>]* value="3000"/)
     expect(html).toContain('Reveal variable 1')
+  })
+
+  it('states that redaction from output is best effort, and warns about secrets too short to redact', () => {
+    const html = editor(secretCommand)
+    expect(html).toContain(SECRET_REDACTION_NOTE.replace(/'/g, '&#x27;'))
+    expect(SECRET_REDACTION_NOTE).toMatch(/transformed, split, or partial values are not detected/)
+    expect(SHORT_SECRET_WARNING).toContain('shorter than 4 characters')
+    // A stored secret's value is unknown here (masked), so it cannot be judged.
+    expect(html).not.toContain('short-secret-warning')
+    expect([isUnredactableSecret(true, 'abc'), isUnredactableSecret(true, 'abcd'), isUnredactableSecret(false, 'ab'), isUnredactableSecret(true, ''), isUnredactableSecret(true, null)]).toEqual([
+      true,
+      false,
+      false,
+      false,
+      false,
+    ])
   })
 
   it('[spec:project-registry/shell-mode-labelled] shows the shell that interprets a shell command', () => {

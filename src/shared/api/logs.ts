@@ -1,15 +1,15 @@
 import { z } from 'zod'
+import { BATCH_MAX_LINES, MAX_LINE_BYTES, MAX_LOG_READ_LIMIT } from '../logs/limits'
 import { eventEnvelopeSchema, runIdSchema } from './processes'
 
-/** Upper bound for one `logs.read` page. */
-export const MAX_LOG_READ_LIMIT = 5_000
+export { MAX_LOG_READ_LIMIT }
 /** Upper bound for the lines of one live batch (design D11 flushes at 1,000 lines). */
-export const MAX_BATCH_LINES = 1_000
+export const MAX_BATCH_LINES = BATCH_MAX_LINES
 /**
  * Upper bound for the text of one line, in UTF-16 code units. Lines are cut at 16 KiB of UTF-8
  * (design D11), and a UTF-8 byte sequence never has more code units than bytes.
  */
-export const MAX_LINE_TEXT_LENGTH = 16 * 1024
+export const MAX_LINE_TEXT_LENGTH = MAX_LINE_BYTES
 
 const seqSchema = z.int().min(1)
 
@@ -24,7 +24,7 @@ export const logLineSchema = z.strictObject({
   stream: z.enum(logStreams),
   /** Capture time, milliseconds since the Unix epoch. */
   at: z.int().min(0),
-  /** Raw text; rendered only after ANSI processing (`src/shared/ansi`, L6). */
+  /** Raw text (secrets already redacted); rendered only after ANSI processing (`src/shared/ansi`). */
   text: z.string().max(MAX_LINE_TEXT_LENGTH),
   /** The line exceeded the per-line limit and was cut. */
   truncated: z.boolean(),
@@ -61,11 +61,20 @@ export const readLogsResponseSchema = z.strictObject({
   firstRetainedSeq: seqSchema.nullable(),
   /** Seq the next captured line will get. */
   nextSeq: seqSchema,
+  /** Lines discarded by the retention limits since the run started or was last cleared. */
+  discarded: z.int().min(0),
 })
 export type ReadLogsResponse = z.infer<typeof readLogsResponseSchema>
 
 export const runRefSchema = z.strictObject({ runId: runIdSchema })
 export type RunRef = z.infer<typeof runRefSchema>
+
+/**
+ * `logs.clear` result: lines up to `clearedThroughSeq` (0: none captured yet) were discarded; a
+ * batch line or skipped range at or below it, still on its way to the renderer, must be ignored.
+ */
+export const clearLogsResponseSchema = z.strictObject({ clearedThroughSeq: z.int().min(0) })
+export type ClearLogsResponse = z.infer<typeof clearLogsResponseSchema>
 
 export const ackRequestSchema = z.strictObject({ batchId: z.int().min(1) })
 export type AckRequest = z.infer<typeof ackRequestSchema>

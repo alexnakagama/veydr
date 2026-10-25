@@ -10,7 +10,7 @@ import {
   revealSecretRequestSchema,
   upsertCommandRequestSchema,
 } from './commands'
-import { ackRequestSchema, logBatchSchema, readLogsRequestSchema, readLogsResponseSchema, runRefSchema } from './logs'
+import { ackRequestSchema, clearLogsResponseSchema, logBatchSchema, readLogsRequestSchema, readLogsResponseSchema, runRefSchema } from './logs'
 import { portSnapshotSchema } from './ports'
 import {
   commandProcessStateSchema,
@@ -96,7 +96,7 @@ export const contract = {
   },
   logs: {
     read: invoke(channels.logs.read, readLogsRequestSchema, readLogsResponseSchema),
-    clear: invoke(channels.logs.clear, runRefSchema, done),
+    clear: invoke(channels.logs.clear, runRefSchema, clearLogsResponseSchema),
     onBatch: event(channels.logs.onBatch, logBatchSchema),
     ack: invoke(channels.logs.ack, ackRequestSchema, done),
   },

@@ -113,9 +113,13 @@ describe('supervisor on Linux', () => {
       // it holds a bounded number of chunks and never processes them.
       const held: Buffer[] = []
       let received = 0
-      const stalled: OutputSink = (_commandId, _runId, _stream, chunk) => {
-        received += chunk.length
-        if (held.length < 64) held.push(chunk)
+      const stalled: OutputSink = {
+        open: () => undefined,
+        write: (_commandId, _runId, _stream, chunk) => {
+          received += chunk.length
+          if (held.length < 64) held.push(chunk)
+        },
+        close: () => undefined,
       }
       const { supervisor, events, commandId } = harness(s, { execution: node(fixture('flood'), ['--bytes', String(BYTES), '--report', report]) }, stalled)
 

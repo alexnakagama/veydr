@@ -19,11 +19,20 @@ export type PlanResult = { readonly ok: true; readonly plan: SpawnPlan } | { rea
 export type OutputStream = 'stdout' | 'stderr'
 
 /**
- * Receives every chunk of a run's output. It is called synchronously from the stream's `data`
- * event and must not block: output is always consumed, whatever happens downstream
- * (spec: output does not block processes).
+ * Receives a run's output. Its methods are called synchronously from the run's streams and must
+ * not block: output is always consumed, whatever happens downstream (spec: output does not block
+ * processes).
  */
-export type OutputSink = (commandId: string, runId: string, stream: OutputStream, chunk: Buffer) => void
+export interface OutputSink {
+  /** A run was spawned with `command`'s configuration; called before any output of the run. */
+  open(commandId: string, runId: string, command: CommandConfig): void
+  /** A chunk of the run's `stream`. */
+  write(commandId: string, runId: string, stream: OutputStream, chunk: Buffer): void
+  /** The run's `stream` is closed: no more output follows on it. */
+  close(commandId: string, runId: string, stream: OutputStream): void
+}
+
+const NO_OUTPUT: OutputSink = { open: () => undefined, write: () => undefined, close: () => undefined }
 
 export interface SupervisorDeps {
   readonly processTree: Pick<ProcessTree, 'spawn'>
@@ -158,7 +167,7 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
 function createCommandActor(commandId: string, deps: SupervisorDeps): CommandActor {
   const now = deps.now ?? Date.now
   const newRunId = deps.newRunId ?? randomUUID
-  const output = deps.output ?? (() => undefined)
+  const output = deps.output ?? NO_OUTPUT
 
   let status: Status = 'idle'
   /** The run whose processes may be alive; set from spawn until the run has ended. */
@@ -184,16 +193,21 @@ function createCommandActor(commandId: string, deps: SupervisorDeps): CommandAct
 
   const graceFor = (run: Run): number => deps.lookup(commandId)?.command.stopTimeoutMs ?? run.graceMs
 
+  /** Calls the sink; a failing sink is logged and never stops output from being consumed. */
+  const toSink = (runId: string, call: () => void): void => {
+    try {
+      call()
+    } catch (error) {
+      deps.log.record('error', 'supervisor.output-sink-failed', { commandId, runId, message: errorMessage(error) })
+    }
+  }
+
   const drain = (run: Run, stream: OutputStream): void => {
     const readable = run.process[stream]
-    readable.on('data', (chunk: Buffer) => {
-      try {
-        output(commandId, run.runId, stream, chunk)
-      } catch (error) {
-        deps.log.record('error', 'supervisor.output-sink-failed', { commandId, runId: run.runId, message: errorMessage(error) })
-      }
-    })
+    readable.on('data', (chunk: Buffer) => toSink(run.runId, () => output.write(commandId, run.runId, stream, chunk)))
     readable.on('error', (error) => deps.log.record('warn', 'supervisor.output-error', { commandId, runId: run.runId, stream, message: error.message }))
+    // Emitted after the end of the stream, or after an error: either way no more output follows.
+    readable.once('close', () => toSink(run.runId, () => output.close(commandId, run.runId, stream)))
   }
 
   /**
@@ -281,6 +295,7 @@ function createCommandActor(commandId: string, deps: SupervisorDeps): CommandAct
 
     const run: Run = { runId, process, startedAt: now(), graceMs: target.command.stopTimeoutMs, leaderExit: null, ended: false }
     current = run
+    toSink(runId, () => output.open(commandId, runId, target.command))
     drain(run, 'stdout')
     drain(run, 'stderr')
     process.onExit((info) => {

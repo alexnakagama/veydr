@@ -3,6 +3,7 @@ import type { ApiResult, AppInfo, CommandProcessState, CommandView, Notice, Proj
 import { CommandEditor } from './CommandEditor'
 import { ConfirmDialog } from './components/Modal'
 import { EnvironmentDialog } from './EnvironmentDialog'
+import { LogView } from './LogView'
 import { describeExit, describeSurvivors, formatUptime } from './process-format'
 import { AddProjectDialog, RenameProjectDialog } from './ProjectDialogs'
 import { SettingsView } from './SettingsView'
@@ -10,6 +11,7 @@ import { ShortcutsDialog, shortcutFor, type ShortcutCommand } from './shortcuts'
 import type { Stores } from './state'
 import { createProjectActions, type ProjectActions } from './state/actions'
 import { createLifecycleRequest, type LifecycleAction, type LifecycleRequest } from './state/lifecycle'
+import type { LogViewStore } from './state/logs'
 import type { ProcessesState } from './state/processes'
 import { loadProjects, type ProjectsState } from './state/projects'
 import { UNREACHABLE, useStore } from './state/store'
@@ -73,6 +75,7 @@ export function App({ stores }: { stores: Stores }): JSX.Element {
       processes={processes}
       onLifecycle={onLifecycle}
       actions={actions}
+      logs={stores.logs}
     />
   )
 }
@@ -88,6 +91,8 @@ export interface ShellProps {
   readonly processes: ProcessesState
   readonly onLifecycle: LifecycleRequest
   readonly actions: ProjectActions
+  /** Output of the selected command. */
+  readonly logs: LogViewStore
 }
 
 /** A dialog the shell shows over everything else; at most one at a time. */
@@ -98,6 +103,7 @@ type DialogState =
   | { readonly kind: 'edit-command'; readonly project: ProjectView; readonly command: CommandView | null }
   | { readonly kind: 'remove-command'; readonly command: CommandView }
   | { readonly kind: 'environment'; readonly command: CommandView }
+  | { readonly kind: 'clear-output'; readonly command: CommandView }
   | { readonly kind: 'shortcuts' }
 
 /** A lifecycle request in progress or its failure, per command. */
@@ -125,7 +131,7 @@ function filterProjects(projects: readonly ProjectView[], filter: string): reado
 }
 
 /** The window layout for given states; separate from `App` so it renders without IPC. */
-export function Shell({ info, notices, noticeError, onDismissNotice, onResolveSurvivors, projects, processes, onLifecycle, actions }: ShellProps): JSX.Element {
+export function Shell({ info, notices, noticeError, onDismissNotice, onResolveSurvivors, projects, processes, onLifecycle, actions, logs }: ShellProps): JSX.Element {
   const [view, setView] = useState<View>('projects')
   const [filter, setFilter] = useState('')
   const [selected, setSelected] = useState<{ projectId: string | null; commandId: string | null }>({ projectId: null, commandId: null })
@@ -138,6 +144,7 @@ export function Shell({ info, notices, noticeError, onDismissNotice, onResolveSu
   const quitting = notices.find((notice) => notice.kind === 'quitting')
   const banners = notices.filter((notice) => notice.kind !== 'quitting')
   const visibleProjects = useMemo(() => (projects.status === 'ready' ? filterProjects(projects.projects, filter) : []), [projects, filter])
+  const selectedCommand = projects.status === 'ready' ? projects.projects.flatMap((p) => p.commands).find((c) => c.id === selected.commandId) : undefined
 
   const openDialog = (next: DialogState | null): void => {
     setDialog(next)
@@ -278,40 +285,51 @@ export function Shell({ info, notices, noticeError, onDismissNotice, onResolveSu
         </aside>
 
         <main className="content" aria-labelledby="view-title">
-          {info.status === 'ready' && !info.info.platformSupported && (
-            <div className="banner" role="alert">
-              Process features are not available on this platform.
-            </div>
-          )}
-          {info.status === 'error' && (
-            <div className="banner" role="alert">
-              {info.message}
-            </div>
-          )}
-          {noticeError !== null && (
-            <div className="banner" role="alert">
-              Notices are unavailable: {noticeError}
-            </div>
-          )}
-          {banners.length > 0 && <Notices notices={banners} onDismiss={onDismissNotice} onResolveSurvivors={onResolveSurvivors} />}
-          {view === 'projects' && (
-            <ProjectsView
-              projects={projects}
-              visible={visibleProjects}
-              filtered={filter.trim() !== ''}
-              processes={processes}
-              lifecycle={lifecycle}
-              onLifecycle={requestLifecycle}
-              selectedCommandId={selected.commandId}
-              onSelect={(projectId, commandId) => setSelected({ projectId, commandId })}
-              onAddProject={addProject}
-              pickError={pickError}
-              actions={actions}
-              onDialog={openDialog}
+          <div className="content-scroll">
+            {info.status === 'ready' && !info.info.platformSupported && (
+              <div className="banner" role="alert">
+                Process features are not available on this platform.
+              </div>
+            )}
+            {info.status === 'error' && (
+              <div className="banner" role="alert">
+                {info.message}
+              </div>
+            )}
+            {noticeError !== null && (
+              <div className="banner" role="alert">
+                Notices are unavailable: {noticeError}
+              </div>
+            )}
+            {banners.length > 0 && <Notices notices={banners} onDismiss={onDismissNotice} onResolveSurvivors={onResolveSurvivors} />}
+            {view === 'projects' && (
+              <ProjectsView
+                projects={projects}
+                visible={visibleProjects}
+                filtered={filter.trim() !== ''}
+                processes={processes}
+                lifecycle={lifecycle}
+                onLifecycle={requestLifecycle}
+                selectedCommandId={selected.commandId}
+                onSelect={(projectId, commandId) => setSelected({ projectId, commandId })}
+                onAddProject={addProject}
+                pickError={pickError}
+                actions={actions}
+                onDialog={openDialog}
+              />
+            )}
+            {view === 'settings' && <SettingsView actions={actions} />}
+            {view === 'about' && <AboutView info={info} />}
+          </div>
+          {view === 'projects' && selectedCommand !== undefined && (
+            <LogPanel
+              key={selectedCommand.id}
+              store={logs}
+              command={selectedCommand}
+              runId={processes.commands.get(selectedCommand.id)?.runId ?? null}
+              onClear={() => openDialog({ kind: 'clear-output', command: selectedCommand })}
             />
           )}
-          {view === 'settings' && <SettingsView actions={actions} />}
-          {view === 'about' && <AboutView info={info} />}
         </main>
       </div>
       {dialog?.kind === 'add-project' && (
@@ -376,6 +394,17 @@ export function Shell({ info, notices, noticeError, onDismissNotice, onResolveSu
             for (const notice of notices) if (notice.kind === 'environment' && !warnings.includes(notice.message)) onDismissNotice(notice.id)
           }}
           onClose={() => openDialog(null)}
+        />
+      )}
+      {dialog?.kind === 'clear-output' && (
+        <ConfirmDialog
+          title={`Clear the output of ${dialog.command.name}?`}
+          message={<p>The output Veydr keeps for the current run is discarded. The command keeps running, and new output is shown as it arrives.</p>}
+          confirmLabel="Clear output"
+          pending={dialogBusy}
+          error={dialogError}
+          onCancel={() => openDialog(null)}
+          onConfirm={() => confirm(() => logs.clear())}
         />
       )}
       {dialog?.kind === 'shortcuts' && <ShortcutsDialog onClose={() => openDialog(null)} />}
@@ -466,6 +495,14 @@ function SurvivorActions({ onResolve, onResolved }: { onResolve: SurvivorRequest
       )}
     </div>
   )
+}
+
+/** Shows the output of `runId`, the current run of `command` (`null`: it has not run in this session). */
+function LogPanel({ store, command, runId, onClear }: { store: LogViewStore; command: CommandView; runId: string | null; onClear: () => void }): JSX.Element {
+  useEffect(() => {
+    store.show(command.id, runId)
+  }, [store, command.id, runId])
+  return <LogView store={store} commandName={command.name} onClear={onClear} />
 }
 
 const activeStatuses: ReadonlySet<CommandProcessState['status']> = new Set(['starting', 'running', 'stopping'])

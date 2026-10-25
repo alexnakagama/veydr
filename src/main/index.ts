@@ -16,6 +16,7 @@ import { createEventHub } from './ipc/events'
 import { createOperationHandlers } from './ipc/handlers'
 import { registerEventSubscriptions, registerOperations } from './ipc/operations'
 import { createIpcRegistry, originOf } from './ipc/register'
+import { createLogService } from './logs/service'
 import { selectPlatform } from './platform'
 import { runNetworkProbe } from './probe'
 import { createDesktopActions } from './projects/desktop'
@@ -92,13 +93,22 @@ function start(): void {
       for (const message of warnings) environmentNotices.push(notices.add({ kind: 'environment', severity: 'warning', message, files: [] }).id)
     },
   })
+  // Output of every run, in memory only (design D11). Live batches go to the subscribed window;
+  // a newly subscribed document never acknowledges batches sent before it, so delivery restarts.
+  const logs = createLogService({
+    delivery: {
+      active: () => hub.subscriberCount(channels.logs.onBatch) > 0,
+      send: (batch) => hub.publish(channels.logs.onBatch, batch),
+    },
+  })
+  hub.onSubscribe(channels.logs.onBatch, () => logs.resetDelivery())
   // Commands start only on an explicit user request (`processes.start`/`restart`); nothing is started here.
-  // Output is drained and discarded until the log pipeline (L6) consumes it.
   const supervisor = createSupervisor({
     processTree: platform.processTree,
     states: processStates,
     lookup: (commandId) => findCommand(config.current(), commandId),
     plan: createPlanner({ resolver: platform.commandResolver, environment }),
+    output: logs,
     ledger,
     log,
   })
@@ -147,7 +157,7 @@ function start(): void {
   })
   registerOperations(
     registry,
-    createOperationHandlers({ info, config: () => config.current(), processStates, supervisor, recovery, projects, environment, desktop }),
+    createOperationHandlers({ info, config: () => config.current(), processStates, supervisor, recovery, projects, environment, desktop, logs }),
   )
 
   // Quitting stops every running command first (design D10); see `app/quit.ts`.

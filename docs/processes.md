@@ -11,7 +11,7 @@ Veydr starts a command only when you press **Start** or **Restart** for it. Noth
 - The command gets your login shell's environment, without Veydr's own runtime variables, with your overrides applied last. See [commands.md](commands.md) for modes, the environment, and secrets.
 - The project folder must exist, and the working directory must stay inside it, also after resolving symbolic links.
 - The command receives only standard input, output, and error (descriptors 0–2); descriptors Veydr itself holds open are closed before the command runs.
-- Standard input is not connected (`/dev/null`). Standard output and error are always read, even when nobody looks at them, so a command never blocks on writing output.
+- Standard input is not connected (`/dev/null`). Standard output and error are always read, even when nobody looks at them, so a command never blocks on writing output. How output is kept and shown is described in [logs.md](logs.md).
 - Each command runs in its own session and process group (its first process, the *leader*, has PID = process group ID = session ID). This keeps signals for the command away from Veydr and from everything else you run.
 
 If a command cannot be started, it shows **Failed** with the reason, and no process is left behind:
@@ -129,4 +129,3 @@ Evidence: `test/unit/linux-process-tree.test.ts` › "reports a process it is no
 These parts of process management are scheduled for later steps of the Linux MVP and do not exist in this build:
 
 - **AppImage variables.** Variables an AppImage runtime adds to existing ones (for example `LD_LIBRARY_PATH`, `PYTHONPATH`, `XDG_DATA_DIRS`) are not cleaned yet (packaging step).
-- **Logs.** Output is read and discarded; it is not shown yet.

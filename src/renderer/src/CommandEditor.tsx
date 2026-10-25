@@ -1,6 +1,7 @@
-import { useState, type FormEvent, type JSX } from 'react'
+import { Fragment, useState, type FormEvent, type JSX } from 'react'
 import type { CommandInput, CommandView } from '../../shared/api'
 import { DEFAULT_STOP_TIMEOUT_MS, MAX_STOP_TIMEOUT_MS } from '../../shared/config'
+import { MIN_REDACTED_SECRET_LENGTH, REDACTION_MARKER } from '../../shared/logs/limits'
 import { Modal } from './components/Modal'
 import type { ProjectActions } from './state/actions'
 
@@ -10,6 +11,15 @@ export const DEFAULT_SHELL = '/bin/sh'
 /** Shown wherever secret values are entered (spec: secret environment values masked; docs/configuration.md). */
 export const SECRET_STORAGE_DISCLOSURE =
   'Secret values are masked here and only shown when you reveal them, but Veydr stores them unencrypted in its configuration file, which only your user account can read.'
+
+/** Shown with the secret disclosure (spec: best-effort secret redaction). */
+export const SECRET_REDACTION_NOTE = `When the command prints a secret value exactly, its output shows ${REDACTION_MARKER} instead. This is best effort: transformed, split, or partial values are not detected, and values shorter than ${MIN_REDACTED_SECRET_LENGTH} characters are not redacted.`
+
+/** Shown for a secret value too short to redact (spec: secret too short to redact). */
+export const SHORT_SECRET_WARNING = `This value is shorter than ${MIN_REDACTED_SECRET_LENGTH} characters, so it will not be redacted from the command's output.`
+
+/** True for a secret value that is entered (known here) but too short to be redacted. */
+export const isUnredactableSecret = (secret: boolean, value: string | null): boolean => secret && value !== null && value.length > 0 && value.length < MIN_REDACTED_SECRET_LENGTH
 
 interface EnvRow {
   /** Stable key for React; rows have no ID of their own. */
@@ -215,33 +225,43 @@ export function CommandEditor({ projectId, projectName, command, actions, onSave
           <p className="muted" role="note" data-testid="secret-disclosure">
             {SECRET_STORAGE_DISCLOSURE}
           </p>
+          <p className="muted" role="note" data-testid="secret-redaction-note">
+            {SECRET_REDACTION_NOTE}
+          </p>
           {draft.env.map((row, index) => {
             const masked = row.secret && !row.revealed
             return (
-              <div className="row env-row" key={row.rowId} data-testid="env-row">
-                <input type="text" aria-label={`Variable ${index + 1} name`} value={row.key} spellCheck={false} onChange={(e) => updateRow(row.rowId, { key: e.target.value })} />
-                <input
-                  type={masked ? 'password' : 'text'}
-                  aria-label={`Variable ${index + 1} value`}
-                  value={row.value ?? ''}
-                  placeholder={row.value === null ? 'unchanged (hidden)' : ''}
-                  autoComplete="off"
-                  spellCheck={false}
-                  onChange={(e) => updateRow(row.rowId, { value: e.target.value })}
-                />
-                <label className="choice">
-                  <input type="checkbox" checked={row.secret} onChange={(e) => updateRow(row.rowId, { secret: e.target.checked, revealed: false })} />
-                  Secret
-                </label>
-                {row.secret && (
-                  <button type="button" className="button" aria-label={`${row.revealed ? 'Hide' : 'Reveal'} variable ${index + 1}`} onClick={() => reveal(row)}>
-                    {row.revealed ? 'Hide' : 'Reveal'}
+              <Fragment key={row.rowId}>
+                <div className="row env-row" data-testid="env-row">
+                  <input type="text" aria-label={`Variable ${index + 1} name`} value={row.key} spellCheck={false} onChange={(e) => updateRow(row.rowId, { key: e.target.value })} />
+                  <input
+                    type={masked ? 'password' : 'text'}
+                    aria-label={`Variable ${index + 1} value`}
+                    value={row.value ?? ''}
+                    placeholder={row.value === null ? 'unchanged (hidden)' : ''}
+                    autoComplete="off"
+                    spellCheck={false}
+                    onChange={(e) => updateRow(row.rowId, { value: e.target.value })}
+                  />
+                  <label className="choice">
+                    <input type="checkbox" checked={row.secret} onChange={(e) => updateRow(row.rowId, { secret: e.target.checked, revealed: false })} />
+                    Secret
+                  </label>
+                  {row.secret && (
+                    <button type="button" className="button" aria-label={`${row.revealed ? 'Hide' : 'Reveal'} variable ${index + 1}`} onClick={() => reveal(row)}>
+                      {row.revealed ? 'Hide' : 'Reveal'}
+                    </button>
+                  )}
+                  <button type="button" className="button" aria-label={`Remove variable ${index + 1}`} onClick={() => update({ env: draft.env.filter((r) => r.rowId !== row.rowId) })}>
+                    Remove
                   </button>
+                </div>
+                {isUnredactableSecret(row.secret, row.value) && (
+                  <p className="field-warning" role="status" data-testid="short-secret-warning">
+                    {SHORT_SECRET_WARNING}
+                  </p>
                 )}
-                <button type="button" className="button" aria-label={`Remove variable ${index + 1}`} onClick={() => update({ env: draft.env.filter((r) => r.rowId !== row.rowId) })}>
-                  Remove
-                </button>
-              </div>
+              </Fragment>
             )
           })}
           <button

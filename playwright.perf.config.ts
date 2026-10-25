@@ -1,6 +1,6 @@
 import { defineConfig } from '@playwright/test'
 
-// Performance scenarios P1–P4 (design D14) land in task group L6.
+// Performance scenarios P1–P4 (design D14): `test/perf/logs.perf.ts`.
 export default defineConfig({
   testDir: 'test/perf',
   testMatch: '**/*.perf.ts',

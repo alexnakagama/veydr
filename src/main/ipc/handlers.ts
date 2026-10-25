@@ -1,5 +1,6 @@
 import type { AppInfo } from '../../shared/api'
 import type { Config } from '../../shared/config'
+import type { LogService } from '../logs/service'
 import type { DesktopActions } from '../projects/desktop'
 import { previewEntries, type EnvironmentService } from '../projects/environment'
 import { findCommand } from '../projects/lookup'
@@ -21,14 +22,15 @@ export interface HandlerServices {
   readonly projects: ProjectService
   readonly environment: EnvironmentService
   readonly desktop: DesktopActions
+  readonly logs: Pick<LogService, 'read' | 'clear' | 'ack'>
 }
 
 /**
  * The handler of every operation in the contract. Operations whose services land in later task
- * groups answer with a `not_implemented` error until then: logs (L6), ports (L7).
+ * groups answer with a `not_implemented` error until then: ports (L7).
  */
 export function createOperationHandlers(services: HandlerServices): OperationHandlers {
-  const { info, config, processStates, supervisor, recovery, projects, environment, desktop } = services
+  const { info, config, processStates, supervisor, recovery, projects, environment, desktop, logs } = services
   return {
     app: {
       getInfo: () => info,
@@ -74,9 +76,12 @@ export function createOperationHandlers(services: HandlerServices): OperationHan
       resolveSurvivors: async ({ action }) => ({ remaining: await recovery.resolve(action) }),
     },
     logs: {
-      read: notImplemented('logs.read'),
-      clear: notImplemented('logs.clear'),
-      ack: notImplemented('logs.ack'),
+      read: (request) => logs.read(request),
+      clear: ({ runId }) => logs.clear(runId),
+      ack: ({ batchId }) => {
+        logs.ack(batchId)
+        return null
+      },
     },
     ports: {
       list: notImplemented('ports.list'),

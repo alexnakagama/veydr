@@ -1,4 +1,5 @@
 import type { VeydrApi } from '../../../shared/api'
+import { connectLogStore, createLogViewStore, type LogViewStore } from './logs'
 import { connectNoticeStore, createNoticeStore, type NoticeStore } from './notices'
 import { connectProcessStore, createProcessStore, type ProcessStore } from './processes'
 import { createProjectStore, loadProjects, type ProjectsState } from './projects'
@@ -8,6 +9,8 @@ export interface Stores {
   readonly notices: NoticeStore
   readonly projects: WritableStore<ProjectsState>
   readonly processes: ProcessStore
+  /** Output of the selected command's current run. */
+  readonly logs: LogViewStore
 }
 
 /**
@@ -19,9 +22,11 @@ export function connectStores(api: VeydrApi): Stores {
     notices: createNoticeStore(),
     projects: createProjectStore(),
     processes: createProcessStore(),
+    logs: createLogViewStore(api.logs),
   }
   connectNoticeStore(stores.notices, api.app)
   connectProcessStore(stores.processes, api.processes)
+  connectLogStore(stores.logs, api.logs)
   // Process states follow the configured commands: events of removed commands are ignored.
   stores.projects.subscribe(() => {
     const projects = stores.projects.getState()

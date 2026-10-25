@@ -6,7 +6,7 @@ import { createLifecycleRequest } from '../../src/renderer/src/state/lifecycle'
 import { createSurvivorRequest } from '../../src/renderer/src/state/survivors'
 import { contractEntries, type VeydrApi } from '../../src/shared/api'
 
-// Operations with a real handler (L2–L5). Everything else answers `not_implemented`, so no UI path
+// Operations with a real handler (L2–L6). Everything else answers `not_implemented`, so no UI path
 // may call it until its task group lands; extend this list when one does.
 const implemented = new Set([
   'app.getInfo',
@@ -31,6 +31,10 @@ const implemented = new Set([
   'processes.restart',
   'processes.resolveSurvivors',
   'settings.get',
+  'logs.read',
+  'logs.clear',
+  'logs.onBatch',
+  'logs.ack',
 ])
 
 /** An API whose every function records its use and answers like main does for the operation. */
