@@ -10,7 +10,7 @@ export const DEFAULT_SHELL = '/bin/sh'
 
 /** Shown wherever secret values are entered (spec: secret environment values masked; docs/configuration.md). */
 export const SECRET_STORAGE_DISCLOSURE =
-  'Secret values are masked here and only shown when you reveal them, but Veydr stores them unencrypted in its configuration file, which only your user account can read.'
+  'Secret values are masked here (best effort) and only shown when you reveal them, but Veydr stores them unencrypted in its configuration file, which only your user account can read.'
 
 /** Shown with the secret disclosure (spec: best-effort secret redaction). */
 export const SECRET_REDACTION_NOTE = `When the command prints a secret value exactly, its output shows ${REDACTION_MARKER} instead. This is best effort: transformed, split, or partial values are not detected, and values shorter than ${MIN_REDACTED_SECRET_LENGTH} characters are not redacted.`

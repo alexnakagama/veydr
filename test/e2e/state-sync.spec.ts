@@ -1,4 +1,4 @@
-import { existsSync, readdirSync, rmSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Page } from '@playwright/test'
 import type { Config } from '../../src/shared/config'
@@ -114,6 +114,43 @@ test('[spec:config-storage/no-usable-configuration] an empty configuration is re
     const kept = readdirSync(seeded.configDir).filter((name) => name.startsWith('config.corrupt-'))
     expect(kept.length).toBeGreaterThanOrEqual(1)
     for (const name of kept) await expect(notice).toContainText(name)
+  })
+})
+
+test('[spec:config-storage/newer-schema-protected] a configuration from a newer version is shown read-only, edits are refused, and the file is not modified', async () => {
+  // Fits the current schema apart from its version, so the projects can be shown read-only.
+  const newer = JSON.stringify({ ...seededConfig('/home/dev/shop'), schemaVersion: 7 })
+  const seeded = seed({ 'config.json': newer })
+  const file = join(seeded.configDir, 'config.json')
+  const before = statSync(file)
+
+  await withApp(seeded, async ({ window }) => {
+    const notice = window.getByTestId('notice')
+    await expect(notice).toHaveCount(1)
+    await expect(notice).toHaveAttribute('data-kind', 'newer-schema')
+    await expect(notice).toContainText('created by a newer version of Veydr (schema version 7')
+    await expect(notice).toContainText('changes are disabled')
+    await expectProjectShown(window)
+
+    await window.getByRole('button', { name: 'Rename shop', exact: true }).click()
+    const dialog = window.getByTestId('project-dialog')
+    await dialog.getByLabel('Project name', { exact: true }).fill('storefront')
+    await dialog.getByRole('button', { name: 'Rename', exact: true }).click()
+    await expect(dialog.getByTestId('project-dialog-error')).toContainText('Configuration changes are disabled: it was created by a newer version of Veydr. Nothing was changed.')
+    await dialog.getByRole('button', { name: 'Cancel', exact: true }).click()
+
+    await window.getByRole('button', { name: 'Remove api', exact: true }).click()
+    const confirm = window.getByTestId('confirm-dialog')
+    await confirm.getByRole('button', { name: 'Remove command', exact: true }).click()
+    await expect(confirm.getByTestId('confirm-error')).toContainText('Configuration changes are disabled')
+    await confirm.getByRole('button', { name: 'Cancel', exact: true }).click()
+    await expectProjectShown(window)
+
+    expect(readFileSync(file, 'utf8')).toBe(newer)
+    const after = statSync(file)
+    expect({ mtime: after.mtimeMs, ctime: after.ctimeMs, mode: after.mode }).toEqual({ mtime: before.mtimeMs, ctime: before.ctimeMs, mode: before.mode })
+    // No backup, pre-migration copy, or other configuration file was written next to it.
+    expect(readdirSync(seeded.configDir).filter((name) => name.startsWith('config'))).toEqual(['config.json'])
   })
 })
 

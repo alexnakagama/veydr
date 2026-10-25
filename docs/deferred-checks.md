@@ -24,4 +24,11 @@ Tasks 9.1, 9.4 and 9.5 in `tasks.md` reference this list.
 | Packaging contents | Done. The archive holds `out/main`, `out/preload`, `out/renderer`, `package.json`, and `zod` only; no probe strings, source maps, docs, or tests; no update metadata. | `test/packaging/package-contents.test.ts` |
 | Process sandbox on target distros | Veydr now refuses `--no-sandbox`; the AppImage's desktop entry no longer adds it. The `.deb` ships the AppArmor profile and sets `chrome-sandbox` setuid only without user namespaces. Container results: `install-linux.md`. A real Ubuntu 24.04 host (AppArmor restriction): **BLOCKED**, no host available (task 9.6). | `test/packaging/package-contents.test.ts`, E2E `failure.spec.ts`, `scripts/smoke-linux.sh` |
 | Single instance / focus | Not re-checked in L8: the containers run `--smoke-test` only, under Xvfb (X11), which takes the lock but does not exercise a second launch. Remains as in F1. | — |
-| Network isolation at OS level | Not done in L8: no packet capture or network-namespace run of the packaged app. Remains for L9. | — |
+| Network isolation at OS level | Not done in L8: no packet capture or network-namespace run of the packaged app. Remains for L9 (done in L9, see below). | — |
+
+## Status after L9 (2026-10-25)
+
+| Area | Outcome | Evidence |
+|---|---|---|
+| Network isolation at OS level | Done for the packaged `.deb`: during the whole acceptance pass (two projects, three commands, flood, ports, quit, crash and recovery) `tcpdump` on the container's interface recorded no IP or IPv6 frame sent by the container (3 of 3 runs on the final package). A positive control proves the capture sees the container: before the run, the container opens a TCP connection to TEST-NET-1, whose SYN frames must be captured. Only frames with the container's MAC address count, because the bridge also carries the Docker host's own multicast (for example its mDNS service browsing); the kernel's ARP upkeep (a re-check of the gateway a few seconds after the control used it: in 3 of 17 earlier runs one frame from the container appeared during the run, and the one kept for inspection was this ARP request) is recorded separately, since any traffic would also appear as IP. A full user session also runs offline in the E2E suite, in a network namespace with only a loopback interface. | `scripts/acceptance-linux.sh` (`test/packaging/acceptance-linux-steps.jsonl`), `test/e2e/offline.spec.ts` |
+| Single instance / focus | Unchanged: not re-checked on X11 or other desktops. | — |

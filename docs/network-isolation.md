@@ -21,6 +21,11 @@ Every test using the `veydr` fixture runs the app with two observers (`test/e2e/
 
 The guard fails a test when either observer reports an attempt, or when an observer was not active (so an empty report is never vacuous).
 
+## Offline and at the OS level
+
+* **Offline E2E** (`test/e2e/offline.spec.ts`): the suite runs a full session (register, edit, start, output, ports, stop) inside a network namespace that has only a loopback interface and no route; every step works.
+* **Packet capture of the packaged app** (`scripts/acceptance-linux.sh`, task 10.2): the installed `.deb` is driven through the acceptance pass in a Debian 13 container while `tcpdump` records the container's interface. No IP or IPv6 frame sent by the container was recorded (2026-10-25, 3 of 3 runs on the final package); a positive control (a TCP connection attempt to TEST-NET-1 before the run) shows the capture does see the container's frames. ARP frames are recorded apart: the kernel re-checks the gateway on its own, and any traffic would also appear as IP. This sees every process in the container, including the ones outside Node and Chromium listed below, but only for that run and that environment (Xvfb, openbox, no desktop services such as GVfs or Avahi).
+
 ## The guard is a regression detector, not a proof
 
 It cannot see, and the repository does not claim to rule out:

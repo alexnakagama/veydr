@@ -86,7 +86,7 @@ When Veydr itself receives `SIGTERM`, `SIGINT`, or `SIGHUP` (for example when yo
 
 Veydr records every command it starts in `runtime/ledger.json` in its [configuration directory](configuration.md): the command, the run, and the leader, session, and observed descendants of the run, each identified by PID, start time, and boot. A run is recorded right after it starts; changes to its observed descendants are written at most once per second. A run is removed from the record once none of its processes is alive. After a clean quit, the record holds no runs.
 
-If Veydr ends abnormally (a crash, or `SIGKILL`), the processes of its running commands keep running. On the next launch, Veydr checks the record:
+If Veydr ends abnormally (a crash, or `SIGKILL`), the processes of its running commands keep running, with one exception: their output pipes now have no reader, so a process that writes output after that usually ends itself (the write fails with `SIGPIPE`/`EPIPE`, which ends most programs). Processes that write nothing, or ignore the failed write, keep running. On the next launch, Veydr checks the record:
 
 - A recorded process counts only if it is still the same process: same boot, same PID, same start time. A PID that now belongs to another process is ignored and never signalled; so is everything recorded before the last reboot. Besides the recorded processes, every live process in a recorded command's session that started no earlier than its leader counts, unless the leader's PID now belongs to another process.
 - Processes that still run are listed (name, PID, and command line) in a notice. **Veydr does not start, restart, or signal anything on its own.** You choose **Terminate** (`SIGTERM`, then `SIGKILL` after 5 seconds; processes that still survive are listed again) or **Leave running**. Leave running takes effect at once, without a further question: Veydr stops tracking those processes, does not list them again, and will not stop them when it quits; ending them is then up to you.
@@ -112,13 +112,15 @@ Evidence: `test/integration/signal-safety.test.ts` › "never signals a recorded
 
 ### After an abnormal exit
 
-When Veydr ends abnormally, the processes of its running commands keep running **until Veydr is started again** (and you terminate them). Linux offers Node.js no way to have them ended together with Veydr. Only what Veydr recorded can be found then:
+When Veydr ends abnormally, the processes of its running commands keep running **until Veydr is started again** (and you terminate them), unless they end themselves by writing output that no longer has a reader (see [Crash recovery](#crash-recovery)). Linux offers Node.js no way to have them ended together with Veydr. Only what Veydr recorded can be found then:
 
 - a descendant that appeared in the last few seconds before the crash may not be recorded yet (Veydr observes descendants every 2 seconds and writes the record at most once per second); it is still found if it stayed in the command's session;
 - a descendant that left the command's session before Veydr observed it (see [Escaped descendants](#escaped-descendants)) is not found;
 - a command that was being started at the moment of the crash may not be recorded at all (a run is reported as running only once its record is written, which normally takes a few milliseconds after the start; if the disk stops responding, the command stays in **Starting** until the write completes or fails).
 
 Evidence: `test/integration/crash-recovery.test.ts` › "finds every surviving process after the supervisor host is SIGKILLed"; `test/e2e/recovery.spec.ts` › "after a crash, survivors are listed and terminated only on confirmation".
+
+Observed in the packaged acceptance pass (2026-10-25, `scripts/acceptance-linux.sh`, task 10.2): after `SIGKILL` of Veydr, a listening command that writes nothing kept running and was listed and terminated on the next launch; a shell loop printing a line every 0.2 s ended by itself within a second.
 
 ### Processes Veydr may not signal
 

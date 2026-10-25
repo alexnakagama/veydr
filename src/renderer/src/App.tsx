@@ -771,7 +771,8 @@ function CommandRow({ command, missing, state, loading, ui, selected, onSelect, 
           </button>
         </span>
       </div>
-      <code className="command-line" data-testid="command-line">
+      {/* Scrollable when long, so Chromium makes it a focus stop; the group gives that stop a name. */}
+      <code className="command-line" role="group" aria-label={`Command line of ${command.name}`} data-testid="command-line">
         {describeExecution(command.execution)}
       </code>
       {state?.status === 'exited' && state.error !== null && (

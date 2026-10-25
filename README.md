@@ -25,7 +25,7 @@ Veydr is a desktop app for developers who run several long-lived commands across
 Veydr does nothing unless you ask it to. A command starts only when you press **Start**, a command that exits is never restarted on its own, and when you quit, Veydr stops what it started. It runs entirely on your machine: no accounts, no cloud sync, no telemetry, and no network access of its own.
 
 > [!NOTE]
-> **Linux only; Windows is not yet supported.** Veydr is an early release (version 0.0.0). It runs on Linux x64. Windows and macOS are not supported yet, and no prebuilt releases have been published. You build the packages from source (see [Installation](#installation)).
+> **Linux only; Windows not yet supported.** Veydr is an early release (version 0.0.0). It runs on Linux x64. Windows and macOS are not supported yet, and no prebuilt releases have been published. You build the packages from source (see [Installation](#installation)).
 
 ## Contents
 
@@ -261,7 +261,7 @@ Everything is stored in `~/.config/Veydr/` (or `$XDG_CONFIG_HOME/Veydr/`): `conf
 ## Known limitations
 
 - **Secrets are stored unencrypted.** Values marked secret are masked in the interface, but they are saved in plain text in `config.json`, protected only by its file permissions (`0600`). Redaction in output is best effort: values that are transformed, split, or shorter than 4 characters are not detected. Values from your own login environment are shown unmasked in the **Env** view. See [commands.md](docs/commands.md#secrets) and [logs.md](docs/logs.md#secret-values-in-output).
-- **Crash cleanup has limits.** If Veydr ends abnormally, the processes of its running commands keep running until Veydr is started again and you terminate them. A descendant that detached into its own session before Veydr observed it, or one started in the last moments before the crash, may not be found. Processes running as another user (for example through `sudo`) cannot be stopped. See [processes.md](docs/processes.md#limitations).
+- **Crash cleanup has limits.** If Veydr ends abnormally, the processes of its running commands keep running until Veydr is started again and you terminate them (a process that writes output after that usually ends itself, because its output has no reader any more). A descendant that detached into its own session before Veydr observed it, or one started in the last moments before the crash, may not be found. Processes running as another user (for example through `sudo`) cannot be stopped. See [processes.md](docs/processes.md#limitations).
 - **Ubuntu 24.04** is not yet validated on a real host, and the AppImage does not start there by default (see [Platform support](#platform-support)).
 - **No interactive input.** Commands' standard input is not connected, and terminal features beyond colors are not emulated.
 - **Ports** covers listening TCP sockets in Veydr's own network namespace. UDP, outgoing connections, and container-internal ports are not shown. See [ports.md](docs/ports.md).

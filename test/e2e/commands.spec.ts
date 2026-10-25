@@ -92,6 +92,25 @@ test('[spec:project-registry/secret-masked-by-default] a secret is masked in the
   })
 })
 
+test('[spec:config-storage/limitation-disclosed] marking a variable secret shows that it is stored unencrypted and that masking and redaction are best effort', async () => {
+  await withVeydr(async ({ window }) => {
+    await window.getByRole('button', { name: 'Add command to shop', exact: true }).click()
+    const editor = window.getByTestId('command-editor')
+    await editor.getByRole('button', { name: 'Add variable', exact: true }).click()
+    await editor.getByLabel('Variable 1 name', { exact: true }).fill('API_TOKEN')
+    await editor.getByRole('checkbox', { name: 'Secret', exact: true }).check()
+    const storage = editor.getByTestId('secret-disclosure')
+    const redaction = editor.getByTestId('secret-redaction-note')
+    await expect(storage).toBeVisible()
+    await expect(storage).toHaveAttribute('role', 'note')
+    await expect(storage).toContainText('masked here (best effort) and only shown when you reveal them')
+    await expect(storage).toContainText('Veydr stores them unencrypted in its configuration file')
+    await expect(redaction).toBeVisible()
+    await expect(redaction).toContainText('its output shows [redacted] instead. This is best effort')
+    await editor.getByRole('button', { name: 'Cancel', exact: true }).click()
+  })
+})
+
 test('[spec:project-registry/shell-mode-labelled] [spec:project-registry/working-directory-outside-project-rejected] labels shell commands with their shell and rejects a working directory outside the project', async () => {
   await withVeydr(async ({ window, config }) => {
     await window.getByRole('button', { name: 'Add command to shop', exact: true }).click()

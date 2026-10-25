@@ -171,7 +171,7 @@ describe('migrating an older schema (synthetic v0 → v1 fixture)', () => {
 })
 
 describe('a newer schema (synthetic v2 fixture)', () => {
-  it('leaves the file byte-identical and disables changes', async () => {
+  it('[spec:config-storage/newer-schema-protected] leaves the file byte-identical and disables changes', async () => {
     const original = fixture('v2.json')
     const dir = setupDir({ 'config.json': original })
     const before = statSync(join(dir, 'config.json'))

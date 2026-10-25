@@ -2,15 +2,23 @@
 // Spec traceability (design D14). Lists every scenario in the OpenSpec specs
 // and the tests that reference it with `[spec:<capability>/<scenario-slug>]`.
 //
-//   node scripts/spec-coverage.mjs             informational: always exits 0 for unmapped scenarios
-//   node scripts/spec-coverage.mjs --required  exits 1 if any scenario is unmapped
+//   node scripts/spec-coverage.mjs                 required (the default since L9, used by `npm run
+//                                                  verify`): exits 1 if any scenario is unmapped
+//   node scripts/spec-coverage.mjs --informational lists unmapped scenarios but exits 0 for them
 //
+// `--required` (the earlier opt-in) is still accepted; any other argument is an error.
 // A tag naming a scenario that does not exist is a typo and fails in both modes.
 import { readdirSync, readFileSync } from 'node:fs'
 import { join, relative, resolve } from 'node:path'
 
 const root = resolve(import.meta.dirname, '..')
-const required = process.argv.includes('--required')
+const args = process.argv.slice(2)
+const unknownArgs = args.filter((arg) => arg !== '--required' && arg !== '--informational')
+if (unknownArgs.length > 0 || (args.includes('--required') && args.includes('--informational'))) {
+  console.error(`usage: spec-coverage.mjs [--required | --informational] (got: ${args.join(' ')})`)
+  process.exit(2)
+}
+const required = !args.includes('--informational')
 
 export function slugify(title) {
   return title
