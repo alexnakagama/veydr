@@ -23,6 +23,7 @@ export interface LedgerEntry {
   readonly starttime: string
   readonly role: string
   readonly port?: number | null
+  readonly ports?: readonly number[]
 }
 
 export interface ProcessView {

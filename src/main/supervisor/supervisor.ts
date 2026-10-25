@@ -3,7 +3,7 @@ import type { CommandProcessState, RunState } from '../../shared/api'
 import type { CommandConfig, ProjectConfig } from '../../shared/config'
 import { NotFoundError, ShuttingDownError } from '../errors'
 import { SpawnError, UnsupportedPlatformError } from '../platform/errors'
-import type { ExitInfo, ManagedProcess, PlatformLog, ProcInfo, ProcessTree, SpawnPlan, StopResult } from '../platform/types'
+import type { ExitInfo, ManagedProcess, PlatformLog, ProcInfo, ProcessIdentity, ProcessTree, SpawnPlan, StopResult } from '../platform/types'
 import type { RunLedger } from './ledger'
 import type { ProcessStateRegistry } from './state'
 
@@ -70,11 +70,22 @@ export interface Supervisor {
    * planned or spawned), with the stop timeout that applies to each.
    */
   active(): readonly ActiveRun[]
+  /**
+   * The processes attributed to each command's current run (design D8), observed after the call.
+   * Read-only: used to attribute listening ports (design D12).
+   */
+  attribution(): Promise<readonly AttributedRun[]>
 }
 
 export interface ActiveRun {
   readonly commandId: string
   readonly graceMs: number
+}
+
+export interface AttributedRun {
+  readonly commandId: string
+  readonly runId: string
+  readonly processes: readonly ProcessIdentity[]
 }
 
 interface Run {
@@ -96,6 +107,8 @@ interface CommandActor {
   restart(): Promise<void>
   /** Stop timeout of the run whose processes may be alive or that is being started, or `null` if there is none. */
   activeGraceMs(): number | null
+  /** The run whose processes may be alive, or `null`. */
+  currentRun(): { readonly runId: string; readonly process: ManagedProcess } | null
 }
 
 const errorMessage = (error: unknown): string => (error instanceof Error ? error.message : String(error))
@@ -150,6 +163,24 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
         const graceMs = actor.activeGraceMs()
         return graceMs === null ? [] : [{ commandId, graceMs }]
       }),
+    async attribution() {
+      const runs = [...actors.entries()].flatMap(([commandId, actor]) => {
+        const run = actor.currentRun()
+        return run === null ? [] : [{ commandId, run }]
+      })
+      const attributed = await Promise.all(
+        runs.map(async ({ commandId, run }) => {
+          try {
+            return [{ commandId, runId: run.runId, processes: await run.process.attributed() }]
+          } catch (error) {
+            // One run's processes cannot be determined: its ports are shown without a command.
+            deps.log.record('warn', 'supervisor.attribution-failed', { commandId, runId: run.runId, message: errorMessage(error) })
+            return []
+          }
+        }),
+      )
+      return attributed.flat()
+    },
   }
 }
 
@@ -327,5 +358,6 @@ function createCommandActor(commandId: string, deps: SupervisorDeps): CommandAct
     // A run that could not be stopped completely is not replaced: the survivors are reported instead.
     restart: () => enqueue(async () => ((await stop()) ? start() : undefined)),
     activeGraceMs: () => (current === null ? startingGraceMs : graceFor(current)),
+    currentRun: () => current,
   }
 }

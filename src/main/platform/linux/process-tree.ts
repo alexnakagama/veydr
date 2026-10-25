@@ -7,7 +7,7 @@ import { SpawnError } from '../errors'
 import type { ExitInfo, ManagedProcess, PlatformLog, ProcInfo, ProcessIdentity, ProcessTree, SpawnPlan, StopResult } from '../types'
 import { createCleanSpawner, findExecutable, spawnChildDirectly, type CleanSpawner, type SpawnChild } from './executable'
 import { createProcReader, type ProcReader } from './proc-reader'
-import { displayName, isLive, type ProcStat } from './procfs'
+import { displayName, isLive, linuxIdentity, type ProcStat } from './procfs'
 
 export interface LinuxProcessTreeOptions {
   readonly proc?: ProcReader
@@ -50,24 +50,13 @@ interface TreeContext {
 interface Scanner {
   add(run: LinuxRun): void
   remove(run: LinuxRun): void
+  /** Lets every run observe one /proc read that starts after this call. */
+  observeNow(): Promise<void>
 }
 
 const errnoOf = (error: unknown): string | undefined => (error as NodeJS.ErrnoException | null)?.code
 const messageOf = (error: unknown): string => (error instanceof Error ? error.message : String(error))
 const delay = (ms: number): Promise<void> => new Promise((done) => setTimeout(done, ms))
-
-/** Linux process identity (design D8): PID, start time (`/proc/<pid>/stat` field 22) and boot ID. */
-export function linuxIdentity(bootId: string, stat: Pick<ProcStat, 'pid' | 'starttime'>): ProcessIdentity {
-  return { pid: stat.pid, token: `${bootId}:${stat.starttime}` }
-}
-
-/** The boot ID and start time of a Linux identity token; `null` if it is not one. */
-export function parseLinuxIdentity(identity: ProcessIdentity): { readonly bootId: string; readonly starttime: number } | null {
-  const match = /^([0-9a-f-]{36}):(\d+)$/.exec(identity.token)
-  if (match === null) return null
-  const starttime = Number(match[2])
-  return Number.isSafeInteger(starttime) ? { bootId: match[1] ?? '', starttime } : null
-}
 
 /**
  * Linux process trees (design D8). Each command runs in its own session (`detached: true` makes
@@ -226,6 +215,7 @@ function createScanner(read: () => Promise<Scan>, intervalMs: number, log: Platf
   const runs = new Set<LinuxRun>()
   let timer: NodeJS.Timeout | null = null
   let scanning = false
+  let fresh: Promise<void> | null = null
 
   // One /proc read serves every active run. A periodic scan is skipped while one is in flight.
   const scan = async (periodic: boolean): Promise<void> => {
@@ -258,6 +248,14 @@ function createScanner(read: () => Promise<Scan>, intervalMs: number, log: Platf
         clearInterval(timer)
         timer = null
       }
+    },
+    observeNow() {
+      // Requests made before the read starts share it; it starts after all of them.
+      fresh ??= Promise.resolve().then(() => {
+        fresh = null
+        return scan(false)
+      })
+      return fresh
     },
   }
 }
@@ -327,6 +325,15 @@ class LinuxRun implements ManagedProcess {
   async remaining(): Promise<readonly ProcInfo[]> {
     await this.refresh()
     return this.liveInfo()
+  }
+
+  /**
+   * One /proc read serves every run asked at the same time. If it fails, the last observation is
+   * used (like `remaining`).
+   */
+  async attributed(): Promise<readonly ProcessIdentity[]> {
+    await this.ctx.scanner.observeNow()
+    return [...this.members.values()].map((s) => linuxIdentity(this.bootId, s))
   }
 
   stop({ graceMs }: { graceMs: number }): Promise<StopResult> {

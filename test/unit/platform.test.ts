@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { NotImplementedError, selectPlatform, UnsupportedPlatformError, type Platform } from '../../src/main/platform'
+import { selectPlatform, UnsupportedPlatformError, type Platform } from '../../src/main/platform'
 import type { CommandSpec, SpawnPlan } from '../../src/main/platform/types'
 import { createWindowsPlatform } from '../../src/main/platform/windows'
 
@@ -64,23 +64,8 @@ describe('other unsupported operating systems', () => {
   }
 })
 
-// processTree.spawn is implemented (L3) and covered by test/integration/linux-process-tree.test.ts;
-// the survivor operations (L4) by test/unit/linux-survivors.test.ts and test/integration/crash-recovery.test.ts;
-// launchDetached, the resolver, and the environment (L5) by test/integration/linux-commands.test.ts.
-const linuxImplemented = new Set([
-  'processTree.spawn',
-  'processTree.launchDetached',
-  'processTree.findSurvivors',
-  'processTree.terminateSurvivors',
-  'commandResolver.resolve',
-  'envProvider.base',
-])
-
-describe('Linux placeholders', () => {
-  for (const [name, run] of Object.entries(everyOperation(selectPlatform('linux')))) {
-    if (linuxImplemented.has(name)) continue
-    it(`${name} reports that it is not implemented yet`, async () => {
-      await expect(run()).rejects.toBeInstanceOf(NotImplementedError)
-    })
-  }
-})
+// Every Linux operation is implemented, each covered where it lives: processTree.spawn (L3) by
+// test/integration/linux-process-tree.test.ts; the survivor operations (L4) by
+// test/unit/linux-survivors.test.ts and test/integration/crash-recovery.test.ts; launchDetached,
+// the resolver, and the environment (L5) by test/integration/linux-commands.test.ts; the port
+// inspector (L7) by test/unit/linux-ports.test.ts and test/integration/linux-ports.test.ts.

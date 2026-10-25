@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type JSX } from 'react'
-import type { ApiResult, AppInfo, CommandProcessState, CommandView, Notice, ProjectView } from '../../shared/api'
+import type { ApiResult, AppInfo, CommandProcessState, CommandView, Notice, ProjectView, VeydrApi } from '../../shared/api'
 import { CommandEditor } from './CommandEditor'
 import { ConfirmDialog } from './components/Modal'
 import { EnvironmentDialog } from './EnvironmentDialog'
 import { LogView } from './LogView'
 import { describeExit, describeSurvivors, formatUptime } from './process-format'
+import { PortsView } from './PortsView'
 import { AddProjectDialog, RenameProjectDialog } from './ProjectDialogs'
 import { SettingsView } from './SettingsView'
 import { ShortcutsDialog, shortcutFor, type ShortcutCommand } from './shortcuts'
@@ -17,10 +18,11 @@ import { loadProjects, type ProjectsState } from './state/projects'
 import { UNREACHABLE, useStore } from './state/store'
 import { createSurvivorRequest, type SurvivorAction, type SurvivorRequest } from './state/survivors'
 
-type View = 'projects' | 'settings' | 'about'
+type View = 'projects' | 'ports' | 'settings' | 'about'
 
 const views: readonly { id: View; label: string }[] = [
   { id: 'projects', label: 'Projects' },
+  { id: 'ports', label: 'Ports' },
   { id: 'settings', label: 'Settings' },
   { id: 'about', label: 'About' },
 ]
@@ -76,6 +78,7 @@ export function App({ stores }: { stores: Stores }): JSX.Element {
       onLifecycle={onLifecycle}
       actions={actions}
       logs={stores.logs}
+      ports={window.veydr.ports}
     />
   )
 }
@@ -93,6 +96,8 @@ export interface ShellProps {
   readonly actions: ProjectActions
   /** Output of the selected command. */
   readonly logs: LogViewStore
+  /** Listening ports, read while the ports view is shown. */
+  readonly ports: Pick<VeydrApi['ports'], 'list'>
 }
 
 /** A dialog the shell shows over everything else; at most one at a time. */
@@ -131,7 +136,7 @@ function filterProjects(projects: readonly ProjectView[], filter: string): reado
 }
 
 /** The window layout for given states; separate from `App` so it renders without IPC. */
-export function Shell({ info, notices, noticeError, onDismissNotice, onResolveSurvivors, projects, processes, onLifecycle, actions, logs }: ShellProps): JSX.Element {
+export function Shell({ info, notices, noticeError, onDismissNotice, onResolveSurvivors, projects, processes, onLifecycle, actions, logs, ports }: ShellProps): JSX.Element {
   const [view, setView] = useState<View>('projects')
   const [filter, setFilter] = useState('')
   const [selected, setSelected] = useState<{ projectId: string | null; commandId: string | null }>({ projectId: null, commandId: null })
@@ -318,6 +323,8 @@ export function Shell({ info, notices, noticeError, onDismissNotice, onResolveSu
                 onDialog={openDialog}
               />
             )}
+            {/* Mounted only while shown: the view polls while it is mounted (design D12). */}
+            {view === 'ports' && <PortsView api={ports} projects={projects} />}
             {view === 'settings' && <SettingsView actions={actions} />}
             {view === 'about' && <AboutView info={info} />}
           </div>

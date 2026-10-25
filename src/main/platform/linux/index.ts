@@ -1,13 +1,11 @@
 import type { Platform, PlatformLog } from '../types'
-import { NotImplementedError } from '../errors'
 import { createCleanSpawner } from './executable'
 import { createLinuxEnvProvider } from './environment'
+import { createLinuxPortInspector } from './ports'
+import { createProcReader } from './proc-reader'
 import { createLinuxProcessTree } from './process-tree'
 import { createLinuxCommandResolver } from './resolver'
 import { createLinuxSurvivors } from './survivors'
-
-const notYetAsync = (operation: string): Promise<never> =>
-  Promise.reject(new NotImplementedError(operation))
 
 export interface LinuxPlatformOptions {
   readonly log?: PlatformLog
@@ -16,12 +14,13 @@ export interface LinuxPlatformOptions {
 }
 
 /**
- * Linux platform. Process trees (L3), crash survivors (L4), command resolution and the login
- * environment (L5) are implemented; ports are a placeholder until L7.
+ * Linux platform: process trees (L3), crash survivors (L4), command resolution and the login
+ * environment (L5), and listening ports (L7).
  */
 export function createLinuxPlatform(options: LinuxPlatformOptions = {}): Platform {
   const logOption = options.log === undefined ? {} : { log: options.log }
-  const tree = createLinuxProcessTree(logOption)
+  const proc = createProcReader()
+  const tree = createLinuxProcessTree({ proc, ...logOption })
   const survivors = createLinuxSurvivors(logOption)
   const env = createLinuxEnvProvider({ inherited: options.inherited ?? process.env, spawner: createCleanSpawner(), ...logOption })
   return {
@@ -35,8 +34,6 @@ export function createLinuxPlatform(options: LinuxPlatformOptions = {}): Platfor
     },
     commandResolver: createLinuxCommandResolver(),
     envProvider: env,
-    portInspector: {
-      list: () => notYetAsync('portInspector.list'),
-    },
+    portInspector: createLinuxPortInspector({ bootId: () => proc.bootId(), ...logOption }),
   }
 }

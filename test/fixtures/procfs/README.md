@@ -13,3 +13,4 @@ tests (`test/unit/linux-procfs.test.ts`). Only the directory of the executable i
 | `stat-zombie.txt` | `/proc/<pid>/stat` of a zombie (state `Z`) |
 | `stat-cat.txt` | `/proc/self/stat` of `cat` |
 | `boot_id.txt` | `/proc/sys/kernel/random/boot_id` |
+| `status-cat.txt` | `/proc/self/status` of `cat` (real, effective, saved, and file-system user IDs on the `Uid:` line) |

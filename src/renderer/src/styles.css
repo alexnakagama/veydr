@@ -814,3 +814,43 @@ kbd {
   margin-left: auto;
   text-align: right;
 }
+
+/* L7: ports */
+
+.ports-section {
+  margin-top: 20px;
+}
+
+.ports-section h2 {
+  margin: 0 0 8px;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.ports-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-variant-numeric: tabular-nums;
+}
+
+.ports-table th,
+.ports-table td {
+  padding: 4px 12px 4px 0;
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+  vertical-align: baseline;
+}
+
+.ports-table th {
+  color: var(--text-muted);
+  font-weight: 500;
+}
+
+.ports-number {
+  width: 6em;
+}
+
+.ports-note {
+  margin: 12px 0 0;
+  font-size: 12px;
+}

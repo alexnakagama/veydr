@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { ProcReader } from '../../src/main/platform/linux/proc-reader'
-import { linuxIdentity, parseLinuxIdentity } from '../../src/main/platform/linux/process-tree'
+import { linuxIdentity, parseLinuxIdentity } from '../../src/main/platform/linux/procfs'
 import type { ProcStat } from '../../src/main/platform/linux/procfs'
 import { createLinuxSurvivors } from '../../src/main/platform/linux/survivors'
 import type { LedgerEntry, Survivor } from '../../src/main/platform/types'

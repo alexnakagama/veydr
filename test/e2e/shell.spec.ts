@@ -22,6 +22,8 @@ test('the shell is keyboard navigable in a stable focus order', async ({ window 
   await window.keyboard.press('Tab')
   expect(await focused(window)).toEqual({ text: 'Projects', focusVisible: true })
   await window.keyboard.press('Tab')
+  expect(await focused(window)).toEqual({ text: 'Ports', focusVisible: true })
+  await window.keyboard.press('Tab')
   expect(await focused(window)).toEqual({ text: 'Settings', focusVisible: true })
   await window.keyboard.press('Tab')
   expect(await focused(window)).toEqual({ text: 'About', focusVisible: true })
@@ -35,6 +37,8 @@ test('the shell is keyboard navigable in a stable focus order', async ({ window 
 
   await window.keyboard.press('Shift+Tab')
   expect(await focused(window)).toEqual({ text: 'Settings', focusVisible: true })
+  await window.keyboard.press('Shift+Tab')
+  expect(await focused(window)).toEqual({ text: 'Ports', focusVisible: true })
   await window.keyboard.press('Shift+Tab')
   expect(await focused(window)).toEqual({ text: 'Projects', focusVisible: true })
   await window.keyboard.press('Space')

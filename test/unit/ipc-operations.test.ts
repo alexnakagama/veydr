@@ -5,6 +5,8 @@ import { createOperationHandlers } from '../../src/main/ipc/handlers'
 import { registerEventSubscriptions, registerOperations } from '../../src/main/ipc/operations'
 import { createIpcRegistry, type InvokeEvent, type SenderFrame } from '../../src/main/ipc/register'
 import { createLogService } from '../../src/main/logs/service'
+import type { PortSnapshot } from '../../src/main/platform/types'
+import { createPortService } from '../../src/main/ports/service'
 import { createEnvironmentService } from '../../src/main/projects/environment'
 import { findCommand } from '../../src/main/projects/lookup'
 import { createProjectService } from '../../src/main/projects/service'
@@ -91,14 +93,16 @@ function setup() {
     },
     openInEditor: () => Promise.reject(new Error('not used')),
   }
-  registerOperations(registry, createOperationHandlers({ info, config: () => store.current(), processStates, supervisor, recovery, projects, environment, desktop, logs }))
+  const sockets: { snapshot: PortSnapshot } = { snapshot: { takenAt: 1_761_400_000_000, ports: [] } }
+  const ports = createPortService({ inspector: { list: () => Promise.resolve(sockets.snapshot) }, attribution: () => supervisor.attribution() })
+  registerOperations(registry, createOperationHandlers({ info, config: () => store.current(), processStates, supervisor, recovery, projects, environment, desktop, logs, ports }))
 
   const invoke = (channel: string, ...args: unknown[]): Promise<unknown> => {
     const listener = listeners.get(channel)
     if (listener === undefined) throw new Error(`no handler for ${channel}`)
     return Promise.resolve(listener({ senderFrame: mainFrame, sender }, ...args))
   }
-  return { registry, invoke, hub, processStates, sent, stored, secretCommand, plainCommand, log, tree, resolutions, supervisor, opened, logs }
+  return { registry, invoke, hub, processStates, sent, stored, secretCommand, plainCommand, log, tree, resolutions, supervisor, opened, logs, sockets }
 }
 
 const invokeChannels = contractEntries.filter(({ spec }) => spec.kind === 'invoke').map(({ spec }) => spec.channel)
@@ -177,15 +181,32 @@ describe('registered operations', () => {
     expect(opened).toEqual([projectId])
   })
 
-  it('answers operations of later task groups with not_implemented, after validating the request', async () => {
-    const { invoke } = setup()
-    const requests: Record<string, unknown> = {
-      [channels.ports.list]: undefined,
+  it('answers ports.list with listening ports, attributing those of a running command to it', async () => {
+    const { invoke, tree, sockets, secretCommand } = setup()
+    expect(await invoke(channels.ports.list)).toEqual({ ok: true, value: { refreshedAt: 1_761_400_000_000, ports: [] } })
+
+    await invoke(channels.processes.start, { commandId: secretCommand.id })
+    const leader = tree.last
+    const descendant = leader.pid * 100
+    sockets.snapshot = {
+      takenAt: 1_761_400_003_000,
+      ports: [
+        { family: 'ipv4', address: '127.0.0.1', port: 3000, owner: { kind: 'known', processes: [{ identity: { pid: descendant, token: `fake:${descendant}` }, name: 'node' }] } },
+        { family: 'ipv6', address: '::', port: 5432, owner: { kind: 'known', processes: [{ identity: { pid: 77, token: 'fake:77' }, name: 'postgres' }] } },
+        { family: 'ipv4', address: '0.0.0.0', port: 631, owner: { kind: 'restricted' } },
+      ],
     }
-    for (const [channel, request] of Object.entries(requests)) {
-      const result = await (request === undefined ? invoke(channel) : invoke(channel, request))
-      expect(result, channel).toMatchObject({ ok: false, error: { code: 'not_implemented' } })
-    }
+    expect(await invoke(channels.ports.list)).toEqual({
+      ok: true,
+      value: {
+        refreshedAt: 1_761_400_003_000,
+        ports: [
+          { family: 'ipv4', address: '127.0.0.1', port: 3000, owner: { kind: 'known', pid: descendant, name: 'node', commandId: secretCommand.id } },
+          { family: 'ipv6', address: '::', port: 5432, owner: { kind: 'known', pid: 77, name: 'postgres', commandId: null } },
+          { family: 'ipv4', address: '0.0.0.0', port: 631, owner: { kind: 'restricted' } },
+        ],
+      },
+    })
     expect(await invoke(channels.processes.start, { commandId: 'nope' })).toMatchObject({ ok: false, error: { code: 'validation' } })
   })
 

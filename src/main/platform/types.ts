@@ -55,6 +55,11 @@ export interface ManagedProcess {
   /** Attributed processes still alive, including the leader until it has exited. */
   remaining(): Promise<readonly ProcInfo[]>
   /**
+   * Identities of the attributed processes still alive (the leader included until it has exited),
+   * from an observation made after the call (e.g. to attribute listening ports, design D12).
+   */
+  attributed(): Promise<readonly ProcessIdentity[]>
+  /**
    * Terminates every attributed process: graceful request, then forced after `graceMs`.
    * Resolves once nothing attributed is alive (the leader's exit has been observed) or the forced
    * stop gave up; concurrent calls share one stop.
@@ -91,21 +96,31 @@ export type ResolveResult =
   | { readonly ok: true; readonly plan: SpawnPlan }
   | { readonly ok: false; readonly diagnostics: readonly string[] }
 
-export interface PortOwnerKnown {
-  readonly kind: 'known'
-  readonly pid: number
+/** A process holding a listening socket. */
+export interface PortProcess {
+  readonly identity: ProcessIdentity
   readonly name: string
 }
-export type PortOwner = PortOwnerKnown | { readonly kind: 'restricted' } | { readonly kind: 'unknown' }
+
+/**
+ * Who holds a listening socket (design D12): the processes holding it (oldest first; a socket can
+ * be shared, e.g. inherited by a child), `restricted` when the OS does not reveal them to this user,
+ * or `unknown` when they cannot be determined for another reason (e.g. the holder just exited).
+ */
+export type PortOwner =
+  | { readonly kind: 'known'; readonly processes: readonly [PortProcess, ...PortProcess[]] }
+  | { readonly kind: 'restricted' }
+  | { readonly kind: 'unknown' }
 
 export interface ListeningPort {
-  readonly protocol: 'tcp' | 'tcp6'
+  readonly family: 'ipv4' | 'ipv6'
   readonly address: string
   readonly port: number
   readonly owner: PortOwner
 }
 
 export interface PortSnapshot {
+  /** When the sockets were read, milliseconds since the Unix epoch. */
   readonly takenAt: number
   readonly ports: readonly ListeningPort[]
 }
@@ -143,6 +158,7 @@ export interface EnvProvider {
   base(): Promise<{ env: Env; warnings: string[] }>
 }
 
+/** Lists listening TCP sockets. Read-only: never signals a process or opens a connection. */
 export interface PortInspector {
   list(): Promise<PortSnapshot>
 }

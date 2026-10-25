@@ -37,6 +37,7 @@ const render = (state: InfoState, overrides: Partial<ShellProps> = {}): string =
       onLifecycle: () => Promise.resolve(null),
       actions: noActions,
       logs: createLogViewStore({ read: () => new Promise(() => undefined), clear: () => new Promise(() => undefined) }),
+      ports: { list: () => new Promise<never>(() => undefined) },
       ...overrides,
     }),
   )

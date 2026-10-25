@@ -46,6 +46,8 @@ A command's *processes* are:
 1. every live process in the command's session, which includes every descendant that changed only its process group, and
 2. every descendant Veydr has **observed**: Veydr reads `/proc` right after the start, every 2 seconds while the command runs, and when a stop begins, and remembers each descendant by PID and start time. A remembered descendant still belongs to the command after it starts its own session.
 
+The same rule decides which listening ports belong to a command ([ports.md](ports.md)); `/proc` is then also read at every refresh of the ports view.
+
 ## Stopping
 
 When you stop a command:

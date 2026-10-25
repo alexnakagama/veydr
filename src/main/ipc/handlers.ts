@@ -1,6 +1,7 @@
 import type { AppInfo } from '../../shared/api'
 import type { Config } from '../../shared/config'
 import type { LogService } from '../logs/service'
+import type { PortService } from '../ports/service'
 import type { DesktopActions } from '../projects/desktop'
 import { previewEntries, type EnvironmentService } from '../projects/environment'
 import { findCommand } from '../projects/lookup'
@@ -10,7 +11,7 @@ import { NotFoundError } from '../errors'
 import type { CrashRecovery } from '../supervisor/recovery'
 import type { ProcessStateRegistry } from '../supervisor/state'
 import type { Supervisor } from '../supervisor/supervisor'
-import { notImplemented, type OperationHandlers } from './operations'
+import type { OperationHandlers } from './operations'
 
 export interface HandlerServices {
   readonly info: AppInfo
@@ -23,14 +24,12 @@ export interface HandlerServices {
   readonly environment: EnvironmentService
   readonly desktop: DesktopActions
   readonly logs: Pick<LogService, 'read' | 'clear' | 'ack'>
+  readonly ports: PortService
 }
 
-/**
- * The handler of every operation in the contract. Operations whose services land in later task
- * groups answer with a `not_implemented` error until then: ports (L7).
- */
+/** The handler of every operation in the contract. */
 export function createOperationHandlers(services: HandlerServices): OperationHandlers {
-  const { info, config, processStates, supervisor, recovery, projects, environment, desktop, logs } = services
+  const { info, config, processStates, supervisor, recovery, projects, environment, desktop, logs, ports } = services
   return {
     app: {
       getInfo: () => info,
@@ -84,7 +83,7 @@ export function createOperationHandlers(services: HandlerServices): OperationHan
       },
     },
     ports: {
-      list: notImplemented('ports.list'),
+      list: () => ports.list(),
     },
     settings: {
       get: () => config().settings,

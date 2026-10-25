@@ -1,4 +1,5 @@
 // Pure parsers for Linux /proc files (proc(5)). No I/O here; see `proc-reader.ts`.
+import type { ProcessIdentity } from '../types'
 
 /** The fields of `/proc/<pid>/stat` Veydr uses. */
 export interface ProcStat {
@@ -82,7 +83,29 @@ export function displayName(stat: Pick<ProcStat, 'comm'>, args: readonly string[
   return base === '' ? stat.comm : base
 }
 
+/**
+ * The real, effective, saved, and file-system user IDs from `/proc/<pid>/status` (its `Uid:` line),
+ * which every user can read; `null` if the line is missing or malformed.
+ */
+export function parseStatusUids(text: string): number[] | null {
+  const line = /^Uid:\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s*$/m.exec(text)
+  return line === null ? null : line.slice(1).map(Number)
+}
+
 /** True for a /proc directory entry that names a process. */
 export function isPidEntry(name: string): boolean {
   return UNSIGNED.test(name) && name !== '0'
+}
+
+/** Linux process identity (design D8): PID, start time (`/proc/<pid>/stat` field 22) and boot ID. */
+export function linuxIdentity(bootId: string, stat: Pick<ProcStat, 'pid' | 'starttime'>): ProcessIdentity {
+  return { pid: stat.pid, token: `${bootId}:${stat.starttime}` }
+}
+
+/** The boot ID and start time of a Linux identity token; `null` if it is not one. */
+export function parseLinuxIdentity(identity: ProcessIdentity): { readonly bootId: string; readonly starttime: number } | null {
+  const match = /^([0-9a-f-]{36}):(\d+)$/.exec(identity.token)
+  if (match === null) return null
+  const starttime = Number(match[2])
+  return Number.isSafeInteger(starttime) ? { bootId: match[1] ?? '', starttime } : null
 }

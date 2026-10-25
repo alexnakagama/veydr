@@ -1,6 +1,5 @@
 import type { z } from 'zod'
 import { contractEntries, internalContract, type Contract, type InvokeSpec } from '../../shared/api'
-import { NotImplementedError } from '../platform/errors'
 import type { EventHub } from './events'
 import type { Handler, IpcRegistry } from './register'
 
@@ -14,13 +13,6 @@ export type HandlerFor<S> = S extends InvokeSpec<infer Req, infer Res> ? Handler
 /** One handler per request/response operation of the contract; the compiler rejects a missing one. */
 export type OperationHandlers = {
   readonly [G in keyof Contract]: { readonly [K in InvokeKeys<G>]: HandlerFor<Contract[G][K]> }
-}
-
-/** Handler for an operation that is declared but implemented in a later task group. */
-export function notImplemented(operation: string): Handler<unknown, never> {
-  return () => {
-    throw new NotImplementedError(operation)
-  }
 }
 
 /** Registers every request/response operation of the contract with its schemas. */

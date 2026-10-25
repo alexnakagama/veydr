@@ -6,8 +6,9 @@ import { createLifecycleRequest } from '../../src/renderer/src/state/lifecycle'
 import { createSurvivorRequest } from '../../src/renderer/src/state/survivors'
 import { contractEntries, type VeydrApi } from '../../src/shared/api'
 
-// Operations with a real handler (L2–L6). Everything else answers `not_implemented`, so no UI path
-// may call it until its task group lands; extend this list when one does.
+// Operations with a real handler (L2–L7): since L7 every operation of the contract (checked below).
+// An operation declared for a later change answers `not_implemented`, so no UI path may call it
+// until it lands; extend this list when one does.
 const implemented = new Set([
   'app.getInfo',
   'app.onNotice',
@@ -35,6 +36,7 @@ const implemented = new Set([
   'logs.clear',
   'logs.onBatch',
   'logs.ack',
+  'ports.list',
 ])
 
 /** An API whose every function records its use and answers like main does for the operation. */
@@ -67,6 +69,10 @@ function sources(dir: string): string[] {
 }
 
 describe('renderer use of staged operations', () => {
+  it('lists every operation of the contract as implemented', () => {
+    expect([...implemented].sort()).toEqual(contractEntries.map(({ group, name }) => `${group}.${name}`).sort())
+  })
+
   it('connects the stores using implemented operations only', () => {
     const used = new Set<string>()
     connectStores(recordingApi(used))

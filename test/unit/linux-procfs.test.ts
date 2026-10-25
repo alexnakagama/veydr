@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { createProcReader } from '../../src/main/platform/linux/proc-reader'
-import { displayName, isLive, isPidEntry, parseBootId, parseCmdline, parseStat } from '../../src/main/platform/linux/procfs'
+import { displayName, isLive, isPidEntry, parseBootId, parseCmdline, parseStat, parseStatusUids } from '../../src/main/platform/linux/procfs'
 
 const captured = (name: string): Buffer => readFileSync(join(__dirname, '../fixtures/procfs', name))
 const text = (name: string): string => captured(name).toString('utf8')
@@ -35,6 +35,13 @@ describe('/proc parsing (captured fixtures)', () => {
     for (const state of ['X', 'x']) {
       expect(isLive({ pid: 1, comm: 'x', state, ppid: 0, pgrp: 1, session: 1, starttime: 1 })).toBe(false)
     }
+  })
+
+  it('reads the user IDs from /proc/<pid>/status (port inspection)', () => {
+    expect(parseStatusUids(text('status-cat.txt'))).toEqual([1000, 1000, 1000, 1000])
+    expect(parseStatusUids('Name:\tpasswd\nUid:\t1000\t0\t0\t0\nGid:\t1000\t1000\t1000\t1000\n')).toEqual([1000, 0, 0, 0])
+    expect(parseStatusUids('Name:\tx\nUid:\t1000\t0\n')).toBeNull()
+    expect(parseStatusUids('Name:\tx\n')).toBeNull()
   })
 
   it('rejects malformed stat content', () => {

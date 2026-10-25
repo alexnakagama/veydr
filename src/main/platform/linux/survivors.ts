@@ -1,8 +1,8 @@
 import { DEFAULT_STOP_TIMEOUT_MS } from '../../../shared/config'
 import type { LedgerEntry, PlatformLog, ProcInfo, ProcessIdentity, ProcessTree, StopResult, Survivor } from '../types'
 import { createProcReader, type ProcReader } from './proc-reader'
-import { KILL_WAIT_MS, linuxIdentity, parseLinuxIdentity, POLL_INTERVAL_MS } from './process-tree'
-import { displayName, isLive, type ProcStat } from './procfs'
+import { KILL_WAIT_MS, POLL_INTERVAL_MS } from './process-tree'
+import { displayName, isLive, linuxIdentity, parseLinuxIdentity, type ProcStat } from './procfs'
 
 export interface LinuxSurvivorOptions {
   readonly proc?: ProcReader

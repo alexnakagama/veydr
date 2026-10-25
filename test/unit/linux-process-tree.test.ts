@@ -152,6 +152,33 @@ describe('Linux process tree stop logic (simulated /proc)', () => {
     expect(reports.at(-1)).toEqual([`501=${BOOT}:1501`])
   })
 
+  it('reports the attribution set from a read made after the call, sharing one read between concurrent calls (ports, task 8.2)', async () => {
+    const sim = system()
+    sim.add(501)
+    const run = await sim.spawn()
+    await run.remaining()
+    let scans = 0
+    const scan = sim.proc.scan.bind(sim.proc)
+    sim.proc.scan = () => {
+      scans++
+      return scan()
+    }
+    // Appears after the last observation: still attributed, because `attributed` reads /proc again.
+    sim.add(700, { ppid: 501, session: 700, pgrp: 700 })
+    const [first, second] = await Promise.all([run.attributed(), run.attributed()])
+    expect(scans).toBe(1)
+    expect(first).toEqual(second)
+    expect(first?.map((identity) => `${identity.pid}=${identity.token}`).sort()).toEqual([`500=${BOOT}:1500`, `501=${BOOT}:1501`, `700=${BOOT}:1700`])
+
+    // Gone or replaced processes are not attributed; the leader stays until it has exited.
+    sim.processes.delete(501)
+    sim.add(700, { ppid: 1, session: 700, pgrp: 700, starttime: 99_999 })
+    expect((await run.attributed()).map((identity) => identity.pid)).toEqual([LEADER])
+    sim.die(LEADER, null, 0)
+    await new Promise((done) => setTimeout(done, 5))
+    expect(await run.attributed()).toEqual([])
+  })
+
   it('[spec:process-supervision/pid-reused-by-unrelated-process] never signals a tracked PID that now belongs to another process', async () => {
     const sim = system()
     sim.add(600, { session: 600, pgrp: 600 }) // a descendant that left the session; tracked through its parent link

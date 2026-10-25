@@ -180,9 +180,9 @@ test('[spec:desktop-shell/only-declared-operations-are-available] window.veydr e
   })
   expect(unsubscribe).toBe('function')
 
-  // Operations of later task groups answer with a typed error, not a rejected promise.
-  const pending = await window.evaluate(() => globalThis.window.veydr.ports.list())
-  expect(pending).toEqual({ ok: false, error: { code: 'not_implemented', message: 'ports.list is not implemented yet' } })
+  // Every operation answers with a typed result, not a rejected promise.
+  const listed = await window.evaluate(() => globalThis.window.veydr.ports.list())
+  expect(listed).toMatchObject({ ok: true, value: { refreshedAt: expect.any(Number) as unknown, ports: expect.any(Array) as unknown } })
   const invalid = await window.evaluate(() =>
     globalThis.window.veydr.processes.start({ commandId: 'not-a-uuid' }),
   )

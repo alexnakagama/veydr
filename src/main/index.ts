@@ -18,6 +18,7 @@ import { registerEventSubscriptions, registerOperations } from './ipc/operations
 import { createIpcRegistry, originOf } from './ipc/register'
 import { createLogService } from './logs/service'
 import { selectPlatform } from './platform'
+import { createPortService } from './ports/service'
 import { runNetworkProbe } from './probe'
 import { createDesktopActions } from './projects/desktop'
 import { createEnvironmentService } from './projects/environment'
@@ -113,6 +114,8 @@ function start(): void {
     log,
   })
   const recovery = createCrashRecovery({ processTree: platform.processTree, ledger, notices, log })
+  // Read-only: the ports service gets the attribution sets, never the lifecycle actions (design D12).
+  const ports = createPortService({ inspector: platform.portInspector, attribution: () => supervisor.attribution() })
 
   app.on('web-contents-created', (_event, contents) => {
     hardenWebContents(contents, log)
@@ -157,7 +160,7 @@ function start(): void {
   })
   registerOperations(
     registry,
-    createOperationHandlers({ info, config: () => config.current(), processStates, supervisor, recovery, projects, environment, desktop, logs }),
+    createOperationHandlers({ info, config: () => config.current(), processStates, supervisor, recovery, projects, environment, desktop, logs, ports }),
   )
 
   // Quitting stops every running command first (design D10); see `app/quit.ts`.

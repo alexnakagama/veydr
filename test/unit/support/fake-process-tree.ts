@@ -91,6 +91,10 @@ export class FakeProcess implements ManagedProcess {
     return Promise.resolve(this.live())
   }
 
+  attributed(): Promise<readonly ProcessIdentity[]> {
+    return Promise.resolve(this.live().map(({ pid }) => ({ pid, token: `fake:${pid}` })))
+  }
+
   stop({ graceMs }: { graceMs: number }): Promise<StopResult> {
     this.stopping ??= (async () => {
       this.stopCalls++

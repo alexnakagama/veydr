@@ -341,3 +341,29 @@ describe('supervisor state machine', () => {
     expect(await h.supervisor.stop(h.commandId)).toMatchObject({ status: 'exited', survivors: [], error: expect.stringContaining('stop failed') as unknown })
   })
 })
+
+describe('supervisor attribution sets (ports, task 8.2)', () => {
+  it('lists the processes of every current run, and none of an ended run', async () => {
+    const h = harness()
+    expect(await h.supervisor.attribution()).toEqual([])
+    const state = await h.supervisor.start(h.commandId)
+    const leader = h.tree.last
+    expect(await h.supervisor.attribution()).toEqual([
+      {
+        commandId: h.commandId,
+        runId: state.runId,
+        processes: [leader.pid, leader.pid * 100, leader.pid * 100 + 1].map((pid) => ({ pid, token: `fake:${pid}` })),
+      },
+    ])
+    await h.supervisor.stop(h.commandId)
+    expect(await h.supervisor.attribution()).toEqual([])
+  })
+
+  it('leaves out a run whose processes cannot be determined, without failing the others', async () => {
+    const h = harness()
+    await h.supervisor.start(h.commandId)
+    h.tree.last.attributed = () => Promise.reject(new Error('EMFILE'))
+    expect(await h.supervisor.attribution()).toEqual([])
+    expect(h.statuses()).toEqual(['starting', 'running'])
+  })
+})
