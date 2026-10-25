@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Veydr">
+  <title>Veydr</title>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#1B2430"/>
+      <stop offset="1" stop-color="#0B1017"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="256" cy="184" r="150" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#2DD4BF" stop-opacity=".28"/>
+      <stop offset="1" stop-color="#2DD4BF" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <rect width="512" height="512" rx="116" fill="url(#bg)"/>
+  <rect width="512" height="512" rx="116" fill="url(#glow)"/>
+  <g transform="translate(96 96) scale(1.25)">
+    <path d="M58 60 L128 190 L198 60" fill="none" stroke="#F4F7FA" stroke-width="38" stroke-linejoin="round" stroke-linecap="round"/>
+    <circle cx="128" cy="92" r="19" fill="#2DD4BF"/>
+  </g>
+</svg>
