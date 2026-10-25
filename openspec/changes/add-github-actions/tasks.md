@@ -4,9 +4,9 @@ Note: `npm run spec-coverage` runs in required mode and also reads this change's
 
 ## 1. Foundations
 
-- [ ] 1.1 Confirm with the maintainer which bypass mechanism the `master` ruleset supports for this repository (GitHub Actions as a bypass actor, or the deploy-key fallback of design D7), and whether the repository is public (needed for provenance). Record both answers in `docs/ci.md`. Verify: the answers are written there.
-- [ ] 1.2 Add the composite action `.github/actions/setup/action.yml` (design D2), with inputs `electron` and `cache`. It sets up Node from `.nvmrc`, installs npm 11.19.0 and asserts `npm --version`, runs `npm ci`, and adds the npm, Electron and electron-builder caches. With `electron: true` it installs `xvfb`, runs the user-namespace `sysctl` (D3), then checks `unshare --user true` and fails with a clear message if it does not work. Verify: `actionlint` (Docker image, pinned digest) reports no errors locally.
-- [ ] 1.3 Add `test/unit/workflow-policy.test.ts` (design D11). It reads every file under `.github/` as text and asserts:
+- [x] 1.1 Confirm with the maintainer which bypass mechanism the `master` ruleset supports for this repository (GitHub Actions as a bypass actor, or the deploy-key fallback of design D7), and whether the repository is public (needed for provenance). Record both answers in `docs/ci.md`. Verify: the answers are written there.
+- [x] 1.2 Add the composite action `.github/actions/setup/action.yml` (design D2), with inputs `electron` and `cache`. It sets up Node from `.nvmrc`, installs npm 11.19.0 and asserts `npm --version`, runs `npm ci`, and adds the npm, Electron and electron-builder caches. With `electron: true` it installs `xvfb`, runs the user-namespace `sysctl` (D3), then checks `unshare --user true` and fails with a clear message if it does not work. Verify: `actionlint` (Docker image, pinned digest) reports no errors locally.
+- [x] 1.3 Add `test/unit/workflow-policy.test.ts` (design D11). It reads every file under `.github/` as text and asserts:
   - a top-level `permissions:` in every workflow;
   - `timeout-minutes` in every job;
   - every non-local `uses:` pinned to a 40-hex SHA;
@@ -15,7 +15,7 @@ Note: `npm run spec-coverage` runs in required mode and also reads this change's
   - `persist-credentials: false` on checkouts outside the release `publish` job.
 
   The test fails on lines it cannot classify. Tag `quality-gates/unpinned-action-is-rejected`, `missing-permissions-or-timeout-is-rejected`, `no-privileged-pull-request-trigger` and `sandbox-and-offline-test-are-not-weakened`. Verify: `npm test` passes. A temporary fixture with an unpinned `uses:` makes it fail (checked once, then removed).
-- [ ] 1.4 Start `docs/ci.md` with an overview of the pipeline (the D1 table), the workflow security rules from 1.3, and why user namespaces are enabled on runners. Link it from README's documentation table. Verify: `npm test` passes, including `readme-docs.test.ts`.
+- [x] 1.4 Start `docs/ci.md` with an overview of the pipeline (the D1 table), the workflow security rules from 1.3, and why user namespaces are enabled on runners. Link it from README's documentation table. Verify: `npm test` passes, including `readme-docs.test.ts`.
 
 ## 2. Release version logic
 

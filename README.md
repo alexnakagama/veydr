@@ -280,11 +280,12 @@ Everything is stored in `~/.config/Veydr/` (or `$XDG_CONFIG_HOME/Veydr/`): `conf
 | Network isolation | [docs/network-isolation.md](docs/network-isolation.md) |
 | Dependencies and version policy | [docs/dependencies.md](docs/dependencies.md) |
 | Checks deferred to packaging | [docs/deferred-checks.md](docs/deferred-checks.md) |
-| Architecture and design decisions | [openspec/changes/establish-foundation/design.md](openspec/changes/establish-foundation/design.md) |
+| CI pipeline, workflow security rules, releases | [docs/ci.md](docs/ci.md) |
+| Architecture and design decisions | [openspec/changes/archive/2026-10-25-establish-foundation/design.md](openspec/changes/archive/2026-10-25-establish-foundation/design.md) |
 
 ## Development
 
-Veydr is an Electron application written in TypeScript with a React interface. It has three isolated layers: the main process (`src/main`) holds all privileged logic, a narrow preload API (`src/preload`) connects it to a sandboxed renderer (`src/renderer`), and `src/shared` holds code used by more than one layer. The platform-specific parts live under `src/main/platform` (`linux/` today, plus a `windows/` stub). The design is documented in [openspec/changes/establish-foundation/design.md](openspec/changes/establish-foundation/design.md).
+Veydr is an Electron application written in TypeScript with a React interface. It has three isolated layers: the main process (`src/main`) holds all privileged logic, a narrow preload API (`src/preload`) connects it to a sandboxed renderer (`src/renderer`), and `src/shared` holds code used by more than one layer. The platform-specific parts live under `src/main/platform` (`linux/` today, plus a `windows/` stub). The design is documented in [openspec/changes/archive/2026-10-25-establish-foundation/design.md](openspec/changes/archive/2026-10-25-establish-foundation/design.md).
 
 ### Prerequisites
 
