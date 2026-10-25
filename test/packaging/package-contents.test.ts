@@ -50,6 +50,9 @@ function debFile(path: string): string {
   return spawnSync('sh', ['-c', 'dpkg-deb --fsys-tarfile "$1" | tar -xO "$2"', 'sh', debPath, path], { encoding: 'utf8' }).stdout
 }
 
+/** The sizes rendered from assets/brand/veydr-icon.svg by scripts/render-icons.cjs. */
+const ICON_SIZES = [16, 32, 48, 64, 128, 256, 512]
+
 /** Strings only the network-probe test build (`out-probe/`) contains. */
 const PROBE_STRINGS = ['veydr-network-probe', '192.0.2.1', 'VEYDR_NET_PROBE', 'RTCPeerConnection']
 
@@ -65,7 +68,9 @@ describe('application archive (task 9.1)', () => {
     const asar = readAsar(join(unpackedDir, 'resources/app.asar'))
     const own = asar.files.filter((f) => !f.startsWith('/node_modules/zod/'))
     const renderer = own.filter((f) => f.startsWith('/out/renderer/'))
-    expect(own.filter((f) => !f.startsWith('/out/renderer/'))).toEqual(['/out/main/index.js', '/out/preload/index.js', '/package.json'])
+    const windowIcon = own.filter((f) => /^\/out\/main\/chunks\/256x256-[\w-]+\.png$/.test(f))
+    expect(windowIcon).toHaveLength(1)
+    expect(own.filter((f) => !f.startsWith('/out/renderer/') && !windowIcon.includes(f))).toEqual(['/out/main/index.js', '/out/preload/index.js', '/package.json'])
     expect(renderer).toContain('/out/renderer/index.html')
     expect(renderer.every((f) => /^\/out\/renderer\/(index\.html|assets\/[\w-]+\.(js|css))$/.test(f))).toBe(true)
     expect(asar.files.some((f) => f.startsWith('/node_modules/zod/'))).toBe(true)
@@ -86,6 +91,13 @@ describe('application archive (task 9.1)', () => {
     expect(packaged['desktopName']).toBe('veydr.desktop')
   })
 
+  it('carries the Veydr logo as the window icon', () => {
+    const asar = readAsar(join(unpackedDir, 'resources/app.asar'))
+    const icon = asar.files.find((f) => f.startsWith('/out/main/chunks/256x256-'))
+    expect(icon).toBeDefined()
+    expect(asar.read(icon ?? '').equals(readFileSync(join(repoRoot, 'build/icons/256x256.png')))).toBe(true)
+  })
+
   it('ships no update metadata (auto-update is a non-goal)', () => {
     expect(sh('ls', [join(unpackedDir, 'resources')]).trim().split('\n').sort()).toEqual(['app.asar', 'apparmor-profile'])
   })
@@ -101,7 +113,14 @@ describe('.deb package (tasks 9.1, 9.4)', () => {
     const desktop = debFile('./usr/share/applications/veydr.desktop')
     expect(desktop).toContain('Exec=/opt/Veydr/veydr %U')
     expect(desktop).toContain('StartupWMClass=veydr')
+    expect(desktop).toMatch(/^Icon=veydr$/m)
     expect(desktop).not.toContain('no-sandbox')
+  })
+
+  it('installs the Veydr logo as the hicolor "veydr" icon in every size', () => {
+    for (const size of ICON_SIZES) {
+      expect(sh('sh', ['-c', 'dpkg-deb --fsys-tarfile "$1" | tar -xO "$2" | cmp - "$3" && echo same', 'sh', debPath, `./usr/share/icons/hicolor/${size}x${size}/apps/veydr.png`, join(repoRoot, `build/icons/${size}x${size}.png`)]).trim(), `${size}`).toBe('same')
+    }
   })
 
   it('ships the AppArmor profile for /opt/Veydr/veydr and installs it where AppArmor supports it', () => {
@@ -199,7 +218,16 @@ describe('AppImage (tasks 9.1, 9.3, 9.4)', () => {
   it('has a desktop entry without --no-sandbox', () => {
     const desktop = readFileSync(join(extracted, 'squashfs-root/veydr.desktop'), 'utf8')
     expect(desktop).toMatch(/^Exec=AppRun %U$/m)
+    expect(desktop).toMatch(/^Icon=veydr$/m)
     expect(desktop).not.toContain('no-sandbox')
+  })
+
+  it('carries the Veydr logo as its icon', () => {
+    const root = join(extracted, 'squashfs-root')
+    for (const size of ICON_SIZES) {
+      expect(readFileSync(join(root, `usr/share/icons/hicolor/${size}x${size}/apps/veydr.png`)).equals(readFileSync(join(repoRoot, `build/icons/${size}x${size}.png`))), `${size}`).toBe(true)
+    }
+    expect(readFileSync(join(root, '.DirIcon')).equals(readFileSync(join(repoRoot, 'build/icons/512x512.png')))).toBe(true)
   })
 
   it('has the launcher behavior Veydr compensates for: --no-sandbox without user namespaces, and its own path entries', () => {

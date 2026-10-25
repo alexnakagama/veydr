@@ -1,5 +1,8 @@
 import { join } from 'node:path'
 import { BrowserWindow } from 'electron'
+// The window icon (X11 `_NET_WM_ICON`; taskbars and docks that do not match the window to
+// veydr.desktop fall back to it). Emitted into `out/main/` by electron-vite, so it ships in the asar.
+import iconPath from '../../../build/icons/256x256.png?asset'
 import { buildWebPreferences } from './webPreferences'
 
 export interface MainWindowOptions {
@@ -20,6 +23,7 @@ export function createMainWindow({ preloadPath, url, devTools, show = true, onLo
     minHeight: 480,
     show: false,
     title: 'Veydr',
+    icon: iconPath,
     backgroundColor: '#111317',
     autoHideMenuBar: true,
     webPreferences: buildWebPreferences({ preloadPath, devTools }),
