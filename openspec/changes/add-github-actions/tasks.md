@@ -19,8 +19,8 @@ Note: `npm run spec-coverage` runs in required mode and also reads this change's
 
 ## 2. Release version logic
 
-- [ ] 2.1 Implement `scripts/release-version.mjs` (design D5). Exported pure functions: `parseVersion`, `compareVersions` (SemVer 2.0 precedence, including prerelease identifiers), and `checkVersion({ requested, current, tags })`. CLI subcommands `check <v>` (writes `tag` and `prerelease` to `$GITHUB_OUTPUT` when that variable is set) and `apply <v>` (`npm version --no-git-tag-version`, then asserts that only `package.json` and `package-lock.json` changed). Verify: `npm run lint` and `npm run typecheck` pass.
-- [ ] 2.2 Add `test/unit/release-version.test.ts`, covering:
+- [x] 2.1 Implement `scripts/release-version.mjs` (design D5). Exported pure functions: `parseVersion`, `compareVersions` (SemVer 2.0 precedence, including prerelease identifiers), and `checkVersion({ requested, current, tags })`. CLI subcommands `check <v>` (writes `tag` and `prerelease` to `$GITHUB_OUTPUT` when that variable is set) and `apply <v>` (`npm version --no-git-tag-version`, then asserts that only `package.json` and `package-lock.json` changed). Verify: `npm run lint` and `npm run typecheck` pass.
+- [x] 2.2 Add `test/unit/release-version.test.ts`, covering:
   - malformed versions (`1.2`, `v1.2.3`, `1.2.3+build.5`);
   - versions not greater than the latest tag or `package.json`;
   - an existing tag;
@@ -29,7 +29,7 @@ Note: `npm run spec-coverage` runs in required mode and also reads this change's
   - precedence edge cases (`1.0.0-alpha < 1.0.0-alpha.1 < 1.0.0-beta < 1.0.0-rc.1 < 1.0.0`, numeric versus alphanumeric identifiers).
 
   Tag the `release-automation` scenarios `malformed-version`, `version-not-greater-than-the-latest`, `prerelease-version` and `prerelease-ordering`. Verify: `npm test` passes.
-- [ ] 2.3 Add an `apply` test that runs the CLI in a temporary copy holding only `package.json` and `package-lock.json`, and asserts both files carry the new version and nothing else changed. Verify: `npm test` passes.
+- [x] 2.3 Add an `apply` test that runs the CLI in a temporary copy holding only `package.json` and `package-lock.json`, and asserts both files carry the new version and nothing else changed. Verify: `npm test` passes.
 
 ## 3. CI workflow (pull requests and master)
 
@@ -70,10 +70,12 @@ Note: `npm run spec-coverage` runs in required mode and also reads this change's
 ## 5. Release workflow
 
 - [ ] 5.1 Add `.github/workflows/release.yml` (design D6), with concurrency group `release` and no cancellation. Jobs:
-  - `validate`: refuses any ref but `master`; runs `release-version.mjs check`; outputs `tag`, `prerelease` and `source_sha`;
+  - `validate`: refuses any ref but `master`; checks out with the tags fetched (`fetch-depth: 0` or `fetch-tags: true`), because `check` reads `git tag --list 'v*'` and the default shallow, tagless checkout would let an existing or lower version through until the final push; runs `release-version.mjs check`; outputs `tag`, `prerelease` and `source_sha`;
   - `verify`, `e2e` and `package`: each checks out `source_sha`, runs `release-version.mjs apply`, and uses setup with `cache: false`; `package` uploads `release-packages`;
   - `smoke` and `acceptance`: test the downloaded packages;
   - `publish`: commit as github-actions[bot] staging only the two files, write `SHA256SUMS`, `attest-build-provenance`, annotated tag, `git push --atomic` of the commit and tag, then `gh release create --draft --generate-notes --verify-tag [--prerelease]` with the packages, `SHA256SUMS` and the acceptance `steps.jsonl`.
+
+  Pass the `version` input to `run:` steps through `env:` (for example `VERSION: ${{ inputs.version }}`, then `"$VERSION"` in the script), never as `${{ inputs.version }}` inside `run:`. Interpolation happens before `release-version.mjs` can validate the value.
 
   Verify: actionlint passes.
 - [ ] 5.2 Make `publish` safe to rerun (design D6). If the tag already exists and its commit's parent is `source_sha`, skip the commit and push. If the draft release already exists, skip creating it. Support the deploy-key fallback: push over SSH when `RELEASE_DEPLOY_KEY` is set (design D7). Verify: actionlint passes; the logic is reviewed against D6.

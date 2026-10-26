@@ -7,6 +7,7 @@
   },
   "include": [
     "test/**/*.ts",
+    "scripts/*.d.mts",
     "src/main/env.d.ts",
     "src/renderer/src/env.d.ts",
     "electron.vite.config.ts",
