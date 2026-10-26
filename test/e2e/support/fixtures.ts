@@ -2,6 +2,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { _electron as electron, expect, test as base, type ElectronApplication, type Page } from '@playwright/test'
+import { type ProcessView, taggedProcesses } from '../../support/proc'
 import { collectNetworkReport, type NetworkReport } from './network'
 
 export const repoRoot = resolve(__dirname, '../../..')
@@ -80,6 +81,16 @@ export async function launchVeydr(options: LaunchOptions = {}): Promise<VeydrApp
       return collectNetworkReport(nodeLog, netLog)
     },
   }
+}
+
+/**
+ * Tagged processes other than Veydr's own main process, for tests that launch Veydr itself with
+ * the tag so its commands inherit it. Whether /proc shows the main process's environment varies
+ * (Electron may overwrite that memory), so it is left out explicitly instead of by chance.
+ */
+export function commandProcesses(veydr: VeydrApp, tag: string): ProcessView[] {
+  const main = veydr.app.process().pid
+  return taggedProcesses(tag).filter((p) => p.pid !== main)
 }
 
 export function expectNoOutboundConnections(report: NetworkReport): void {

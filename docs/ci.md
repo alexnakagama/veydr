@@ -32,7 +32,7 @@ When a pull request gets a new push while its checks are still running, the olde
 |---|---|---|---|---|
 | `static` | `npm run typecheck`, `npm run lint`, `npm run spec-coverage`, `npm audit --omit=dev --audit-level=low`, actionlint | The same commands; actionlint as shown below | None | 20 min |
 | `unit` | `npm test` | `npm test` | None | 20 min |
-| `integration` | `npm run test:integration` | `npm run test:integration` | None | 30 min |
+| `integration` | `xvfb-run --auto-servernum npm run test:integration` | `npm run test:integration` (with `xvfb-run --auto-servernum` in front on a machine without a display) | None | 30 min |
 | `e2e` | `xvfb-run --auto-servernum npm run test:e2e` | `npm run test:e2e` (with `xvfb-run --auto-servernum` in front on a machine without a display) | `e2e-test-results`: Playwright's `test-results/`, only when the job fails, kept 7 days | 45 min |
 | `package` | `xvfb-run --auto-servernum npm run test:packaging` | `npm run test:packaging` | `linux-packages`: `dist/*.deb` and `dist/*.AppImage`, kept 7 days | 45 min |
 | `ci-ok` | Checks the result of every job above | n/a | None | 5 min |
@@ -221,7 +221,7 @@ gh workflow run release.yml --ref master -f version=0.1.0
 | Job | What it does | Timeout |
 |---|---|---|
 | `validate` | Fails unless the run is on `master`. Checks out with every tag and runs `node scripts/release-version.mjs check`. Outputs the tag, whether it is a prerelease, and the commit the run started from (the source commit) | 10 min |
-| `verify` | On the source commit: applies the version (`release-version.mjs apply`), then `npm run verify` | 45 min |
+| `verify` | On the source commit: applies the version (`release-version.mjs apply`), then `xvfb-run --auto-servernum npm run verify` (the integration tests launch the app) | 45 min |
 | `e2e` | The same bump, then `xvfb-run --auto-servernum npm run test:e2e` | 60 min |
 | `package` | The same bump, then `xvfb-run --auto-servernum npm run test:packaging`. Fails unless `dist/` holds exactly `Veydr-X.Y.Z-amd64.deb` and `Veydr-X.Y.Z-x86_64.AppImage`, and uploads them as `release-packages` | 60 min |
 | `smoke` | `scripts/smoke-linux.sh` on the `release-packages` files | 90 min |

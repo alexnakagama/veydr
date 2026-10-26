@@ -762,7 +762,7 @@ describe('ci.yml (design D4)', () => {
       ['lint', 'static', 'npm run lint'],
       ['spec coverage', 'static', 'npm run spec-coverage'],
       ['unit', 'unit', 'npm test'],
-      ['integration', 'integration', 'npm run test:integration'],
+      ['integration', 'integration', 'xvfb-run --auto-servernum npm run test:integration'],
       ['end-to-end', 'e2e', 'xvfb-run --auto-servernum npm run test:e2e'],
       ['packaging', 'package', 'xvfb-run --auto-servernum npm run test:packaging'],
     ]
@@ -1428,7 +1428,7 @@ if (args[0] === 'api') {
       expect(stepEnv(job, 'Apply the version'), job).toEqual({ VERSION: versionEnv })
       expect(w.scripts(job)[0], job).toBe('node scripts/release-version.mjs apply "$VERSION"')
     }
-    expect(w.scripts('verify')).toEqual(['node scripts/release-version.mjs apply "$VERSION"', 'npm run verify'])
+    expect(w.scripts('verify')).toEqual(['node scripts/release-version.mjs apply "$VERSION"', 'xvfb-run --auto-servernum npm run verify'])
     expect(w.scripts('e2e')).toContain('xvfb-run --auto-servernum npm run test:e2e')
     expect(w.scripts('package')).toContain('xvfb-run --auto-servernum npm run test:packaging')
 

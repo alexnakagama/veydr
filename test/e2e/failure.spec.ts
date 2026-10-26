@@ -19,7 +19,9 @@ test('a crashed renderer is reported and the app exits with an error', async () 
     await veydr.app
       .evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.webContents.forcefullyCrashRenderer())
       .catch(() => undefined)
-    expect(await exit).toBe(1)
+    // Bounded, so a hang fails with the app's own output instead of a bare test timeout.
+    const code = await Promise.race([exit, new Promise<'no exit'>((resolve) => setTimeout(() => resolve('no exit'), 30_000))])
+    expect(code, `app did not exit with 1 within 30 s; stderr:\n${stderr.join('')}`).toBe(1)
     const output = stderr.join('')
     expect(output).toContain('window.renderer-gone')
     expect(output).toContain('ERRORBOX Veydr cannot continue')

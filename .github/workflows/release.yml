@@ -84,7 +84,7 @@ jobs:
           VERSION: ${{ inputs.version }}
         run: node scripts/release-version.mjs apply "$VERSION"
       - name: Verify
-        run: npm run verify
+        run: xvfb-run --auto-servernum npm run verify
 
   e2e:
     name: e2e

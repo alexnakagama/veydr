@@ -2,8 +2,8 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { Page } from '@playwright/test'
-import { fixture, killTagged, TAG_VARIABLE, taggedProcesses } from '../support/proc'
-import { expect, expectNoOutboundConnections, launchVeydr, test } from './support/fixtures'
+import { fixture, killTagged, TAG_VARIABLE } from '../support/proc'
+import { commandProcesses, expect, expectNoOutboundConnections, launchVeydr, test } from './support/fixtures'
 
 // Task 6.8: everything reachable by keyboard alone, with shortcuts and confirmations.
 
@@ -75,11 +75,11 @@ test('a project and a command can be added, started, and stopped with the keyboa
     await window.keyboard.press('s')
     await expect(row.getByTestId('command-status')).toHaveText('Running')
     await expect(stop).toBeEnabled()
-    expect(taggedProcesses(tag)).toHaveLength(1)
+    expect(commandProcesses(veydr, tag)).toHaveLength(1)
     await window.keyboard.press('x')
     await expect(row.getByTestId('command-status')).toHaveText('Exited')
     await expect(start).toBeEnabled()
-    expect(taggedProcesses(tag)).toEqual([])
+    expect(commandProcesses(veydr, tag)).toEqual([])
     await window.keyboard.press('s')
     await expect(row.getByTestId('command-status')).toHaveText('Running')
     await expect(stop).toBeEnabled()
