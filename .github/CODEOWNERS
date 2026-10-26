@@ -1,0 +1,6 @@
+# Review owners (docs/ci.md#code-owners). The last matching pattern wins, so the explicit entries
+# below keep the workflows and the release version logic with the maintainer even if a broader
+# owner is added for `*` later.
+*                             @alexnakagama
+/.github/                     @alexnakagama
+/scripts/release-version.mjs  @alexnakagama

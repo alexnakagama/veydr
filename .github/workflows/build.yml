@@ -1,0 +1,104 @@
+# Manual package build of any ref (docs/ci.md#manual-builds). It produces downloadable packages and
+# SHA256SUMS as workflow artifacts and never changes the version, pushes, tags or releases.
+name: Build
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Branch, tag or commit to build (empty for the branch the run is started on)
+        required: false
+        type: string
+        default: ""
+      smoke:
+        description: Also run the distribution smoke matrix on the built packages
+        required: false
+        type: boolean
+        default: false
+
+permissions: {}
+
+jobs:
+  package:
+    name: package
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    outputs:
+      sha: ${{ steps.source.outputs.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+      # The commit that was built, so smoke checks out the same one even if the branch moves.
+      - name: Record the source commit
+        id: source
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - uses: ./.github/actions/setup
+        with:
+          electron: "true"
+      - name: Build packages and run the packaging tests
+        run: xvfb-run --auto-servernum npm run test:packaging
+      - name: Write SHA256SUMS
+        working-directory: dist
+        run: |
+          shopt -s nullglob
+          debs=(*.deb)
+          appimages=(*.AppImage)
+          if [ "${#debs[@]}" -ne 1 ] || [ "${#appimages[@]}" -ne 1 ]; then
+            echo "::error title=Unexpected packages::expected one .deb and one AppImage in dist/, found: ${debs[*]} ${appimages[*]}"
+            exit 1
+          fi
+          sha256sum -- "${debs[0]}" "${appimages[0]}" > SHA256SUMS
+          sha256sum -c SHA256SUMS
+      - name: Upload packages
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: linux-packages
+          path: |
+            dist/*.deb
+            dist/*.AppImage
+            dist/SHA256SUMS
+          retention-days: 14
+          if-no-files-found: error
+
+  # Tests the packages the package job uploaded, not a rebuild.
+  smoke:
+    name: smoke
+    needs:
+      - package
+    if: inputs.smoke
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.package.outputs.sha }}
+          persist-credentials: false
+      # The containers run the packages with user namespaces allowed, which the runner's AppArmor
+      # restriction also blocks inside Docker.
+      - uses: ./.github/actions/setup
+        with:
+          electron: "true"
+      - name: Download packages
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: linux-packages
+          path: dist
+      - name: Check the downloaded packages
+        working-directory: dist
+        run: sha256sum -c SHA256SUMS
+      - name: Distribution smoke matrix
+        run: scripts/smoke-linux.sh
+      - name: Upload smoke results
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: smoke-linux
+          path: test-results/smoke-linux/
+          retention-days: 14
+          if-no-files-found: ignore

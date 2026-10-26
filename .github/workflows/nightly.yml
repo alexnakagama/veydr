@@ -1,0 +1,146 @@
+# Slow checks that do not gate merges (docs/ci.md#nightly, design D9): performance scenarios P1–P4,
+# the distribution smoke matrix and the packaged acceptance pass. A failure is reported in the one
+# open issue labelled nightly-failure.
+name: Nightly
+
+on:
+  # Daily at 03:00 UTC, on master.
+  schedule:
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Branch, tag or commit to check (empty for the branch the run is started on)
+        required: false
+        type: string
+        default: ""
+
+permissions: {}
+
+jobs:
+  perf:
+    name: perf
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+        with:
+          electron: "true"
+      - name: Performance scenarios
+        run: xvfb-run --auto-servernum npm run test:perf
+      - name: Upload test results
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: perf-test-results
+          path: test-results/
+          retention-days: 14
+          if-no-files-found: ignore
+
+  # The containers run the packages with user namespaces allowed, which the runner's AppArmor
+  # restriction also blocks inside Docker, so these jobs prepare the runner like the Electron jobs.
+  smoke:
+    name: smoke
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+        with:
+          electron: "true"
+      - name: Build packages
+        run: npm run dist:linux
+      - name: Distribution smoke matrix
+        run: scripts/smoke-linux.sh
+      - name: Upload smoke results
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: smoke-linux
+          path: test-results/smoke-linux/
+          retention-days: 14
+          if-no-files-found: ignore
+
+  acceptance:
+    name: acceptance
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+        with:
+          electron: "true"
+      - name: Build packages
+        run: npm run dist:linux
+      - name: Packaged acceptance pass
+        run: scripts/acceptance-linux.sh
+      - name: Upload acceptance results
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: acceptance-linux
+          path: test-results/acceptance-linux/
+          retention-days: 14
+          if-no-files-found: ignore
+
+  # Comments on the open nightly-failure issue, or opens one if none is open. It never closes issues:
+  # the maintainer does that after fixing the cause (docs/ci.md#triaging-a-nightly-failure).
+  report:
+    name: report
+    needs:
+      - perf
+      - smoke
+      - acceptance
+    if: failure()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      issues: write
+    # Two failing runs reporting at once could each find no open issue and open one each.
+    concurrency:
+      group: nightly-report
+      cancel-in-progress: false
+    steps:
+      - name: Report the failure
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          EVENT: ${{ github.event_name }}
+          REQUESTED_REF: ${{ inputs.ref }}
+          RUN_REF: ${{ github.ref_name }}
+          SHA: ${{ github.sha }}
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          failed="$(
+          node <<'EOF'
+          const needs = Object.entries(JSON.parse(process.env.NEEDS || '{}'))
+          console.log(needs.filter(([, need]) => need?.result !== 'success').map(([job, need]) => `${job} (${need?.result})`).join(', '))
+          EOF
+          )" || failed=""
+          ref="${REQUESTED_REF:-$RUN_REF at $SHA}"
+          body="$(printf 'Nightly checks failed: %s\n\n- Event: %s\n- Checked: %s\n- Jobs that did not succeed: %s\n' \
+            "$RUN_URL" "$EVENT" "$ref" "${failed:-unknown}")"
+          gh label create nightly-failure --color B60205 --description "A nightly run failed (docs/ci.md)" --force
+          number="$(gh issue list --label nightly-failure --state open --limit 1 --json number --jq '.[0].number // empty')"
+          if [ -n "$number" ]; then
+            gh issue comment "$number" --body "$body"
+          else
+            gh issue create --title "Nightly checks are failing" --label nightly-failure --body "$body"
+          fi

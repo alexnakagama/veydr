@@ -1,5 +1,7 @@
 import { spawnSync } from 'node:child_process'
-import { readdirSync, readFileSync } from 'node:fs'
+import { createHash } from 'node:crypto'
+import { chmodSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join, relative, resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
 
@@ -372,7 +374,18 @@ describe('workflow policy (design D11)', () => {
   const files = githubFiles()
 
   it('checks every file under .github/, and they all satisfy the policy', () => {
-    expect(files.map((f) => f.path)).toContain('.github/actions/setup/action.yml')
+    expect(files.map((f) => f.path)).toEqual(
+      expect.arrayContaining([
+        '.github/actions/setup/action.yml',
+        '.github/workflows/ci.yml',
+        '.github/workflows/security.yml',
+        '.github/workflows/nightly.yml',
+        '.github/workflows/build.yml',
+        '.github/dependabot.yml',
+        '.github/CODEOWNERS',
+        '.github/pull_request_template.md',
+      ]),
+    )
     expect(files.flatMap(violations)).toEqual([])
   })
 
@@ -580,42 +593,57 @@ function scriptOf(source: Source, lines: Line[], step: { start: number; end: num
   return `${body.map((l) => (raw[l.n - 1] ?? '').slice(indent)).join('\n').trimEnd()}\n`
 }
 
-describe('ci.yml (design D4)', () => {
-  const ci = githubFiles().find((f) => f.path === '.github/workflows/ci.yml') ?? fixture('', '.github/workflows/ci.yml')
-  const lines = parse(ci.text)
+type Range = { start: number; end: number }
+
+interface ScriptRun {
+  status: number | null
+  stdout: string
+  stderr: string
+}
+
+/**
+ * Runs a `run:` script as the runner does for a step without `shell:` (`bash -e`). `env` entries
+ * are added to the test's environment; an `undefined` entry removes the variable.
+ */
+function runScript(script: string, options: { env?: Record<string, string | undefined>; cwd?: string } = {}): ScriptRun {
+  const env: NodeJS.ProcessEnv = { ...process.env }
+  for (const [name, value] of Object.entries(options.env ?? {})) {
+    if (value === undefined) delete env[name]
+    else env[name] = value
+  }
+  const run = spawnSync('bash', ['-e', '-c', script], { encoding: 'utf8', env, cwd: options.cwd })
+  return { status: run.status, stdout: run.stdout, stderr: run.stderr }
+}
+
+const unquote = (value: string | undefined): string | undefined => value?.replace(/^(["'])(.*)\1$/, '$2')
+
+/** A workflow under .github/workflows/ with lookups by trigger, job, step and key. A missing file loads as empty, so its tests fail instead of erroring. */
+function loadWorkflow(path: string) {
+  const source = githubFiles().find((f) => f.path === path) ?? fixture('', path)
+  const lines = parse(source.text)
   const jobs = jobsOf(lines)
   const job = (name: string): Job => {
     const found = jobs.find((j) => j.name === name)
-    expect(found, `job ${name}`).toBeDefined()
+    expect(found, `job ${name} in ${path}`).toBeDefined()
     return found as Job
   }
   const jobField = (name: string, key: string): Line | undefined => {
     const index = childAt(lines, job(name).start, key)
     return index < 0 ? undefined : lines[index]
   }
-  const scripts = (name: string): string[] => stepsOf(lines, job(name)).flatMap((s) => scriptOf(ci, lines, s) ?? []).map((s) => s.trim())
-  const on = topLevelBlock(lines, 'on')?.start ?? -1
-  const branches = (trigger: string): string[] => {
-    const index = childAt(lines, on, trigger)
-    expect(index, `trigger ${trigger}`).toBeGreaterThan(0)
-    return childNames(lines, childAt(lines, index, 'branches'))
+  /** The `key: value` pairs under a job's `permissions:`, or its inline value (`{}`). */
+  const permissions = (name: string): Record<string, string> | string | undefined => {
+    const block = jobField(name, 'permissions')
+    if (block === undefined) return undefined
+    if (block.value !== '') return block.value
+    return Object.fromEntries(childrenOf(lines, lines.indexOf(block)).map((i) => [(lines[i] as Line).key ?? '', (lines[i] as Line).value ?? '']))
   }
-  /** Runs ci-ok's script as the runner does (`bash -e`), with `NEEDS` set to `needs` or left unset. */
-  const runCiOk = (needs: string | undefined): { status: number | null; stdout: string } => {
-    const step = stepsOf(lines, job('ci-ok')).find((s) => stepField(lines, s)('run') !== undefined)
-    const script = step === undefined ? undefined : scriptOf(ci, lines, step)
-    expect(script).toBeDefined()
-    const env: NodeJS.ProcessEnv = { ...process.env }
-    delete env['NEEDS']
-    if (needs !== undefined) env['NEEDS'] = needs
-    const run = spawnSync('bash', ['-e', '-c', script ?? 'exit 2'], { encoding: 'utf8', env })
-    return { status: run.status, stdout: run.stdout }
-  }
-  /** ci-ok with `needs` shaped like GitHub's `toJSON(needs)`: `{ job: { result, outputs } }`. */
-  const ciOk = (results: Record<string, string>): { status: number | null; stdout: string } =>
-    runCiOk(JSON.stringify(Object.fromEntries(Object.entries(results).map(([name, result]) => [name, { result, outputs: {} }]))))
+  const steps = (name: string): Range[] => stepsOf(lines, job(name))
+  const field = (step: Range, key: string): string | undefined => stepField(lines, step)(key)?.value
+  const script = (step: Range): string | undefined => scriptOf(source, lines, step)
+  const scripts = (name: string): string[] => steps(name).flatMap((s) => script(s) ?? []).map((s) => s.trim())
   /** The value of `key` under a step's `with:`; a block scalar's lines are joined with newlines. */
-  const withValue = (step: { start: number; end: number }, key: string): string | undefined => {
+  const withValue = (step: Range, key: string): string | undefined => {
     const block = stepField(lines, step)('with')
     if (block === undefined) return undefined
     const index = childAt(lines, lines.indexOf(block), key)
@@ -626,6 +654,59 @@ describe('ci.yml (design D4)', () => {
     for (let i = index + 1; i < lines.length && (lines[i] as Line).kind === 'scalar'; i++) body.push((lines[i] as Line).body)
     return body.join('\n')
   }
+  /** The steps of a job that use an action whose reference starts with `action@`. */
+  const stepsUsing = (name: string, action: string): Range[] => steps(name).filter((s) => (field(s, 'uses') ?? '').startsWith(`${action}@`))
+  const on = topLevelBlock(lines, 'on')?.start ?? -1
+  const triggers = (): string[] => childNames(lines, on).sort()
+  const trigger = (name: string): number => {
+    const index = childAt(lines, on, name)
+    expect(index, `trigger ${name} in ${path}`).toBeGreaterThan(0)
+    return index
+  }
+  const branches = (name: string): string[] => childNames(lines, childAt(lines, trigger(name), 'branches'))
+  /** The cron expressions of the `schedule` trigger. */
+  const crons = (): (string | undefined)[] => childrenOf(lines, trigger('schedule')).map((i) => unquote((lines[i] as Line).value))
+  /** The `workflow_dispatch` inputs, each as its `key: value` fields. */
+  const dispatchInputs = (): Record<string, Record<string, string>> => {
+    const inputs = childAt(lines, trigger('workflow_dispatch'), 'inputs')
+    if (inputs < 0) return {}
+    return Object.fromEntries(
+      childrenOf(lines, inputs).map((i) => [
+        (lines[i] as Line).key ?? '',
+        Object.fromEntries(childrenOf(lines, i).map((j) => [(lines[j] as Line).key ?? '', unquote((lines[j] as Line).value) ?? ''])),
+      ]),
+    )
+  }
+  /** Runs the `run:` script of the step with this `name:`, with the environment its `env:` would give it replaced by `env`. */
+  const runStep = (name: string, step: string, options: { env?: Record<string, string | undefined>; cwd?: string } = {}): ScriptRun => {
+    const found = steps(name).find((s) => field(s, 'name') === step)
+    expect(found, `step "${step}" in job ${name}`).toBeDefined()
+    const text = found === undefined ? undefined : script(found)
+    expect(text, `script of step "${step}"`).toBeDefined()
+    return runScript(text ?? 'exit 2', options)
+  }
+  return { source, lines, jobs, job, jobField, permissions, steps, field, scripts, withValue, stepsUsing, on, triggers, trigger, branches, crons, dispatchInputs, runStep }
+}
+
+/** Non-comment lines of a file that contain any of `needles`. */
+const linesContaining = (source: Source, needles: readonly string[]): string[] =>
+  parse(source.text)
+    .filter((l) => l.kind !== 'comment' && l.kind !== 'blank' && needles.some((n) => l.body.includes(n)))
+    .map((l) => `${source.path}:${l.n}: ${l.body}`)
+
+describe('ci.yml (design D4)', () => {
+  const { source: ci, lines, jobs, job, jobField, scripts, withValue, on, branches } = loadWorkflow('.github/workflows/ci.yml')
+  /** Runs ci-ok's script as the runner does (`bash -e`), with `NEEDS` set to `needs` or left unset. */
+  const runCiOk = (needs: string | undefined): { status: number | null; stdout: string } => {
+    const step = stepsOf(lines, job('ci-ok')).find((s) => stepField(lines, s)('run') !== undefined)
+    const script = step === undefined ? undefined : scriptOf(ci, lines, step)
+    expect(script).toBeDefined()
+    const run = runScript(script ?? 'exit 2', { env: { NEEDS: needs } })
+    return { status: run.status, stdout: run.stdout }
+  }
+  /** ci-ok with `needs` shaped like GitHub's `toJSON(needs)`: `{ job: { result, outputs } }`. */
+  const ciOk = (results: Record<string, string>): { status: number | null; stdout: string } =>
+    runCiOk(JSON.stringify(Object.fromEntries(Object.entries(results).map(([name, result]) => [name, { result, outputs: {} }]))))
   /** Every job but the aggregate is a check of the set. */
   const checks = (): string[] => jobs.map((j) => j.name).filter((name) => name !== 'ci-ok')
 
@@ -752,5 +833,396 @@ describe('ci.yml (design D4)', () => {
     // --audit-level=low fails on every severity; --omit=dev limits it to what ships in the packages.
     expect(scripts('static')).toContain('npm audit --omit=dev --audit-level=low')
     expect(childNames(lines, childAt(lines, job('ci-ok').start, 'needs'))).toContain('static')
+  })
+})
+
+// security.yml (design D1): CodeQL on pull requests, master and a weekly schedule; dependency review on pull requests.
+
+describe('security.yml', () => {
+  const w = loadWorkflow('.github/workflows/security.yml')
+
+  it('exists and has the expected jobs', () => {
+    expect(w.source.text).not.toBe('')
+    expect(w.jobs.map((j) => j.name)).toEqual(['codeql', 'dependency-review'])
+    expect(w.triggers()).toEqual(['merge_group', 'pull_request', 'push', 'schedule'])
+    // Every pull request, whatever its base, pushes to master, and merge groups (so a merge queue
+    // gets the required dependency-review check, skipped there and so passing).
+    expect(childNames(w.lines, w.trigger('merge_group'))).toEqual([])
+    expect(childNames(w.lines, w.trigger('pull_request'))).toEqual([])
+    expect(w.branches('push')).toEqual(['master'])
+    // Same cancellation rule as ci.yml: only a superseded pull request run is cancelled.
+    const concurrency = topLevelBlock(w.lines, 'concurrency')?.start ?? -1
+    expect(w.lines[childAt(w.lines, concurrency, 'group')]?.value).toBe(
+      "security-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.run_id }}",
+    )
+    expect(w.lines[childAt(w.lines, concurrency, 'cancel-in-progress')]?.value).toBe("${{ github.event_name == 'pull_request' }}")
+    // Neither check may fail without failing its job.
+    expect(w.lines.filter((l) => l.kind === 'node' && l.key === 'continue-on-error')).toEqual([])
+  })
+
+  it('[spec:quality-gates/weekly-analysis-without-code-changes] analyses JavaScript and TypeScript with CodeQL on pull requests, master and every week', () => {
+    // One weekly schedule: fixed minute and hour, any day of the month and month, one day of the week.
+    // GitHub runs scheduled workflows on the default branch, master.
+    expect(w.crons()).toHaveLength(1)
+    expect(w.crons()[0]).toMatch(/^\d{1,2} \d{1,2} \* \* [0-7]$/)
+    // CodeQL runs for every trigger, the schedule included.
+    expect(w.jobField('codeql', 'if')).toBeUndefined()
+    expect(w.permissions('codeql')).toEqual({ actions: 'read', contents: 'read', 'security-events': 'write' })
+    const init = w.stepsUsing('codeql', 'github/codeql-action/init')
+    const analyze = w.stepsUsing('codeql', 'github/codeql-action/analyze')
+    expect(init).toHaveLength(1)
+    expect(analyze).toHaveLength(1)
+    const [initStep, analyzeStep] = [init[0] as Range, analyze[0] as Range]
+    expect(w.withValue(initStep, 'languages')).toBe('javascript-typescript')
+    expect(w.withValue(initStep, 'build-mode')).toBe('none')
+    expect(initStep.start).toBeLessThan(analyzeStep.start)
+    // init and analyze come from the same release.
+    expect(w.field(initStep, 'uses')?.split('@')[1]).toBe(w.field(analyzeStep, 'uses')?.split('@')[1])
+    expect(w.field(analyzeStep, 'if')).toBeUndefined()
+  })
+
+  it('[spec:quality-gates/pull-request-adds-a-vulnerable-dependency] fails a pull request that adds a dependency with a moderate or higher vulnerability', () => {
+    // The ruleset requires this check by its name.
+    expect(w.jobField('dependency-review', 'name')?.value).toBe('dependency-review')
+    expect(w.jobField('dependency-review', 'if')?.value).toBe("github.event_name == 'pull_request'")
+    expect(w.permissions('dependency-review')).toEqual({ contents: 'read' })
+    const review = w.stepsUsing('dependency-review', 'actions/dependency-review-action')
+    expect(review).toHaveLength(1)
+    const step = review[0] as Range
+    expect(w.withValue(step, 'fail-on-severity')).toBe('moderate')
+    // The action's default fails only on runtime dependencies; development dependencies run in CI too.
+    expect(w.withValue(step, 'fail-on-scopes')?.split(',').map((s) => s.trim()).sort()).toEqual(['development', 'runtime', 'unknown'])
+    // Nothing turns the verdict into a warning or exempts an advisory.
+    for (const key of ['warn-only', 'allow-ghsas', 'vulnerability-check', 'config-file']) expect(w.withValue(step, key), key).toBeUndefined()
+    expect(w.field(step, 'if')).toBeUndefined()
+  })
+})
+
+// dependabot.yml (design D10): weekly npm and GitHub Actions updates, npm held back like .npmrc's min-release-age.
+
+describe('dependabot.yml (design D10)', () => {
+  const source = githubFiles().find((f) => f.path === '.github/dependabot.yml') ?? fixture('', '.github/dependabot.yml')
+  const lines = parse(source.text)
+  const updates = topLevelBlock(lines, 'updates')?.start ?? -1
+  const entries = updates < 0 ? [] : childrenOf(lines, updates)
+  /** The update entry for an ecosystem, as a lookup of its fields. */
+  const entry = (ecosystem: string): ((key: string) => number) => {
+    const found = entries.filter((i) => (lines[i] as Line).key === 'package-ecosystem' && (lines[i] as Line).value === ecosystem)
+    expect(found, `updates entry for ${ecosystem}`).toHaveLength(1)
+    const fields = stepField(lines, stepAround(lines, found[0] ?? 0))
+    return (key) => {
+      const line = fields(key)
+      return line === undefined ? -1 : lines.indexOf(line)
+    }
+  }
+  const value = (index: number, key: string): string | undefined => unquote(lines[childAt(lines, index, key)]?.value)
+  /** Group name → its `patterns` and `update-types` items. */
+  const groups = (field: (key: string) => number): Record<string, Record<string, string[]>> =>
+    Object.fromEntries(
+      childrenOf(lines, field('groups')).map((g) => [
+        (lines[g] as Line).key ?? '',
+        Object.fromEntries(childrenOf(lines, g).map((k) => [(lines[k] as Line).key ?? '', childNames(lines, k).map((n) => unquote(n) ?? '')])),
+      ]),
+    )
+  const minReleaseAge = /^min-release-age=(\d+)$/m.exec(readFileSync(join(root, '.npmrc'), 'utf8'))?.[1]
+
+  it('exists and covers exactly npm and GitHub Actions', () => {
+    expect(lines[topLevelBlock(lines, 'version')?.start ?? -1]?.value).toBe('2')
+    expect(entries.map((i) => `${(lines[i] as Line).key ?? ''}: ${(lines[i] as Line).value ?? ''}`)).toEqual([
+      'package-ecosystem: npm',
+      'package-ecosystem: github-actions',
+    ])
+  })
+
+  it('[spec:quality-gates/freshly-published-version-is-not-proposed] proposes npm updates weekly, and none younger than min-release-age', () => {
+    const npm = entry('npm')
+    expect(lines[npm('directory')]?.value).toBe('/')
+    expect(value(npm('schedule'), 'interval')).toBe('weekly')
+    // The cooldown is the same number of days as .npmrc's min-release-age, so a proposed version
+    // always installs. One key only: a shorter per-semver cooldown would undercut it.
+    expect(minReleaseAge).toBe('7')
+    expect(childNames(lines, npm('cooldown'))).toEqual(['default-days'])
+    expect(value(npm('cooldown'), 'default-days')).toBe(minReleaseAge)
+    // Minor and patch updates in one pull request; major updates each get their own.
+    expect(groups(npm)).toEqual({ 'npm-minor-and-patch': { patterns: ['*'], 'update-types': ['minor', 'patch'] } })
+    // Nothing filters what Dependabot may propose.
+    for (const key of ['allow', 'ignore', 'target-branch']) expect(npm(key), key).toBe(-1)
+  })
+
+  it('proposes GitHub Actions updates weekly, in one group, for the workflows and the local composite actions', () => {
+    const actions = entry('github-actions')
+    expect(value(actions('schedule'), 'interval')).toBe('weekly')
+    expect(childNames(lines, actions('directories'))).toEqual(['/', '/.github/actions/*'])
+    // Every local action sits where the glob finds it.
+    const local = githubFiles().filter((f) => f.path.startsWith('.github/actions/')).map((f) => f.path)
+    expect(local.length).toBeGreaterThan(0)
+    for (const path of local) expect(path, path).toMatch(/^\.github\/actions\/[^/]+\/action\.ya?ml$/)
+    expect(value(actions('cooldown'), 'default-days')).toBe('7')
+    expect(groups(actions)).toEqual({ 'github-actions': { patterns: ['*'] } })
+  })
+})
+
+// nightly.yml (design D9): the slow checks on a schedule and on demand, reported in one tracking issue.
+
+describe('nightly.yml (design D9)', () => {
+  const w = loadWorkflow('.github/workflows/nightly.yml')
+  const checks = ['perf', 'smoke', 'acceptance']
+
+  /** Runs the report step with a fake `gh` that logs its arguments; `openIssue` is what `gh issue list` prints. */
+  const report = (options: { openIssue?: string; failOn?: string; env?: Record<string, string> } = {}): { run: ScriptRun; calls: string[][] } => {
+    const dir = mkdtempSync(join(tmpdir(), 'veydr-nightly-report-'))
+    try {
+      const log = join(dir, 'gh.log')
+      writeFileSync(
+        join(dir, 'gh'),
+        `#!/usr/bin/env node
+const { appendFileSync } = require('node:fs')
+const args = process.argv.slice(2)
+appendFileSync(process.env.GH_LOG, JSON.stringify(args) + '\\n')
+if (process.env.FAKE_GH_FAIL && args.slice(0, 2).join(' ') === process.env.FAKE_GH_FAIL) process.exit(1)
+if (args[0] === 'issue' && args[1] === 'list') process.stdout.write(process.env.FAKE_OPEN_ISSUE ? process.env.FAKE_OPEN_ISSUE + '\\n' : '')
+`,
+      )
+      chmodSync(join(dir, 'gh'), 0o755)
+      const needs = { perf: { result: 'success', outputs: {} }, smoke: { result: 'failure', outputs: {} }, acceptance: { result: 'cancelled', outputs: {} } }
+      const run = w.runStep('report', 'Report the failure', {
+        env: {
+          PATH: `${dir}:${process.env['PATH'] ?? ''}`,
+          GH_LOG: log,
+          FAKE_OPEN_ISSUE: options.openIssue,
+          FAKE_GH_FAIL: options.failOn,
+          GH_TOKEN: 'token',
+          GH_REPO: 'owner/veydr',
+          RUN_URL: 'https://github.com/owner/veydr/actions/runs/123',
+          EVENT: 'schedule',
+          REQUESTED_REF: '',
+          RUN_REF: 'master',
+          SHA: 'a'.repeat(40),
+          NEEDS: JSON.stringify(needs),
+          ...options.env,
+        },
+      })
+      const calls = existsSync(log) ? readFileSync(log, 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l) as string[]) : []
+      return { run, calls }
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  }
+  const body = (call: string[] | undefined): string => call?.[call.indexOf('--body') + 1] ?? ''
+
+  it('exists, has the expected jobs, and never blocks a merge', () => {
+    expect(w.source.text).not.toBe('')
+    expect(w.jobs.map((j) => j.name)).toEqual([...checks, 'report'])
+    // Only a schedule and manual runs: no pull request or push trigger, so no required check comes from here.
+    expect(w.triggers()).toEqual(['schedule', 'workflow_dispatch'])
+    for (const name of checks) expect(w.permissions(name), name).toEqual({ contents: 'read' })
+  })
+
+  it('[spec:quality-gates/nightly-run-on-demand] runs perf, the smoke matrix and the acceptance pass nightly and on demand, against the selected ref', () => {
+    // Daily: fixed minute and hour, every day.
+    expect(w.crons()).toHaveLength(1)
+    expect(w.crons()[0]).toMatch(/^\d{1,2} \d{1,2} \* \* \*$/)
+    expect(Object.keys(w.dispatchInputs())).toEqual(['ref'])
+    expect(w.dispatchInputs()).toMatchObject({ ref: { type: 'string', required: 'false', default: '' } })
+    // Every check job checks out the requested ref (empty on a schedule: the default branch).
+    for (const name of checks) {
+      const checkout = w.stepsUsing(name, 'actions/checkout')
+      expect(checkout, name).toHaveLength(1)
+      expect(w.withValue(checkout[0] as Range, 'ref'), name).toBe('${{ inputs.ref }}')
+      expect(w.jobField(name, 'if'), name).toBeUndefined()
+    }
+    expect(w.scripts('perf')).toEqual(['xvfb-run --auto-servernum npm run test:perf'])
+    expect(w.scripts('smoke')).toEqual(['npm run dist:linux', 'scripts/smoke-linux.sh'])
+    expect(w.scripts('acceptance')).toEqual(['npm run dist:linux', 'scripts/acceptance-linux.sh'])
+    // The containers need user namespaces too, which only the setup action's electron mode enables.
+    for (const name of ['smoke', 'acceptance']) {
+      const setup = w.steps(name).find((s) => w.field(s, 'uses') === './.github/actions/setup')
+      expect(setup === undefined ? undefined : w.withValue(setup, 'electron'), name).toBe('"true"')
+    }
+    // Their results are kept whether they pass or fail.
+    const uploads: readonly (readonly [string, string, string, string])[] = [
+      ['perf', 'failure()', 'perf-test-results', 'test-results/'],
+      ['smoke', '${{ !cancelled() }}', 'smoke-linux', 'test-results/smoke-linux/'],
+      ['acceptance', '${{ !cancelled() }}', 'acceptance-linux', 'test-results/acceptance-linux/'],
+    ]
+    for (const [name, condition, artifact, path] of uploads) {
+      const upload = w.stepsUsing(name, 'actions/upload-artifact')
+      expect(upload, name).toHaveLength(1)
+      const step = upload[0] as Range
+      expect(w.field(step, 'if'), name).toBe(condition)
+      expect(w.withValue(step, 'name'), name).toBe(artifact)
+      expect(w.withValue(step, 'path'), name).toBe(path)
+    }
+    // No check step is skipped while its job still succeeds: the only conditions are on the uploads.
+    for (const name of checks) {
+      const conditions = w.steps(name).map((s) => w.field(s, 'if')).filter((c) => c !== undefined)
+      expect(conditions, name).toEqual([uploads.find(([job]) => job === name)?.[1]])
+    }
+  })
+
+  it('[spec:quality-gates/nightly-failure-is-reported-once] comments on the open nightly-failure issue, and opens one only if none is open', () => {
+    expect(w.jobField('report', 'if')?.value).toBe('failure()')
+    expect(childNames(w.lines, childAt(w.lines, w.job('report').start, 'needs'))).toEqual(checks)
+    expect(w.permissions('report')).toEqual({ issues: 'write' })
+    // Reports never run at the same time, so two failing runs cannot each open an issue.
+    const concurrency = childAt(w.lines, w.job('report').start, 'concurrency')
+    expect(w.lines[childAt(w.lines, concurrency, 'group')]?.value).toBe('nightly-report')
+    expect(w.lines[childAt(w.lines, concurrency, 'cancel-in-progress')]?.value).toBe('false')
+    // No checkout: the job runs nothing from the repository.
+    expect(w.stepsUsing('report', 'actions/checkout')).toEqual([])
+
+    const open = report({ openIssue: '42' })
+    expect(open.run.status, open.run.stderr).toBe(0)
+    expect(open.calls.map((c) => c.slice(0, 2).join(' '))).toEqual(['label create', 'issue list', 'issue comment'])
+    expect(open.calls[1]).toEqual(expect.arrayContaining(['--label', 'nightly-failure', '--state', 'open']))
+    expect(open.calls[2]?.[2]).toBe('42')
+    expect(body(open.calls[2])).toContain('https://github.com/owner/veydr/actions/runs/123')
+    expect(body(open.calls[2])).toContain('Jobs that did not succeed: smoke (failure), acceptance (cancelled)')
+    expect(body(open.calls[2])).toContain(`Checked: master at ${'a'.repeat(40)}`)
+
+    const none = report()
+    expect(none.run.status, none.run.stderr).toBe(0)
+    expect(none.calls.map((c) => c.slice(0, 2).join(' '))).toEqual(['label create', 'issue list', 'issue create'])
+    expect(none.calls[2]).toEqual(expect.arrayContaining(['--label', 'nightly-failure']))
+    expect(body(none.calls[2])).toContain('https://github.com/owner/veydr/actions/runs/123')
+
+    // A manual run names the ref it was asked to check.
+    const dispatched = report({ env: { EVENT: 'workflow_dispatch', REQUESTED_REF: 'feature/x' } })
+    expect(body(dispatched.calls[2])).toContain('Checked: feature/x\n')
+    // Unreadable job results still produce a report.
+    const garbled = report({ env: { NEEDS: 'not json' } })
+    expect(garbled.run.status, garbled.run.stderr).toBe(0)
+    expect(body(garbled.calls[2])).toContain('Jobs that did not succeed: unknown')
+    // A failing gh call fails the job instead of losing the report silently.
+    for (const failOn of ['label create', 'issue list', 'issue comment']) {
+      expect(report({ openIssue: '42', failOn }).run.status, failOn).not.toBe(0)
+    }
+    expect(report({ failOn: 'issue create' }).run.status).not.toBe(0)
+  })
+})
+
+// build.yml: packages of any ref as workflow artifacts, never a release.
+
+describe('build.yml', () => {
+  const w = loadWorkflow('.github/workflows/build.yml')
+
+  /** Runs the SHA256SUMS step in a directory holding `files`; returns the run and the SHA256SUMS it wrote. */
+  const checksums = (files: string[]): { run: ScriptRun; sums: string | undefined } => {
+    const dir = mkdtempSync(join(tmpdir(), 'veydr-build-sums-'))
+    try {
+      for (const file of files) writeFileSync(join(dir, file), `contents of ${file}\n`)
+      const run = w.runStep('package', 'Write SHA256SUMS', { cwd: dir })
+      const sums = existsSync(join(dir, 'SHA256SUMS')) ? readFileSync(join(dir, 'SHA256SUMS'), 'utf8') : undefined
+      return { run, sums }
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  }
+
+  it('exists and has the expected jobs', () => {
+    expect(w.source.text).not.toBe('')
+    expect(w.jobs.map((j) => j.name)).toEqual(['package', 'smoke'])
+  })
+
+  it('[spec:release-automation/building-a-branch] builds the packages and SHA256SUMS of any ref as artifacts, and changes nothing in the repository', () => {
+    // Manual only, for any branch, tag or commit.
+    expect(w.triggers()).toEqual(['workflow_dispatch'])
+    expect(Object.keys(w.dispatchInputs())).toEqual(['ref', 'smoke'])
+    expect(w.dispatchInputs()).toMatchObject({
+      ref: { type: 'string', required: 'false', default: '' },
+      smoke: { type: 'boolean', required: 'false', default: 'false' },
+    })
+    // package builds the requested ref and records the commit; smoke checks out that same commit,
+    // so its script matches the packages even if the branch moved in between.
+    const checkoutRef = (name: string): string | undefined => {
+      const checkout = w.stepsUsing(name, 'actions/checkout')
+      expect(checkout, name).toHaveLength(1)
+      return w.withValue(checkout[0] as Range, 'ref')
+    }
+    expect(checkoutRef('package')).toBe('${{ inputs.ref }}')
+    expect(checkoutRef('smoke')).toBe('${{ needs.package.outputs.sha }}')
+    expect(w.lines[childAt(w.lines, childAt(w.lines, w.job('package').start, 'outputs'), 'sha')]?.value).toBe('${{ steps.source.outputs.sha }}')
+    const source = w.steps('package').find((s) => w.field(s, 'id') === 'source')
+    expect(source === undefined ? undefined : w.field(source, 'run')).toBe('echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"')
+    for (const name of ['package', 'smoke']) {
+      // Read-only, so the job could not push, tag or release even if a step tried.
+      expect(w.permissions(name), name).toEqual({ contents: 'read' })
+    }
+    expect(linesContaining(w.source, ['git push', 'git tag', 'git commit', 'gh release', 'npm version', 'release-version.mjs'])).toEqual([])
+
+    expect(w.scripts('package')).toContain('xvfb-run --auto-servernum npm run test:packaging')
+    const sums = w.steps('package').find((s) => w.field(s, 'name') === 'Write SHA256SUMS')
+    expect(sums === undefined ? undefined : w.field(sums, 'working-directory')).toBe('dist')
+    const upload = w.stepsUsing('package', 'actions/upload-artifact')
+    expect(upload).toHaveLength(1)
+    const step = upload[0] as Range
+    expect(w.withValue(step, 'name')).toBe('linux-packages')
+    expect(w.withValue(step, 'path')).toBe('dist/*.deb\ndist/*.AppImage\ndist/SHA256SUMS')
+    expect(w.withValue(step, 'retention-days')).toBe('14')
+    expect(w.withValue(step, 'if-no-files-found')).toBe('error')
+    expect(w.steps('package').map((s) => w.field(s, 'if')).filter((c) => c !== undefined)).toEqual([])
+
+    // The checksum step covers exactly the .deb and the AppImage, and checks what it wrote.
+    const good = checksums(['Veydr-1.2.3-amd64.deb', 'Veydr-1.2.3-x86_64.AppImage', 'builder-debug.yml'])
+    expect(good.run.status, good.run.stdout).toBe(0)
+    const digest = (file: string): string => createHash('sha256').update(`contents of ${file}\n`).digest('hex')
+    expect(good.sums).toBe(['Veydr-1.2.3-amd64.deb', 'Veydr-1.2.3-x86_64.AppImage'].map((f) => `${digest(f)}  ${f}\n`).join(''))
+    // Anything other than one of each fails instead of publishing a partial or ambiguous set.
+    for (const files of [[], ['Veydr-1.2.3-amd64.deb'], ['Veydr-1.2.3-x86_64.AppImage'], ['a.deb', 'b.deb', 'Veydr-1.2.3-x86_64.AppImage']]) {
+      const bad = checksums(files)
+      expect(bad.run.status, files.join(' ')).toBe(1)
+      expect(bad.run.stdout, files.join(' ')).toContain('::error title=Unexpected packages::')
+    }
+  })
+
+  it('[spec:release-automation/optional-smoke-matrix-on-a-manual-build] runs the smoke matrix on the built packages only when asked, and keeps its results', () => {
+    expect(w.jobField('smoke', 'if')?.value).toBe('inputs.smoke')
+    expect(childNames(w.lines, childAt(w.lines, w.job('smoke').start, 'needs'))).toEqual(['package'])
+    // It tests the uploaded packages, not a rebuild, after checking them against SHA256SUMS.
+    const download = w.stepsUsing('smoke', 'actions/download-artifact')
+    expect(download).toHaveLength(1)
+    expect(w.withValue(download[0] as Range, 'name')).toBe('linux-packages')
+    expect(w.withValue(download[0] as Range, 'path')).toBe('dist')
+    expect(w.scripts('smoke')).toEqual(['sha256sum -c SHA256SUMS', 'scripts/smoke-linux.sh'])
+    expect(w.scripts('smoke').join('\n')).not.toMatch(/npm run (?:dist|build|test:packaging)/)
+    const setup = w.steps('smoke').find((s) => w.field(s, 'uses') === './.github/actions/setup')
+    expect(setup === undefined ? undefined : w.withValue(setup, 'electron')).toBe('"true"')
+    const upload = w.stepsUsing('smoke', 'actions/upload-artifact')
+    expect(upload).toHaveLength(1)
+    const step = upload[0] as Range
+    expect(w.field(step, 'if')).toBe('${{ !cancelled() }}')
+    expect(w.withValue(step, 'name')).toBe('smoke-linux')
+    expect(w.withValue(step, 'path')).toBe('test-results/smoke-linux/')
+    expect(w.withValue(step, 'retention-days')).toBe('14')
+  })
+})
+
+// CODEOWNERS and the pull request template (task 4.5).
+
+describe('code owners and pull request template', () => {
+  const read = (path: string): string => githubFiles().find((f) => f.path === path)?.text ?? ''
+
+  it('assigns the maintainer to everything, and explicitly to the workflows and the release version logic', () => {
+    const rules = read('.github/CODEOWNERS')
+      .split('\n')
+      .map((l) => l.trim())
+      .filter((l) => l !== '' && !l.startsWith('#'))
+      .map((l) => l.split(/\s+/))
+    expect(rules).toEqual([
+      ['*', '@alexnakagama'],
+      ['/.github/', '@alexnakagama'],
+      ['/scripts/release-version.mjs', '@alexnakagama'],
+    ])
+    expect(existsSync(join(root, 'scripts/release-version.mjs'))).toBe(true)
+  })
+
+  it('asks for verify, tagged scenarios and updated docs', () => {
+    const items = read('.github/pull_request_template.md')
+      .split('\n')
+      .filter((l) => l.startsWith('- [ ] '))
+    expect(items).toHaveLength(3)
+    expect(items[0]).toContain('`npm run verify`')
+    expect(items[1]).toContain('[spec:')
+    expect(items[2]).toMatch(/[Dd]ocumentation/)
   })
 })

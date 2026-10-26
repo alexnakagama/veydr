@@ -57,17 +57,25 @@ Note: `npm run spec-coverage` runs in required mode and also reads this change's
 
 ## 4. Security, dependency updates, scheduled and manual builds
 
-- [ ] 4.1 Add `.github/workflows/security.yml`: CodeQL (javascript-typescript) on `pull_request`, on `push` to `master`, and on a weekly cron, with `security-events: write` only in that job; and `dependency-review` on pull requests with `fail-on-severity: moderate`. Extend the policy test and tag `quality-gates/weekly-analysis-without-code-changes` and `pull-request-adds-a-vulnerable-dependency`. Verify: `npm test` passes, and both jobs run on the pull request.
-- [ ] 4.2 Add `.github/dependabot.yml` (design D10): npm weekly with `cooldown.default-days: 7` and grouped minor and patch updates; github-actions weekly, grouped. Extend the policy test and tag `quality-gates/freshly-published-version-is-not-proposed`. Verify: `npm test` passes, and the Dependabot tab shows no config errors after merge.
-- [ ] 4.3 Add `.github/workflows/nightly.yml`: daily cron plus `workflow_dispatch` with a `ref` input. Jobs:
+- [x] 4.1 Add `.github/workflows/security.yml`: CodeQL (javascript-typescript) on `pull_request`, on `push` to `master`, and on a weekly cron, with `security-events: write` only in that job; and `dependency-review` on pull requests with `fail-on-severity: moderate`. Extend the policy test and tag `quality-gates/weekly-analysis-without-code-changes` and `pull-request-adds-a-vulnerable-dependency`. Verify: `npm test` passes, and both jobs run on the pull request.
+
+  Status: `npm test` and actionlint pass locally. Both jobs running on the pull request is checked once the change's pull request is opened, and recorded in `docs/ci.md` (Run records).
+- [x] 4.2 Add `.github/dependabot.yml` (design D10): npm weekly with `cooldown.default-days: 7` and grouped minor and patch updates; github-actions weekly, grouped. Extend the policy test and tag `quality-gates/freshly-published-version-is-not-proposed`. Verify: `npm test` passes, and the Dependabot tab shows no config errors after merge.
+
+  Status: `npm test` passes. The Dependabot tab can only be checked after merge; it is listed in `docs/ci.md` (Run records).
+- [x] 4.3 Add `.github/workflows/nightly.yml`: daily cron plus `workflow_dispatch` with a `ref` input. Jobs:
   - `perf`: `xvfb-run npm run test:perf`;
   - `smoke`: build the packages, then `scripts/smoke-linux.sh`, uploading `test-results/smoke-linux/`;
   - `acceptance`: `scripts/acceptance-linux.sh`, uploading `test-results/acceptance-linux/`;
   - `report`: `if: failure()`, `issues: write`; finds or creates the `nightly-failure` issue with `gh` and comments with the run link (design D9).
 
   Extend the policy test and tag `quality-gates/nightly-failure-is-reported-once` and `nightly-run-on-demand`. Verify: `npm test` passes, and one manual dispatch completes, with its outcome recorded in `docs/ci.md`.
-- [ ] 4.4 Add `.github/workflows/build.yml`: `workflow_dispatch` with `ref` and `smoke` (boolean). It builds the packages with `test:packaging`, writes `SHA256SUMS`, and uploads them with 14-day retention; with `smoke: true` it runs `scripts/smoke-linux.sh`. It has `contents: read` only and no push, tag or release steps. Extend the policy test (read-only permissions, no `git push`, no `gh release`) and tag `release-automation/building-a-branch` and `optional-smoke-matrix-on-a-manual-build`. Verify: `npm test` passes, and a manual dispatch on `master` produces downloadable packages whose `sha256sum -c SHA256SUMS` succeeds.
-- [ ] 4.5 Add `.github/CODEOWNERS` (the maintainer for `*`; `.github/` and `scripts/release-version.mjs` explicitly) and `.github/pull_request_template.md`, with a checklist: `npm run verify` passed, spec scenarios tagged, docs updated. Document security, Dependabot, nightly and manual builds in `docs/ci.md`, including how to triage a `nightly-failure` issue. Verify: `npm test` passes.
+
+  Status: `npm test` and actionlint pass locally. A dispatch needs the workflow on GitHub; it is run once the change's pull request is open, and recorded in `docs/ci.md` (Run records).
+- [x] 4.4 Add `.github/workflows/build.yml`: `workflow_dispatch` with `ref` and `smoke` (boolean). It builds the packages with `test:packaging`, writes `SHA256SUMS`, and uploads them with 14-day retention; with `smoke: true` it runs `scripts/smoke-linux.sh`. It has `contents: read` only and no push, tag or release steps. Extend the policy test (read-only permissions, no `git push`, no `gh release`) and tag `release-automation/building-a-branch` and `optional-smoke-matrix-on-a-manual-build`. Verify: `npm test` passes, and a manual dispatch on `master` produces downloadable packages whose `sha256sum -c SHA256SUMS` succeeds.
+
+  Status: `npm test` and actionlint pass locally; the policy test runs the `SHA256SUMS` step on sample files. The dispatch on `master` needs the workflow merged; it is recorded in `docs/ci.md` (Run records).
+- [x] 4.5 Add `.github/CODEOWNERS` (the maintainer for `*`; `.github/` and `scripts/release-version.mjs` explicitly) and `.github/pull_request_template.md`, with a checklist: `npm run verify` passed, spec scenarios tagged, docs updated. Document security, Dependabot, nightly and manual builds in `docs/ci.md`, including how to triage a `nightly-failure` issue. Verify: `npm test` passes.
 
 ## 5. Release workflow
 
