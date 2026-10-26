@@ -1,5 +1,10 @@
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import type { Page } from '@playwright/test'
-import { expect, test } from './support/fixtures'
+import { expect, repoRoot, test } from './support/fixtures'
+
+// The release runs these tests on a tree bumped to the version it releases.
+const { version } = JSON.parse(readFileSync(join(repoRoot, 'package.json'), 'utf8')) as { version: string }
 
 async function focused(window: Page): Promise<{ text: string; focusVisible: boolean }> {
   return window.evaluate(() => {
@@ -12,7 +17,7 @@ test('the window renders the empty-project state with app info', async ({ window
   await expect(window).toHaveTitle('Veydr')
   await expect(window.getByRole('heading', { level: 1, name: 'Projects' })).toBeVisible()
   await expect(window.getByTestId('empty-projects')).toContainText('No projects yet')
-  await expect(window.getByTestId('app-info-summary')).toHaveText('Veydr 0.0.0 · linux')
+  await expect(window.getByTestId('app-info-summary')).toHaveText(`Veydr ${version} · linux`)
   await expect(window.getByRole('alert')).toHaveCount(0)
 })
 

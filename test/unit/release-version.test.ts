@@ -164,11 +164,25 @@ describe('release-version CLI', () => {
     return result.stdout
   }
 
-  /** A git repository holding only copies of the project's package.json and package-lock.json, committed. */
+  const readJson = (file: string): Record<string, unknown> => JSON.parse(readFileSync(file, 'utf8')) as Record<string, unknown>
+
+  /**
+   * A git repository holding only copies of the project's package.json and package-lock.json,
+   * committed, at version 0.0.0 whatever the project's own version is: the release runs these
+   * tests on a tree it already bumped to the version being released.
+   */
   function tempCopy(): string {
     const dir = mkdtempSync(join(tmpdir(), 'veydr-release-version-'))
     dirs.push(dir)
     for (const file of ['package.json', 'package-lock.json']) copyFileSync(join(root, file), join(dir, file))
+    const pkg = readJson(join(dir, 'package.json'))
+    const lock = readJson(join(dir, 'package-lock.json'))
+    const lockPackages = lock['packages'] as Record<string, Record<string, unknown>>
+    writeFileSync(join(dir, 'package.json'), `${JSON.stringify({ ...pkg, version: '0.0.0' }, null, 2)}\n`)
+    writeFileSync(
+      join(dir, 'package-lock.json'),
+      `${JSON.stringify({ ...lock, version: '0.0.0', packages: { ...lockPackages, '': { ...lockPackages[''], version: '0.0.0' } } }, null, 2)}\n`,
+    )
     git(dir, 'init', '--quiet')
     git(dir, 'add', 'package.json', 'package-lock.json')
     git(dir, 'commit', '--quiet', '--message', 'initial')
@@ -177,8 +191,6 @@ describe('release-version CLI', () => {
 
   const cli = (cwd: string, args: string[], env: Record<string, string> = {}) =>
     spawnSync(process.execPath, [script, ...args], { cwd, encoding: 'utf8', env: { ...process.env, GITHUB_OUTPUT: '', ...env } })
-
-  const readJson = (file: string): Record<string, unknown> => JSON.parse(readFileSync(file, 'utf8')) as Record<string, unknown>
 
   it('apply sets the new version in package.json and package-lock.json and changes nothing else', () => {
     const dir = tempCopy()
