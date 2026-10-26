@@ -190,16 +190,15 @@ Before the first release, create the `master` ruleset: **Settings → Rules → 
    - **Restrict deletions** and **Block force pushes**;
    - **Require a pull request before merging**. With one maintainer, leave the required approvals at 0; turn on **Require review from Code Owners** once there is a second reviewer (see [Code owners](#code-owners));
    - **Require status checks to pass**, with exactly `ci-ok` and `dependency-review` (source: GitHub Actions). See [Required checks](#required-checks).
-3. **Bypass list**: add **GitHub Actions** with the mode **Always** (not "For pull requests only"), so the release can push its version commit directly. This was confirmed to be offered for this repository (see [Repository settings](#repository-settings)).
+3. **Bypass list**: add **Deploy keys** with the mode **Always allow** (not "For pull requests only"), and nothing else, so the release can push its version commit directly with the release deploy key below. The bypass list does not offer **GitHub Actions** for this repository (see [Repository settings](#repository-settings)).
 
-The bypass applies to every workflow that holds `contents: write`. Only `release.yml`'s `publish` job does, and the policy test fails if any other job asks for it (see [Workflow security rules](#workflow-security-rules)).
+**Release deploy key** (design D7):
 
-**Deploy-key fallback** (design D7), only if the GitHub Actions bypass is not available:
+1. Create a key pair without a passphrase, outside the repository and in a terminal outside any tool that records its output: `ssh-keygen -t ed25519 -N "" -C veydr-release -f veydr-release`.
+2. Add `veydr-release.pub` under **Settings → Deploy keys** with **Allow write access**. It must be the only deploy key with write access: the bypass applies to every one of them.
+3. Store the private key `veydr-release` as the Actions repository secret `RELEASE_DEPLOY_KEY` (**Settings → Secrets and variables → Actions**), then delete both local files.
 
-1. Create a key pair without a passphrase, outside the repository: `ssh-keygen -t ed25519 -N "" -C veydr-release -f veydr-release`.
-2. Add `veydr-release.pub` under **Settings → Deploy keys** with **Allow write access**.
-3. In the ruleset's bypass list, add **Deploy keys** with the mode **Always**.
-4. Store the private key `veydr-release` as the Actions secret `RELEASE_DEPLOY_KEY` (**Settings → Secrets and variables → Actions**), then delete both local files.
+To rotate the key, delete the deploy key and the secret and repeat these steps.
 
 When `RELEASE_DEPLOY_KEY` exists, `publish` checks out and pushes over SSH with it; otherwise it uses the job's `GITHUB_TOKEN`. Only `release.yml` may read that secret. A push with the deploy key starts `ci.yml` for the version commit on `master`; a push with `GITHUB_TOKEN` does not, because GitHub does not start workflows for pushes made with the job token. Either way, the commit only changes the version.
 
@@ -323,16 +322,23 @@ Workflow runs that verify this pipeline on GitHub. They need the workflows on Gi
 
 | What | Run | Outcome |
 |---|---|---|
-| `security.yml` on the change's pull request: `codeql` and `dependency-review` both run (task 4.1) | Not yet run | — |
+| `security.yml` on a pull request: `codeql` and `dependency-review` both run (task 4.1) | [Security run 40261987602](https://github.com/alexnakagama/veydr/actions/runs/40261987602) on [#4](https://github.com/alexnakagama/veydr/pull/4) | Both ran and passed. `dependency-review` first needed the repository's dependency graph, which was off: it failed with "Dependency review is not supported on this repository" until the graph was enabled on 2026-10-26 |
 | Dependabot configuration accepted, no errors in the Dependabot tab after merge (task 4.2) | Not yet checked | — |
 | Manual `nightly.yml` dispatch completes (task 4.3) | Not yet run | — |
 | Manual `build.yml` dispatch on `master`; `sha256sum -c SHA256SUMS` succeeds on the downloaded packages (task 4.4) | Not yet run | — |
+| `ci-ok` fails when a check fails (task 3.3): throwaway [#5](https://github.com/alexnakagama/veydr/pull/5) adds a deliberately failing unit test (`6e0181d`) | [CI run 40264125726](https://github.com/alexnakagama/veydr/actions/runs/40264125726) | `unit` failed on that test only; `ci-ok` failed with "these checks did not succeed: unit". With the `master` ruleset active, the merge box showed merging blocked by the failed required check `ci-ok` |
+| `ci-ok` succeeds once the failure is reverted (task 3.3): the revert on #5 (`b9384d0`) | [CI run 40264758062](https://github.com/alexnakagama/veydr/actions/runs/40264758062) | Every job and `ci-ok` passed; the merge box showed all checks passed and merging allowed. #5 was closed without merging and its branch deleted |
+| A failing release gate publishes nothing (task 6.3): the first `0.1.0-rc.1` release on `master` at `5ba2d7d` | Release run 40266136812 (later deleted from the Actions history by the maintainer) | `validate`, `package`, `smoke` and `acceptance` passed; `verify` and `e2e` failed, because two tests assumed the repository was at `0.0.0` (fixed in [#6](https://github.com/alexnakagama/veydr/pull/6)); `publish` was skipped. Afterwards the remote had no tags, `master` was unchanged and the Releases page showed no release or draft |
+| Release `0.1.0-rc.1` from `master` at `a3c4eb1` (task 6.2) | [Release run 40270392953](https://github.com/alexnakagama/veydr/actions/runs/40270392953) | Every job passed. `publish` pushed, with the deploy key and in one atomic push, the commit `f689b5f` "release v0.1.0-rc.1" by github-actions[bot] (parent `a3c4eb1`; changes only `package.json` and `package-lock.json`, `0.0.0` → `0.1.0-rc.1`) and the annotated tag `v0.1.0-rc.1` pointing at it. The draft release shows the Draft and Pre-release labels and holds `Veydr-0.1.0-rc.1-amd64.deb`, `Veydr-0.1.0-rc.1-x86_64.AppImage`, `SHA256SUMS` and `acceptance-linux-steps.jsonl`. CI and Security then passed on `master` at `f689b5f`. The draft is left unpublished |
+| The draft's downloads verify (task 6.2) | The four files above, downloaded from the draft | `sha256sum -c SHA256SUMS`: both packages OK. The acceptance record has 16 steps, all `ok`; it names the SHA-256 of the attached `.deb` and the packaged app reported version `0.1.0-rc.1`. Provenance, checked without the GitHub CLI: GitHub's attestation API returns one SLSA provenance attestation for both package digests, naming `.github/workflows/release.yml` at `refs/heads/master`, source commit `a3c4eb1` (the tagged commit's parent) and run 40270392953; its DSSE signature verifies against its signing certificate (`openssl dgst -verify`), which was issued by sigstore-intermediate during the `publish` job, for the same workflow, commit and run. **Not verified:** the certificate chain to Sigstore's trusted root and the transparency-log entry, which `gh attestation verify` checks; it was not run |
+| The same version is refused once released (task 6.3): `0.1.0-rc.1` again, on `master` at `f689b5f` | [Release run 40272171521](https://github.com/alexnakagama/veydr/actions/runs/40272171521) | `validate` failed at "Check the version": `release-version: tag v0.1.0-rc.1 already exists; the version must be greater than the latest version 0.1.0-rc.1 (package.json)`. Every other job was skipped; `master` and the tag were unchanged |
+| A release started from another branch is refused before building (task 6.3): `0.1.0-rc.2` from a temporary branch `rehearsal/release-from-branch` at `f689b5f` | [Release run 40272489403](https://github.com/alexnakagama/veydr/actions/runs/40272489403) | `validate` failed at "Require master": "Release refused: a release runs only on master, not on refs/heads/rehearsal/release-from-branch". Every other job was skipped. Afterwards there was no `v0.1.0-rc.2` tag, `master` was unchanged and the Releases page still showed only the `0.1.0-rc.1` draft. The branch was then deleted |
 
 ## Repository settings
 
-These answers were confirmed with the maintainer on 2026-10-25 (task 1.1 of the change):
+These answers were confirmed with the maintainer on 2026-10-25 (task 1.1 of the change), and the bypass corrected on 2026-10-26:
 
-- **Bypass for the release commit: GitHub Actions.** The `master` ruleset's bypass list offers **GitHub Actions** as a bypass actor for this repository, so the release workflow pushes its version-bump commit and tag with the workflow's `GITHUB_TOKEN` (design D7, option A). The deploy-key fallback (a deploy key with bypass, stored as the `RELEASE_DEPLOY_KEY` secret) is not needed. The release workflow still supports it, in case the bypass actor stops being available.
+- **Bypass for the release commit: a deploy key.** Task 1.1 recorded that the ruleset's bypass list offers **GitHub Actions**; when the `master` ruleset was created on 2026-10-26 it did not (it offered deploy keys, roles and installed apps only). The ruleset therefore lists **Deploy keys** with **Always allow**, and the release pushes its version commit and tag with the deploy key `veydr-release`, stored as the `RELEASE_DEPLOY_KEY` secret (design D7, the fallback). The first release, `v0.1.0-rc.1`, was pushed this way (see [Run records](#run-records)).
 - **Visibility: public.** The repository is public (checked through the GitHub API on 2026-10-25), so build provenance attestations can be created for release packages. GitHub supports them only for public repositories, or private ones on GitHub Enterprise Cloud. If the repository becomes private, the release's attestation step fails instead of being skipped.
 
 ## Workflow security rules

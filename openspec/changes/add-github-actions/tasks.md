@@ -52,7 +52,7 @@ Note: `npm run spec-coverage` runs in required mode and also reads this change's
   - the production audit step.
 
   Tag the `quality-gates` scenarios `pull-request-runs-the-full-check-set`, `push-to-master-runs-the-same-checks`, `superseded-pull-request-runs-are-cancelled`, `all-checks-pass`, `one-check-fails-or-is-skipped` and `production-dependency-becomes-vulnerable`. Verify: `npm test` passes.
-- [ ] 3.3 Prove `ci-ok` behaves as specified. On a throwaway pull request, a deliberately failing unit test makes `ci-ok` fail; reverting it makes `ci-ok` succeed. Record the two run links in `docs/ci.md`. Verify: both links are recorded.
+- [x] 3.3 Prove `ci-ok` behaves as specified. On a throwaway pull request, a deliberately failing unit test makes `ci-ok` fail; reverting it makes `ci-ok` succeed. Record the two run links in `docs/ci.md`. Verify: both links are recorded.
 - [x] 3.4 Document the CI section in `docs/ci.md`: the jobs, what each runs, its artifacts, how to reproduce a CI failure locally with the same npm script, and the required checks (`ci-ok`, `dependency-review`). Add the CI status badge to README. Verify: `npm test` passes.
 
 ## 4. Security, dependency updates, scheduled and manual builds
@@ -109,14 +109,16 @@ Note: `npm run spec-coverage` runs in required mode and also reads this change's
 
 ## 6. End-to-end verification
 
-- [ ] 6.1 Run `npm run verify` locally and confirm every stage passes, including spec-coverage with this change's scenarios. Verify: the summary prints "all stages passed".
-- [ ] 6.2 With the maintainer's explicit go-ahead (it pushes a commit and a tag), create the `master` ruleset by following `docs/ci.md`. Then run the release workflow with `0.1.0-rc.1`, and confirm:
+- [x] 6.1 Run `npm run verify` locally and confirm every stage passes, including spec-coverage with this change's scenarios. Verify: the summary prints "all stages passed".
+- [x] 6.2 With the maintainer's explicit go-ahead (it pushes a commit and a tag), create the `master` ruleset by following `docs/ci.md`. Then run the release workflow with `0.1.0-rc.1`, and confirm:
   - the bump commit and the tag landed together;
   - a draft prerelease exists with both packages, `SHA256SUMS` and the acceptance record;
   - `sha256sum -c SHA256SUMS` and `gh attestation verify` succeed on the downloaded files.
 
   Record the run link and the outcome in `docs/ci.md`. Verify: the record exists.
-- [ ] 6.3 Rerun the release with the same version `0.1.0-rc.1`, and confirm that validation refuses it because the tag exists. Then rehearse a failing gate (for example, run it from a branch). Confirm that no tag, commit or release appears. Verify: run links are recorded in `docs/ci.md`.
+
+  Status: done on 2026-10-26 (`docs/ci.md`, Run records). The ruleset uses the deploy-key bypass: GitHub Actions was not offered. `gh attestation verify` was not run, because the GitHub CLI is not used here; the maintainer accepted a partial check instead (attestation contents and DSSE signature against its certificate; not the certificate chain or the transparency log), recorded as such.
+- [x] 6.3 Rerun the release with the same version `0.1.0-rc.1`, and confirm that validation refuses it because the tag exists. Then rehearse a failing gate (for example, run it from a branch). Confirm that no tag, commit or release appears. Verify: run links are recorded in `docs/ci.md`.
 
 ## Workflow follow-up
 
