@@ -3,8 +3,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { Page } from '@playwright/test'
 import type { Config } from '../../src/shared/config'
-import { fixture, isAlive, killTagged, readProcess, TAG_VARIABLE, taggedProcesses, waitUntil } from '../support/proc'
-import { expect, expectNoOutboundConnections, launchVeydr, test, type VeydrApp } from './support/fixtures'
+import { fixture, isAlive, killTagged, readProcess, TAG_VARIABLE, waitUntil } from '../support/proc'
+import { commandProcesses, expect, expectNoOutboundConnections, launchVeydr, test, type VeydrApp } from './support/fixtures'
 import { seed } from './support/seed'
 
 // Tasks 6.4–6.6: the command editor, secrets, the effective environment, and the editor launch.
@@ -199,7 +199,7 @@ test('[spec:project-registry/desktop-launch-resolves-login-path] [spec:project-r
     await environment.getByRole('button', { name: 'Refresh environment', exact: true }).click()
     await expect(entry).toContainText('overridden')
     await environment.getByRole('button', { name: 'Close', exact: true }).click()
-    expect(taggedProcesses(tag)).toEqual([])
+    expect(commandProcesses(veydr, tag)).toEqual([])
   })
 })
 
@@ -223,8 +223,8 @@ test('[spec:project-registry/launch-editor] [spec:project-registry/editor-surviv
       await window.getByRole('button', { name: 'Open shop in editor', exact: true }).click()
       await waitUntil(() => existsSync(argsOut), 'editor started')
       expect(readFileSync(argsOut, 'utf8').split('\0').slice(0, -1)).toEqual([`--goto=${shop}`, shop])
-      await waitUntil(() => taggedProcesses(tag).length === 1, 'editor process found')
-      const [editor] = taggedProcesses(tag)
+      await waitUntil(() => commandProcesses(veydr, tag).length === 1, 'editor process found')
+      const [editor] = commandProcesses(veydr, tag)
 
       expectNoOutboundConnections(await veydr.close())
       // Veydr has quit; the editor is untouched.

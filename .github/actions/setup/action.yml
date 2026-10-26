@@ -99,3 +99,12 @@ runs:
           echo "::error title=Network namespaces unavailable::'unshare --user --map-root-user --net true' failed after setup. test/e2e/offline.spec.ts needs it (docs/ci.md)."
           exit 1
         fi
+
+    # The runner pipes core dumps to systemd-coredump, even for Chromium's non-dumpable sandboxed
+    # processes. A crashing process stays in exit until its core is written, so Electron learns of a
+    # crashed renderer only much later. Nothing collects dumps on a runner; turn them off.
+    - name: Disable core dumps
+      if: inputs.electron == 'true'
+      shell: bash
+      run: |
+        sudo sysctl -w fs.suid_dumpable=0 'kernel.core_pattern=|/bin/false'

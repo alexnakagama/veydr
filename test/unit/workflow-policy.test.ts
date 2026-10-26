@@ -519,6 +519,13 @@ describe('workflow policy (design D11)', () => {
     expect(sysctl).toBeLessThan(user)
     expect(user).toBeLessThan(net)
     expect(script.filter((l) => l === 'exit 1')).toHaveLength(2)
+
+    // Core dumps are off for Electron jobs, so a crashed renderer is reported at once (docs/ci.md).
+    const dumps = lines.findIndex((l) => l.kind === 'node' && l.key === 'name' && l.value === 'Disable core dumps')
+    expect(dumps).toBeGreaterThan(named)
+    const dumpStep = within(lines, stepAround(lines, dumps))
+    expect(dumpStep).toContainEqual(expect.objectContaining({ key: 'if', value: "inputs.electron == 'true'" }))
+    expect(dumpStep.filter((l) => l.kind === 'scalar').map((l) => l.body)).toEqual(["sudo sysctl -w fs.suid_dumpable=0 'kernel.core_pattern=|/bin/false'"])
   })
 
   it('requires persist-credentials: false on every checkout except in the release publish job', () => {
@@ -762,7 +769,7 @@ describe('ci.yml (design D4)', () => {
       ['lint', 'static', 'npm run lint'],
       ['spec coverage', 'static', 'npm run spec-coverage'],
       ['unit', 'unit', 'npm test'],
-      ['integration', 'integration', 'npm run test:integration'],
+      ['integration', 'integration', 'xvfb-run --auto-servernum npm run test:integration'],
       ['end-to-end', 'e2e', 'xvfb-run --auto-servernum npm run test:e2e'],
       ['packaging', 'package', 'xvfb-run --auto-servernum npm run test:packaging'],
     ]
@@ -1428,7 +1435,7 @@ if (args[0] === 'api') {
       expect(stepEnv(job, 'Apply the version'), job).toEqual({ VERSION: versionEnv })
       expect(w.scripts(job)[0], job).toBe('node scripts/release-version.mjs apply "$VERSION"')
     }
-    expect(w.scripts('verify')).toEqual(['node scripts/release-version.mjs apply "$VERSION"', 'npm run verify'])
+    expect(w.scripts('verify')).toEqual(['node scripts/release-version.mjs apply "$VERSION"', 'xvfb-run --auto-servernum npm run verify'])
     expect(w.scripts('e2e')).toContain('xvfb-run --auto-servernum npm run test:e2e')
     expect(w.scripts('package')).toContain('xvfb-run --auto-servernum npm run test:packaging')
 

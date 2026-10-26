@@ -17,6 +17,9 @@ export default defineConfig({
           include: ['test/integration/**/*.test.ts'],
           environment: 'node',
           testTimeout: 60_000,
+          // One file at a time: the output-drain throughput test compares Veydr against a baseline
+          // and must not share the CPU with other files' processes (4 vCPUs on CI runners).
+          fileParallelism: false,
         },
       },
       {

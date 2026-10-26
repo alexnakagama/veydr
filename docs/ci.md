@@ -32,7 +32,7 @@ When a pull request gets a new push while its checks are still running, the olde
 |---|---|---|---|---|
 | `static` | `npm run typecheck`, `npm run lint`, `npm run spec-coverage`, `npm audit --omit=dev --audit-level=low`, actionlint | The same commands; actionlint as shown below | None | 20 min |
 | `unit` | `npm test` | `npm test` | None | 20 min |
-| `integration` | `npm run test:integration` | `npm run test:integration` | None | 30 min |
+| `integration` | `xvfb-run --auto-servernum npm run test:integration` | `npm run test:integration` (with `xvfb-run --auto-servernum` in front on a machine without a display) | None | 30 min |
 | `e2e` | `xvfb-run --auto-servernum npm run test:e2e` | `npm run test:e2e` (with `xvfb-run --auto-servernum` in front on a machine without a display) | `e2e-test-results`: Playwright's `test-results/`, only when the job fails, kept 7 days | 45 min |
 | `package` | `xvfb-run --auto-servernum npm run test:packaging` | `npm run test:packaging` | `linux-packages`: `dist/*.deb` and `dist/*.AppImage`, kept 7 days | 45 min |
 | `ci-ok` | Checks the result of every job above | n/a | None | 5 min |
@@ -221,7 +221,7 @@ gh workflow run release.yml --ref master -f version=0.1.0
 | Job | What it does | Timeout |
 |---|---|---|
 | `validate` | Fails unless the run is on `master`. Checks out with every tag and runs `node scripts/release-version.mjs check`. Outputs the tag, whether it is a prerelease, and the commit the run started from (the source commit) | 10 min |
-| `verify` | On the source commit: applies the version (`release-version.mjs apply`), then `npm run verify` | 45 min |
+| `verify` | On the source commit: applies the version (`release-version.mjs apply`), then `xvfb-run --auto-servernum npm run verify` (the integration tests launch the app) | 45 min |
 | `e2e` | The same bump, then `xvfb-run --auto-servernum npm run test:e2e` | 60 min |
 | `package` | The same bump, then `xvfb-run --auto-servernum npm run test:packaging`. Fails unless `dist/` holds exactly `Veydr-X.Y.Z-amd64.deb` and `Veydr-X.Y.Z-x86_64.AppImage`, and uploads them as `release-packages` | 60 min |
 | `smoke` | `scripts/smoke-linux.sh` on the `release-packages` files | 90 min |
@@ -368,3 +368,9 @@ Chromium's sandbox needs unprivileged user namespaces, and `test/e2e/offline.spe
 With `electron: "true"`, the setup action runs `sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0` before any test. This puts the runner in the state the app was verified in (Debian 13, namespaces allowed), so the sandbox and the offline test run for real. The step then checks `unshare --user true` and `unshare --user --map-root-user --net true`, and fails with a clear error if either does not work, rather than letting the sandbox fail later inside Playwright.
 
 The alternatives were rejected: setting `VEYDR_ALLOW_SKIP_OFFLINE` would hide exactly what the offline test exists for, and installing Veydr's AppArmor profile on the runner covers only the packaged binary, not `node_modules/electron`. The packaged app under Ubuntu 24.04's restriction remains a manual check (see the README's platform notes); CI does not claim to cover it.
+
+## Core dumps on runners
+
+The runner image pipes core dumps to `systemd-coredump` (`kernel.core_pattern=|/usr/lib/systemd/systemd-coredump …`) and sets `fs.suid_dumpable=2`, so even Chromium's sandboxed processes, which mark themselves non-dumpable, are dumped. A crashing process stays in the kernel's exit path until its core has been written, and Electron learns that the process is gone only then. On a runner that took more than 30 seconds for a renderer, so `failure.spec.ts`'s crashed-renderer test hung: the renderer had crashed, but Veydr had not been told yet.
+
+With `electron: "true"`, the setup action therefore runs `sudo sysctl -w fs.suid_dumpable=0 'kernel.core_pattern=|/bin/false'`: no process on the runner writes a core dump. Nothing collected the dumps anyway; a crash still shows in the test output, as it does on a developer machine with dumps disabled (`ulimit -c 0`).

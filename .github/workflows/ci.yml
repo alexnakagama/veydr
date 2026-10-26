@@ -80,7 +80,7 @@ jobs:
         with:
           electron: "true"
       - name: Integration tests
-        run: npm run test:integration
+        run: xvfb-run --auto-servernum npm run test:integration
 
   e2e:
     name: e2e
