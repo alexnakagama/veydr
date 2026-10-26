@@ -122,8 +122,8 @@ Single-key shortcuts for common actions. Press <kbd>?</kbd> in the app to see th
 | Projects, commands (direct and shell), environment overrides, secret masking | Windows support (planned) |
 | Start, stop, restart; process-tree stop; clean quit; crash recovery | Keychain-backed secret storage (secrets are stored unencrypted for now) |
 | Live output with colors, filter, follow/pause, copy, clear | Viewing a previous run's output (it is kept, but not shown yet) |
-| Listening-port inspection | Published prebuilt releases |
-| `.deb` and AppImage packages, built from source | macOS support, auto-update, code signing |
+| Listening-port inspection | A stable release (only release candidates are published so far) |
+| `.deb` and AppImage packages, from [GitHub Releases](https://github.com/alexnakagama/veydr/releases) or built from source | macOS support, auto-update, code signing |
 
 Veydr is deliberately not a terminal emulator. Commands get no interactive input (stdin), there is no auto-restart or watch mode, and output is never written to log files. Docker, Git, and tray integration are also out of scope for this release.
 
@@ -153,7 +153,7 @@ gh attestation verify Veydr-X.Y.Z-amd64.deb --repo alexnakagama/veydr --signer-w
 
 Then install the package as described below, using the downloaded file instead of the one in `dist/`. More on these checks is in [docs/ci.md](docs/ci.md#verifying-a-release-package).
 
-If there is no release yet, or you want an unreleased version, build the packages yourself. It takes one command.
+If you want a version that has not been released, build the packages yourself. It takes one command.
 
 ### Build the Linux packages
 
