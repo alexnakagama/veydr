@@ -3,7 +3,7 @@
 Veydr's checks run on GitHub Actions, on GitHub-hosted `ubuntu-24.04` runners. The workflows call the same npm scripts you run locally (`npm run verify`, `npm run test:e2e`, `npm run test:packaging`, and so on) and never re-implement them, so a failure in CI can be reproduced with the same command. The requirements are in the OpenSpec change `add-github-actions` (`specs/quality-gates` and `specs/release-automation`), and the decisions in its `design.md`.
 
 > [!NOTE]
-> The pipeline is being added in stages. So far the shared runner setup (`.github/actions/setup`) and the workflow policy test exist; the workflows below are added by the later task groups of the change.
+> The pipeline is being added in stages. So far the shared runner setup (`.github/actions/setup`), the workflow policy test and `ci.yml` exist; the other workflows below are added by the later task groups of the change. Until the scenarios of the security, nightly, build and release workflows are tagged in tests (task groups 4 and 5), the spec coverage step of `ci.yml`'s `static` job fails, and so does `ci-ok`.
 
 ## Pipeline overview
 
@@ -23,6 +23,51 @@ Every job prepares the runner with the local composite action `.github/actions/s
 | `cache` | `"true"` | `"false"` turns off every cache, so the release installs everything fresh from lock-verified sources |
 
 Pass both inputs as quoted strings (`electron: "true"`), the spelling the policy test checks for. Restored Electron and electron-builder downloads are not re-verified against their checksums. That is acceptable for pull requests and `master`, because GitHub scopes caches by branch, so a pull request cannot poison `master`'s cache. It is also why the release runs with `cache: "false"`.
+
+## CI
+
+`.github/workflows/ci.yml` is the quality gate. It runs on every pull request to `master`, on every push to `master`, and for merge groups (so a merge queue can be turned on without editing the workflow). A pull request run checks the pull request's merge commit, the default checkout for `pull_request`. Every run executes the same jobs; nothing depends on the event that started it.
+
+When a pull request gets a new push while its checks are still running, the older run is cancelled. Runs for pushes to `master` and merge groups are never cancelled or dropped: each gets a concurrency group of its own.
+
+| Job | What it runs | Reproduce locally | Artifacts | Timeout |
+|---|---|---|---|---|
+| `static` | `npm run typecheck`, `npm run lint`, `npm run spec-coverage`, `npm audit --omit=dev --audit-level=low`, actionlint | The same commands; actionlint as shown below | None | 20 min |
+| `unit` | `npm test` | `npm test` | None | 20 min |
+| `integration` | `npm run test:integration` | `npm run test:integration` | None | 30 min |
+| `e2e` | `xvfb-run --auto-servernum npm run test:e2e` | `npm run test:e2e` (with `xvfb-run --auto-servernum` in front on a machine without a display) | `e2e-test-results`: Playwright's `test-results/`, only when the job fails, kept 7 days | 45 min |
+| `package` | `xvfb-run --auto-servernum npm run test:packaging` | `npm run test:packaging` | `linux-packages`: `dist/*.deb` and `dist/*.AppImage`, kept 7 days | 45 min |
+| `ci-ok` | Checks the result of every job above | n/a | None | 5 min |
+
+Notes on the jobs:
+
+- **`static` runs every check, even after one fails.** Each step runs as long as the setup succeeded and the run was not cancelled, so one run reports every typecheck, lint, coverage, audit and workflow-lint problem at once. The job fails if any of them did.
+- **The production audit blocks.** `--omit=dev` limits it to the dependencies that ship in the packages, and `--audit-level=low` fails on an advisory of any severity. A new advisory for a production dependency therefore fails the next run, even without a code change. Development dependencies are covered by dependency review on pull requests and by Dependabot. `npm audit` queries the npm registry, so the step also fails when the registry cannot be reached. The log tells the two apart: an advisory lists the affected package and severity, while a registry problem shows a network or HTTP error. For a registry error, rerun the failed job; for an advisory, update the dependency or follow [dependencies.md](dependencies.md).
+- **actionlint** runs from the official `rhysd/actionlint` Docker image (1.7.12), pinned by digest, which also runs shellcheck on every `run:` script. To run the same check locally:
+
+  ```bash
+  docker run --rm -v "$PWD:/repo" -w /repo rhysd/actionlint@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 -color
+  ```
+
+- **Electron jobs** (`integration`, `e2e`, `package`) run the setup action with `electron: "true"`, which installs Xvfb and enables unprivileged user namespaces (see [User namespaces on runners](#user-namespaces-on-runners)). On Ubuntu 24.04 or later, reproducing an E2E failure locally needs the same `sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0`; Debian 13 needs nothing.
+- **Downloading artifacts.** Use the run's summary page, or `gh run download <run-id> --name linux-packages`.
+
+### `ci-ok`, the aggregate check
+
+`ci-ok` needs every other job and runs with `if: always()`, so it runs whatever happened to them. It succeeds only if every one of them reports `success`. A failed, cancelled or skipped job makes it fail, and its log lists which jobs did not succeed. A plain `needs:` would not do this: without `if: always()`, `ci-ok` would itself be skipped when a job it needs fails, and branch protection treats a skipped required check as passing. The aggregation is a short Node script, run with the Node that comes with the runner image, and `workflow-policy.test.ts` runs that exact script against sample results.
+
+Because it runs whatever happened, `ci-ok` also runs in a pull request run that was cancelled by a newer push, and reports a failure for that older commit. This is expected and harmless: the newer commit's own run is the one branch protection looks at.
+
+A new job must be added to `ci-ok`'s `needs:` list. The policy test fails if any job is missing from it. The policy test also pins the `if:` condition of every step in the check jobs, because a step whose condition is false is skipped while its job still succeeds, and `ci-ok` would then pass without that check.
+
+### Required checks
+
+The `master` ruleset requires exactly two checks:
+
+- **`ci-ok`** from `ci.yml`;
+- **`dependency-review`** from `security.yml`, which fails a pull request that adds a dependency with a known vulnerability of moderate or higher severity.
+
+Only these two are required, so adding, removing or renaming a job in `ci.yml` never needs a change to the repository settings. The jobs behind `ci-ok` are not required individually.
 
 ## Repository settings
 

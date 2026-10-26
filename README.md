@@ -15,6 +15,10 @@
 </p>
 
 <p align="center">
+  <a href="https://github.com/alexnakagama/veydr/actions/workflows/ci.yml"><img src="https://github.com/alexnakagama/veydr/actions/workflows/ci.yml/badge.svg?branch=master" alt="CI status"></a>
+</p>
+
+<p align="center">
   <img src="docs/screenshots/projects-and-output.png" alt="The Veydr window: two projects with their commands, three of them running, and the live output of the API server" width="900">
 </p>
 
@@ -312,6 +316,8 @@ npm run verify         # typecheck + lint + unit + integration + spec coverage
 npm run test:e2e       # end-to-end tests of the built app (Playwright + Electron)
 npm run test:perf      # high-volume output performance scenarios
 ```
+
+CI runs these same scripts on every pull request and every push to `master`. [docs/ci.md](docs/ci.md#ci) lists each job, the command it runs, and its artifacts.
 
 ### Packaging
 

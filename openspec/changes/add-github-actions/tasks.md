@@ -33,7 +33,7 @@ Note: `npm run spec-coverage` runs in required mode and also reads this change's
 
 ## 3. CI workflow (pull requests and master)
 
-- [ ] 3.1 Add `.github/workflows/ci.yml` (design D4), with these jobs:
+- [x] 3.1 Add `.github/workflows/ci.yml` (design D4), with these jobs:
   - `static`: typecheck, lint, spec-coverage, `npm audit --omit=dev --audit-level=low`, actionlint;
   - `unit`;
   - `integration`;
@@ -42,7 +42,9 @@ Note: `npm run spec-coverage` runs in required mode and also reads this change's
   - `ci-ok`: `if: always()`, checks every `needs.*.result`.
 
   Triggers are `pull_request` and `push` on `master` plus `merge_group`. Concurrency cancels superseded PR runs. Verify: actionlint passes, and the workflow runs green on this change's pull request.
-- [ ] 3.2 Extend `workflow-policy.test.ts` for `ci.yml`:
+
+  Status: actionlint passes locally. The green run on this change's pull request is deferred: until groups 4 and 5 tag their scenarios, `spec-coverage` (and so `static` and `ci-ok`) fails by design (see the note at the top). It is checked together with 3.3, after group 5.
+- [x] 3.2 Extend `workflow-policy.test.ts` for `ci.yml`:
   - the triggers;
   - the job set contains every check named in the spec;
   - `ci-ok` uses `if: always()` and fails on any non-`success` result;
@@ -51,7 +53,7 @@ Note: `npm run spec-coverage` runs in required mode and also reads this change's
 
   Tag the `quality-gates` scenarios `pull-request-runs-the-full-check-set`, `push-to-master-runs-the-same-checks`, `superseded-pull-request-runs-are-cancelled`, `all-checks-pass`, `one-check-fails-or-is-skipped` and `production-dependency-becomes-vulnerable`. Verify: `npm test` passes.
 - [ ] 3.3 Prove `ci-ok` behaves as specified. On a throwaway pull request, a deliberately failing unit test makes `ci-ok` fail; reverting it makes `ci-ok` succeed. Record the two run links in `docs/ci.md`. Verify: both links are recorded.
-- [ ] 3.4 Document the CI section in `docs/ci.md`: the jobs, what each runs, its artifacts, how to reproduce a CI failure locally with the same npm script, and the required checks (`ci-ok`, `dependency-review`). Add the CI status badge to README. Verify: `npm test` passes.
+- [x] 3.4 Document the CI section in `docs/ci.md`: the jobs, what each runs, its artifacts, how to reproduce a CI failure locally with the same npm script, and the required checks (`ci-ok`, `dependency-review`). Add the CI status badge to README. Verify: `npm test` passes.
 
 ## 4. Security, dependency updates, scheduled and manual builds
 

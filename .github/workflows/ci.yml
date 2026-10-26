@@ -1,0 +1,167 @@
+# Quality gate for pull requests and master (docs/ci.md#ci, design D4). Branch protection requires
+# only the aggregate job ci-ok, so jobs can be added or renamed without touching repository settings.
+name: CI
+
+on:
+  pull_request:
+    branches:
+      - master
+  push:
+    branches:
+      - master
+  merge_group:
+
+permissions: {}
+
+# A newer push to a pull request cancels the run for its previous commit. Every other run gets a
+# group of its own: a shared group would let a newer master push drop an older pending run.
+concurrency:
+  group: ci-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  static:
+    name: static
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - id: setup
+        uses: ./.github/actions/setup
+      # The checks are independent, so each runs even if an earlier one failed; the job fails if any does.
+      - name: Typecheck
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        run: npm run typecheck
+      - name: Lint
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        run: npm run lint
+      - name: Spec coverage
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        run: npm run spec-coverage
+      - name: Production dependency audit
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        run: npm audit --omit=dev --audit-level=low
+      # rhysd/actionlint 1.7.12, pinned by digest; it lints the workflows with shellcheck.
+      - name: Workflow lint
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        uses: docker://rhysd/actionlint@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667
+        with:
+          args: -color
+
+  unit:
+    name: unit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+      - name: Unit tests
+        run: npm test
+
+  integration:
+    name: integration
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+        with:
+          electron: "true"
+      - name: Integration tests
+        run: npm run test:integration
+
+  e2e:
+    name: e2e
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+        with:
+          electron: "true"
+      - name: End-to-end tests
+        run: xvfb-run --auto-servernum npm run test:e2e
+      - name: Upload test results
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: e2e-test-results
+          path: test-results/
+          retention-days: 7
+          if-no-files-found: ignore
+
+  package:
+    name: package
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+        with:
+          electron: "true"
+      - name: Build packages and run the packaging tests
+        run: xvfb-run --auto-servernum npm run test:packaging
+      - name: Upload packages
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: linux-packages
+          path: |
+            dist/*.deb
+            dist/*.AppImage
+          retention-days: 7
+          if-no-files-found: error
+
+  # The one required check. It runs whatever happened to the jobs above and fails unless every one
+  # of them succeeded: a plain needs: would let a skipped or cancelled job through.
+  ci-ok:
+    name: ci-ok
+    if: always()
+    needs:
+      - static
+      - unit
+      - integration
+      - e2e
+      - package
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      # Runs on the runner image's own Node (no checkout or setup needed); workflow-policy.test.ts
+      # executes this exact script against sample results.
+      - name: Require every check to succeed
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          node <<'EOF'
+          const results = Object.entries(JSON.parse(process.env.NEEDS || '{}')).map(([job, need]) => [job, need?.result])
+          for (const [job, result] of results) console.log(`${job}: ${result}`)
+          const failed = results.filter(([, result]) => result !== 'success').map(([job]) => job)
+          if (results.length === 0) {
+            console.log('::error title=ci-ok::no checks to aggregate')
+            process.exit(1)
+          }
+          if (failed.length > 0) {
+            console.log(`::error title=ci-ok::these checks did not succeed: ${failed.join(', ')}`)
+            process.exit(1)
+          }
+          EOF

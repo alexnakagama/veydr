@@ -1,3 +1,4 @@
+import { spawnSync } from 'node:child_process'
 import { readdirSync, readFileSync } from 'node:fs'
 import { join, relative, resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
@@ -533,5 +534,223 @@ describe('workflow policy (design D11)', () => {
     expect(violations(edit('    timeout-minutes: 30', '\ttimeout-minutes: 30'))).toContainEqual(expect.stringContaining('tab in indentation'))
     expect(violations(edit('    timeout-minutes: 30', '     timeout-minutes: 30'))).toContainEqual(expect.stringContaining('multiple of two spaces'))
     expect(violations(edit('    runs-on: ubuntu-24.04', '    <<: *defaults'))).toContainEqual(expect.stringContaining('cannot classify'))
+  })
+})
+
+// ci.yml (design D4): the quality gate's triggers, check set, cancellation and aggregate check.
+
+/** Indexes of the nodes directly under the node at `index` (keys or sequence items one level deeper). */
+function childrenOf(lines: Line[], index: number): number[] {
+  const parent = lines[index] as Line
+  const base = parent.indent + (parent.item ? 2 : 0)
+  const out: number[] = []
+  for (let i = index + 1; i < lines.length; i++) {
+    const l = lines[i] as Line
+    if (l.kind !== 'node') continue
+    if (l.indent <= base) break
+    if (l.indent === base + 2) out.push(i)
+  }
+  return out
+}
+
+const childNames = (lines: Line[], index: number): string[] => childrenOf(lines, index).map((i) => (lines[i] as Line).key ?? (lines[i] as Line).body)
+const childAt = (lines: Line[], index: number, key: string): number => childrenOf(lines, index).find((i) => (lines[i] as Line).key === key) ?? -1
+
+/** Index ranges of the steps of a job, in order. */
+function stepsOf(lines: Line[], job: Job): { start: number; end: number }[] {
+  const steps = childAt(lines, job.start, 'steps')
+  return steps < 0 ? [] : childrenOf(lines, steps).map((i) => stepAround(lines, i))
+}
+
+/** The node for `key` on a step itself (not nested under `with:` or `env:`). */
+function stepField(lines: Line[], step: { start: number; end: number }): (key: string) => Line | undefined {
+  const dash = (lines[step.start] as Line).indent
+  return (key) => within(lines, step).find((l) => l.kind === 'node' && l.key === key && (l.item ? l.indent === dash : l.indent === dash + 2))
+}
+
+/** A step's `run:` script, with block scalar indentation removed. */
+function scriptOf(source: Source, lines: Line[], step: { start: number; end: number }): string | undefined {
+  const run = stepField(lines, step)('run')
+  if (run === undefined) return undefined
+  if (!/^[|>]/.test(run.value ?? '')) return run.value
+  const raw = source.text.split('\n')
+  const body: Line[] = []
+  for (let i = lines.indexOf(run) + 1; i < lines.length && ['scalar', 'blank'].includes((lines[i] as Line).kind); i++) body.push(lines[i] as Line)
+  const indent = Math.min(...body.filter((l) => l.kind === 'scalar').map((l) => l.indent))
+  return `${body.map((l) => (raw[l.n - 1] ?? '').slice(indent)).join('\n').trimEnd()}\n`
+}
+
+describe('ci.yml (design D4)', () => {
+  const ci = githubFiles().find((f) => f.path === '.github/workflows/ci.yml') ?? fixture('', '.github/workflows/ci.yml')
+  const lines = parse(ci.text)
+  const jobs = jobsOf(lines)
+  const job = (name: string): Job => {
+    const found = jobs.find((j) => j.name === name)
+    expect(found, `job ${name}`).toBeDefined()
+    return found as Job
+  }
+  const jobField = (name: string, key: string): Line | undefined => {
+    const index = childAt(lines, job(name).start, key)
+    return index < 0 ? undefined : lines[index]
+  }
+  const scripts = (name: string): string[] => stepsOf(lines, job(name)).flatMap((s) => scriptOf(ci, lines, s) ?? []).map((s) => s.trim())
+  const on = topLevelBlock(lines, 'on')?.start ?? -1
+  const branches = (trigger: string): string[] => {
+    const index = childAt(lines, on, trigger)
+    expect(index, `trigger ${trigger}`).toBeGreaterThan(0)
+    return childNames(lines, childAt(lines, index, 'branches'))
+  }
+  /** Runs ci-ok's script as the runner does (`bash -e`), with `NEEDS` set to `needs` or left unset. */
+  const runCiOk = (needs: string | undefined): { status: number | null; stdout: string } => {
+    const step = stepsOf(lines, job('ci-ok')).find((s) => stepField(lines, s)('run') !== undefined)
+    const script = step === undefined ? undefined : scriptOf(ci, lines, step)
+    expect(script).toBeDefined()
+    const env: NodeJS.ProcessEnv = { ...process.env }
+    delete env['NEEDS']
+    if (needs !== undefined) env['NEEDS'] = needs
+    const run = spawnSync('bash', ['-e', '-c', script ?? 'exit 2'], { encoding: 'utf8', env })
+    return { status: run.status, stdout: run.stdout }
+  }
+  /** ci-ok with `needs` shaped like GitHub's `toJSON(needs)`: `{ job: { result, outputs } }`. */
+  const ciOk = (results: Record<string, string>): { status: number | null; stdout: string } =>
+    runCiOk(JSON.stringify(Object.fromEntries(Object.entries(results).map(([name, result]) => [name, { result, outputs: {} }]))))
+  /** The value of `key` under a step's `with:`; a block scalar's lines are joined with newlines. */
+  const withValue = (step: { start: number; end: number }, key: string): string | undefined => {
+    const block = stepField(lines, step)('with')
+    if (block === undefined) return undefined
+    const index = childAt(lines, lines.indexOf(block), key)
+    if (index < 0) return undefined
+    const line = lines[index] as Line
+    if (!/^[|>]/.test(line.value ?? '')) return line.value
+    const body: string[] = []
+    for (let i = index + 1; i < lines.length && (lines[i] as Line).kind === 'scalar'; i++) body.push((lines[i] as Line).body)
+    return body.join('\n')
+  }
+  /** Every job but the aggregate is a check of the set. */
+  const checks = (): string[] => jobs.map((j) => j.name).filter((name) => name !== 'ci-ok')
+
+  it('exists and has the expected jobs', () => {
+    expect(ci.text).not.toBe('')
+    expect(jobs.map((j) => j.name)).toEqual(['static', 'unit', 'integration', 'e2e', 'package', 'ci-ok'])
+  })
+
+  it('never skips a check step while the job still succeeds', () => {
+    // A step whose `if:` is false is skipped and its job stays green, so ci-ok would pass without the
+    // check. Exact conditions: changing one must update this test deliberately.
+    const guard = "${{ !cancelled() && steps.setup.outcome == 'success' }}"
+    const conditions = (name: string): (string | undefined)[] => stepsOf(lines, job(name)).map((s) => stepField(lines, s)('if')?.value)
+    expect(conditions('static')).toEqual([undefined, undefined, guard, guard, guard, guard, guard])
+    expect(conditions('unit')).toEqual([undefined, undefined, undefined])
+    expect(conditions('integration')).toEqual([undefined, undefined, undefined])
+    expect(conditions('e2e')).toEqual([undefined, undefined, undefined, 'failure()'])
+    expect(conditions('package')).toEqual([undefined, undefined, undefined, undefined])
+    // The guard refers to the setup step by its id, so the setup step must keep it.
+    const setup = stepsOf(lines, job('static')).map((s) => stepField(lines, s))[1]
+    expect(setup?.('id')?.value).toBe('setup')
+    expect(setup?.('uses')?.value).toBe('./.github/actions/setup')
+  })
+
+  it('uploads the E2E results on failure and the packages for seven days', () => {
+    const upload = (name: string): { start: number; end: number } => {
+      const steps = stepsOf(lines, job(name)).filter((s) => /^actions\/upload-artifact@[0-9a-f]{40}\s/.test(stepField(lines, s)('uses')?.value ?? ''))
+      expect(steps, `uploads in ${name}`).toHaveLength(1)
+      return steps[0] as { start: number; end: number }
+    }
+    const results = upload('e2e')
+    expect(stepField(lines, results)('if')?.value).toBe('failure()')
+    expect(withValue(results, 'name')).toBe('e2e-test-results')
+    expect(withValue(results, 'path')).toBe('test-results/')
+    expect(withValue(results, 'retention-days')).toBe('7')
+    const packages = upload('package')
+    expect(stepField(lines, packages)('if')).toBeUndefined()
+    expect(withValue(packages, 'name')).toBe('linux-packages')
+    expect(withValue(packages, 'path')).toBe('dist/*.deb\ndist/*.AppImage')
+    expect(withValue(packages, 'retention-days')).toBe('7')
+    // A packaging run that produced no packages must fail, not upload nothing.
+    expect(withValue(packages, 'if-no-files-found')).toBe('error')
+  })
+
+  it('[spec:quality-gates/pull-request-runs-the-full-check-set] runs every check on pull requests to master, against the merge commit', () => {
+    expect(childNames(lines, on).sort()).toEqual(['merge_group', 'pull_request', 'push'])
+    expect(childNames(lines, childAt(lines, on, 'pull_request'))).toEqual(['branches'])
+    expect(branches('pull_request')).toEqual(['master'])
+    // Each check of the spec runs the same npm script a developer runs locally (docs/ci.md#ci).
+    const commands: readonly (readonly [string, string, string])[] = [
+      ['typecheck', 'static', 'npm run typecheck'],
+      ['lint', 'static', 'npm run lint'],
+      ['spec coverage', 'static', 'npm run spec-coverage'],
+      ['unit', 'unit', 'npm test'],
+      ['integration', 'integration', 'npm run test:integration'],
+      ['end-to-end', 'e2e', 'xvfb-run --auto-servernum npm run test:e2e'],
+      ['packaging', 'package', 'xvfb-run --auto-servernum npm run test:packaging'],
+    ]
+    for (const [check, name, command] of commands) expect(scripts(name), check).toContain(command)
+    const actionlint = stepsOf(lines, job('static')).map((s) => stepField(lines, s)('uses')?.value ?? '')
+    expect(actionlint).toContainEqual(expect.stringMatching(/^docker:\/\/rhysd\/actionlint@sha256:[0-9a-f]{64}$/))
+    // The default checkout of a pull_request run is the merge commit; nothing overrides it, and no
+    // check is allowed to fail without failing its job.
+    expect(lines.filter((l) => l.kind === 'node' && (l.key === 'ref' || l.key === 'continue-on-error'))).toEqual([])
+  })
+
+  it('[spec:quality-gates/push-to-master-runs-the-same-checks] runs the same checks on pushes to master', () => {
+    expect(branches('push')).toEqual(['master'])
+    expect(childNames(lines, childAt(lines, on, 'push'))).toEqual(['branches'])
+    // No job or step depends on which event started the run, so a push runs exactly what a pull request runs.
+    const block = topLevelBlock(lines, 'jobs')
+    expect(block).toBeDefined()
+    const eventDependent = within(lines, block ?? { start: 0, end: 0 }).filter((l) => l.kind !== 'comment' && /\bgithub\.(?:event|ref|head_ref|base_ref)\b/.test(l.body))
+    expect(eventDependent).toEqual([])
+    for (const name of checks()) expect(jobField(name, 'if'), `job ${name}`).toBeUndefined()
+  })
+
+  it('[spec:quality-gates/superseded-pull-request-runs-are-cancelled] cancels a pull request run superseded by a newer push, and nothing else', () => {
+    const concurrency = topLevelBlock(lines, 'concurrency')?.start ?? -1
+    expect(concurrency).toBeGreaterThan(0)
+    // Exact text: a change here must update this test deliberately. Pull requests share a group per
+    // number; any other run (a push to master, a merge group) has a group of its own, so none is dropped.
+    expect(lines[childAt(lines, concurrency, 'group')]?.value).toBe(
+      "ci-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.run_id }}",
+    )
+    expect(lines[childAt(lines, concurrency, 'cancel-in-progress')]?.value).toBe("${{ github.event_name == 'pull_request' }}")
+  })
+
+  it('aggregates every other job in ci-ok, whatever their outcome', () => {
+    expect(jobField('ci-ok', 'if')?.value).toBe('always()')
+    expect(childNames(lines, childAt(lines, job('ci-ok').start, 'needs')).sort()).toEqual(checks().sort())
+    expect(jobField('ci-ok', 'permissions')?.value).toBe('{}')
+    const env = stepsOf(lines, job('ci-ok')).flatMap((s) => within(lines, s)).filter((l) => l.key === 'NEEDS')
+    expect(env.map((l) => l.value)).toEqual(['${{ toJSON(needs) }}'])
+  })
+
+  it('[spec:quality-gates/all-checks-pass] succeeds when every check succeeded', () => {
+    const run = ciOk(Object.fromEntries(checks().map((name) => [name, 'success'])))
+    expect(run.status, run.stdout).toBe(0)
+    for (const name of checks()) expect(run.stdout).toContain(`${name}: success`)
+  })
+
+  it('[spec:quality-gates/one-check-fails-or-is-skipped] fails when any check failed, was cancelled or was skipped', () => {
+    for (const name of checks()) {
+      for (const result of ['failure', 'cancelled', 'skipped', 'neutral', '']) {
+        const run = ciOk(Object.fromEntries(checks().map((other) => [other, other === name ? result : 'success'])))
+        expect(run.status, `${name}: ${result}`).toBe(1)
+        expect(run.stdout, `${name}: ${result}`).toContain(`::error title=ci-ok::these checks did not succeed: ${name}\n`)
+      }
+    }
+    const all = ciOk(Object.fromEntries(checks().map((name) => [name, 'skipped'])))
+    expect(all.status).toBe(1)
+    expect(all.stdout).toContain(`did not succeed: ${checks().join(', ')}`)
+    expect(ciOk({}).status).toBe(1)
+    // Input it should never get still fails closed: no NEEDS at all, or a job without a result object.
+    expect(runCiOk(undefined).status).toBe(1)
+    expect(runCiOk('').status).toBe(1)
+    const withNull = runCiOk(JSON.stringify({ ...Object.fromEntries(checks().map((name) => [name, { result: 'success' }])), static: null }))
+    expect(withNull.status).toBe(1)
+    expect(withNull.stdout).toContain('did not succeed: static\n')
+  })
+
+  it('[spec:quality-gates/production-dependency-becomes-vulnerable] fails the gate on any known vulnerability in production dependencies', () => {
+    // --audit-level=low fails on every severity; --omit=dev limits it to what ships in the packages.
+    expect(scripts('static')).toContain('npm audit --omit=dev --audit-level=low')
+    expect(childNames(lines, childAt(lines, job('ci-ok').start, 'needs'))).toContain('static')
   })
 })
