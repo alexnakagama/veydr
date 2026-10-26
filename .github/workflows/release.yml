@@ -262,8 +262,8 @@ jobs:
       id-token: write
       attestations: write
     steps:
-      # Pushes with the job token (GitHub Actions bypasses the master ruleset), or over SSH with the
-      # deploy key when the RELEASE_DEPLOY_KEY secret exists (design D7). All tags, for the check below.
+      # Pushes over SSH with the deploy key in RELEASE_DEPLOY_KEY, which bypasses the master ruleset
+      # (design D7); without the secret, with the job token. All tags, for the check below.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.validate.outputs.source_sha }}

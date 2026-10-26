@@ -113,7 +113,7 @@ Note: `npm run spec-coverage` runs in required mode and also reads this change's
 - [x] 6.2 With the maintainer's explicit go-ahead (it pushes a commit and a tag), create the `master` ruleset by following `docs/ci.md`. Then run the release workflow with `0.1.0-rc.1`, and confirm:
   - the bump commit and the tag landed together;
   - a draft prerelease exists with both packages, `SHA256SUMS` and the acceptance record;
-  - `sha256sum -c SHA256SUMS` and `gh attestation verify` succeed on the downloaded files.
+  - `sha256sum -c SHA256SUMS` and `gh attestation verify` succeed on the downloaded files (for `0.1.0-rc.1` the maintainer accepted a partial attestation check instead of `gh attestation verify`; see the status below).
 
   Record the run link and the outcome in `docs/ci.md`. Verify: the record exists.
 

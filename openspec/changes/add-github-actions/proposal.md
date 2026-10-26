@@ -42,5 +42,5 @@ None. The product's behavior does not change.
   - `docs/ci.md`.
 - **Changed files**: `README.md` (CI badge, release links), possibly `package.json` scripts. No source code under `src/` changes.
 - **Dependencies**: no new npm dependency. Third-party GitHub Actions are pinned to commit SHAs and listed in `docs/ci.md`. They come from GitHub (`actions/*`, `github/codeql-action`), plus `rhysd/actionlint` run as a pinned binary.
-- **Repository settings** (manual, one time, documented): a `master` ruleset that requires `ci-ok` and allows GitHub Actions to bypass it, so the release bump commit can be pushed.
+- **Repository settings** (manual, one time, documented): a `master` ruleset that requires `ci-ok` and `dependency-review` and lets the release deploy key bypass it, so the release bump commit can be pushed.
 - **Runners**: GitHub-hosted `ubuntu-24.04`. Jobs that launch Electron re-enable unprivileged user namespaces with `sysctl`, because the runner's AppArmor restriction would otherwise break the Chromium sandbox Veydr requires.
