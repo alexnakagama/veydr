@@ -155,6 +155,8 @@ test('every view and dialog has named controls, document-order focus, and a visi
     await window.keyboard.press('Escape')
 
     await window.getByRole('button', { name: 'Environment of web', exact: true }).click()
+    // The table (with the secret's Reveal button) replaces "Reading the environment…" once it is read.
+    await expect(window.getByTestId('environment-table')).toBeVisible()
     await audit(window, 'Environment', window.getByTestId('environment-dialog'))
     await window.keyboard.press('Escape')
 
@@ -174,6 +176,8 @@ test('every view and dialog has named controls, document-order focus, and a visi
       await window.getByRole('button', { name: view, exact: true }).click()
       await expect(window.getByRole('heading', { level: 1, name: view })).toBeVisible()
       if (view === 'Ports') await expect(window.getByTestId('ports-refreshed')).toBeVisible()
+      // The editor form replaces "Loading…" once the settings arrive; audit the loaded view.
+      if (view === 'Settings') await expect(window.getByLabel('Editor executable', { exact: true })).toBeVisible()
       await audit(window, view)
     }
 
