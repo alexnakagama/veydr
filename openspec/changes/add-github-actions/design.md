@@ -123,9 +123,9 @@ Alternative considered: tag first, then build from the tag. Rejected. A failed b
 
 ### D7. Pushing past branch protection
 
-The `master` ruleset requires the `ci-ok` and `dependency-review` checks and pull requests for everyone, and lists GitHub Actions as a bypass actor (decided in exploration: option A). The bump commit is the only thing Actions ever pushes. `publish` is the only job with `contents: write`, and the policy test asserts that.
+The `master` ruleset requires the `ci-ok` and `dependency-review` checks and pull requests for everyone. Exploration chose GitHub Actions as the bypass actor (option A), but the ruleset did not offer it for this user-owned repository (see Risks), so the ruleset lists **Deploy keys** with **Always allow** instead. The release deploy key, stored as the secret `RELEASE_DEPLOY_KEY`, must be the only deploy key with write access, because the bypass applies to every one of them. Only `publish` uses the secret. The policy test asserts that no workflow but `release.yml` reads it and that `publish` is the only job with `contents: write`. The bump commit and its tag are the only things the release ever pushes.
 
-A bypass actor of type "GitHub Actions" for a user-owned repository is unconfirmed (see Risks). The fallback is a deploy key with bypass, stored as the secret `RELEASE_DEPLOY_KEY` and used only in `publish`. The workflow supports both: it pushes over SSH when the secret exists, and over `GITHUB_TOKEN` otherwise.
+The workflow pushes over SSH when the secret exists, and over `GITHUB_TOKEN` otherwise; the token path only gets past the ruleset where a GitHub Actions bypass can be configured.
 
 ### D8. Caching and supply chain
 
@@ -150,7 +150,8 @@ Some scenarios describe GitHub's runtime behavior (the dependency review verdict
 
 ## Risks / Trade-offs
 
-- **[A GitHub Actions bypass actor may not be offered for a personal repository's ruleset]** → Check this first when setting up the repository (task 1.1). If it is not offered, use the deploy-key fallback in D7. The workflow supports both.
+- **[A GitHub Actions bypass actor may not be offered for a personal repository's ruleset]** → Realised: it was not offered when the ruleset was created, so the release uses the deploy key (D7).
+- **[A deploy key with bypass can write to `master` outside a pull request]** → It is the only deploy key with write access, and only `publish` uses its secret (the policy test asserts that no workflow but `release.yml` reads it). Rotate it by replacing the deploy key and the secret (`docs/ci.md`).
 - **[GitHub changes the runner's AppArmor default or the sysctl name]** → The E2E job checks after setup that `unshare --user true` succeeds and fails with a clear message otherwise, instead of letting the sandbox fail inside Playwright.
 - **[Docker Hub rate limits or image drift break smoke and acceptance]** → In nightly runs this only produces a tracking issue. In a release it blocks, which is correct; rerun the release. Base image tags are the ones G-5 approved, unchanged.
 - **[Acceptance is timing-sensitive: an ARP frame appeared in 3 of 17 early runs]** → The script already separates ARP from IP frames. If it flakes in CI, the release can rerun only the failed job. A flaky gate must not be weakened silently.
