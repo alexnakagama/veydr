@@ -79,7 +79,7 @@ Note: `npm run spec-coverage` runs in required mode and also reads this change's
 
 ## 5. Release workflow
 
-- [ ] 5.1 Add `.github/workflows/release.yml` (design D6), with concurrency group `release` and no cancellation. Jobs:
+- [x] 5.1 Add `.github/workflows/release.yml` (design D6), with concurrency group `release` and no cancellation. Jobs:
   - `validate`: refuses any ref but `master`; checks out with the tags fetched (`fetch-depth: 0` or `fetch-tags: true`), because `check` reads `git tag --list 'v*'` and the default shallow, tagless checkout would let an existing or lower version through until the final push; runs `release-version.mjs check`; outputs `tag`, `prerelease` and `source_sha`;
   - `verify`, `e2e` and `package`: each checks out `source_sha`, runs `release-version.mjs apply`, and uses setup with `cache: false`; `package` uploads `release-packages`;
   - `smoke` and `acceptance`: test the downloaded packages;
@@ -88,8 +88,8 @@ Note: `npm run spec-coverage` runs in required mode and also reads this change's
   Pass the `version` input to `run:` steps through `env:` (for example `VERSION: ${{ inputs.version }}`, then `"$VERSION"` in the script), never as `${{ inputs.version }}` inside `run:`. Interpolation happens before `release-version.mjs` can validate the value.
 
   Verify: actionlint passes.
-- [ ] 5.2 Make `publish` safe to rerun (design D6). If the tag already exists and its commit's parent is `source_sha`, skip the commit and push. If the draft release already exists, skip creating it. Support the deploy-key fallback: push over SSH when `RELEASE_DEPLOY_KEY` is set (design D7). Verify: actionlint passes; the logic is reviewed against D6.
-- [ ] 5.3 Extend `workflow-policy.test.ts` for `release.yml`, asserting:
+- [x] 5.2 Make `publish` safe to rerun (design D6). If the tag already exists and its commit's parent is `source_sha`, skip the commit and push. If the draft release already exists, skip creating it. Support the deploy-key fallback: push over SSH when `RELEASE_DEPLOY_KEY` is set (design D7). Verify: actionlint passes; the logic is reviewed against D6.
+- [x] 5.3 Extend `workflow-policy.test.ts` for `release.yml`, asserting:
   - `workflow_dispatch` is the only trigger, with a required `version` input;
   - the ref guard;
   - every gate job applies the bump and that `publish` needs all of them;
@@ -98,7 +98,7 @@ Note: `npm run spec-coverage` runs in required mode and also reads this change's
   - the acceptance record and the attestation step.
 
   Tag the `release-automation` scenarios `release-started-from-master`, `release-started-from-another-branch`, `gate-fails`, `gate-passes`, `packages-carry-the-release-version`, `draft-created`, `checksums-match` and `verifying-a-release-package`. Verify: `npm test` passes and `npm run spec-coverage` reports 0 unmapped scenarios.
-- [ ] 5.4 Document releasing in `docs/ci.md`:
+- [x] 5.4 Document releasing in `docs/ci.md`:
   - the one-time `master` ruleset setup: required checks `ci-ok` and `dependency-review`, the bypass actor or deploy key from 1.1;
   - how to cut a release and choose a version;
   - what to check in the draft before publishing;

@@ -2,9 +2,6 @@
 
 Veydr's checks run on GitHub Actions, on GitHub-hosted `ubuntu-24.04` runners. The workflows call the same npm scripts you run locally (`npm run verify`, `npm run test:e2e`, `npm run test:packaging`, and so on) and never re-implement them, so a failure in CI can be reproduced with the same command. The requirements are in the OpenSpec change `add-github-actions` (`specs/quality-gates` and `specs/release-automation`), and the decisions in its `design.md`.
 
-> [!NOTE]
-> The pipeline is being added in stages. So far the shared runner setup (`.github/actions/setup`), the workflow policy test, `ci.yml`, `security.yml`, `nightly.yml`, `build.yml` and Dependabot exist; `release.yml` is added by the last task group of the change. Until the release scenarios are tagged in tests (task group 5), the spec coverage step of `ci.yml`'s `static` job fails, and so does `ci-ok`.
-
 ## Pipeline overview
 
 | Workflow | Triggers | Purpose | Blocks |
@@ -21,8 +18,9 @@ Every job prepares the runner with the local composite action `.github/actions/s
 |---|---|---|
 | `electron` | `"false"` | `"true"` installs Xvfb and enables unprivileged user namespaces (see below), for jobs that launch Electron |
 | `cache` | `"true"` | `"false"` turns off every cache, so the release installs everything fresh from lock-verified sources |
+| `dependencies` | `"true"` | `"false"` skips `npm ci` (and the Electron cache), for a job that needs only Node and npm. The release's `validate` and `publish` jobs use it; `publish` holds a write token, and no dependency's install script should run next to it. It cannot be combined with `electron: "true"` |
 
-Pass both inputs as quoted strings (`electron: "true"`), the spelling the policy test checks for. Restored Electron and electron-builder downloads are not re-verified against their checksums. That is acceptable for pull requests and `master`, because GitHub scopes caches by branch, so a pull request cannot poison `master`'s cache. It is also why the release runs with `cache: "false"`.
+Pass the inputs as quoted strings (`electron: "true"`), the spelling the policy test checks for. Restored Electron and electron-builder downloads are not re-verified against their checksums. That is acceptable for pull requests and `master`, because GitHub scopes caches by branch, so a pull request cannot poison `master`'s cache. It is also why the release runs with `cache: "false"`.
 
 ## CI
 
@@ -179,6 +177,116 @@ cd veydr-build && sha256sum -c SHA256SUMS
 
 Manual builds are for testing a branch on a real machine. They are not releases: they have no provenance attestation and are deleted after 14 days.
 
+## Releasing
+
+`.github/workflows/release.yml` turns `master` into a release. It is the only workflow that writes to the repository, and it does so only after the full gate passed on the exact tree it is about to push (design D6).
+
+### One-time repository setup
+
+Before the first release, create the `master` ruleset: **Settings → Rules → Rulesets → New ruleset → New branch ruleset**.
+
+1. **Name** `master`, **Enforcement status** Active, **Target branches**: Include default branch.
+2. **Rules**:
+   - **Restrict deletions** and **Block force pushes**;
+   - **Require a pull request before merging**. With one maintainer, leave the required approvals at 0; turn on **Require review from Code Owners** once there is a second reviewer (see [Code owners](#code-owners));
+   - **Require status checks to pass**, with exactly `ci-ok` and `dependency-review` (source: GitHub Actions). See [Required checks](#required-checks).
+3. **Bypass list**: add **GitHub Actions** with the mode **Always** (not "For pull requests only"), so the release can push its version commit directly. This was confirmed to be offered for this repository (see [Repository settings](#repository-settings)).
+
+The bypass applies to every workflow that holds `contents: write`. Only `release.yml`'s `publish` job does, and the policy test fails if any other job asks for it (see [Workflow security rules](#workflow-security-rules)).
+
+**Deploy-key fallback** (design D7), only if the GitHub Actions bypass is not available:
+
+1. Create a key pair without a passphrase, outside the repository: `ssh-keygen -t ed25519 -N "" -C veydr-release -f veydr-release`.
+2. Add `veydr-release.pub` under **Settings → Deploy keys** with **Allow write access**.
+3. In the ruleset's bypass list, add **Deploy keys** with the mode **Always**.
+4. Store the private key `veydr-release` as the Actions secret `RELEASE_DEPLOY_KEY` (**Settings → Secrets and variables → Actions**), then delete both local files.
+
+When `RELEASE_DEPLOY_KEY` exists, `publish` checks out and pushes over SSH with it; otherwise it uses the job's `GITHUB_TOKEN`. Only `release.yml` may read that secret. A push with the deploy key starts `ci.yml` for the version commit on `master`; a push with `GITHUB_TOKEN` does not, because GitHub does not start workflows for pushes made with the job token. Either way, the commit only changes the version.
+
+### Cutting a release
+
+Choose the version first:
+
+- **Format**: `MAJOR.MINOR.PATCH`, or `MAJOR.MINOR.PATCH-PRERELEASE` (for example `0.2.0-rc.1`), without a leading `v` and without `+build` metadata.
+- **Greater than everything before it**: it must be greater (by SemVer precedence) than the version in `package.json` and than every `v*` tag, and its tag must not exist yet. `0.3.0` is accepted after `v0.3.0-rc.1`; `0.3.0-rc.2` is not accepted after `v0.3.0`.
+- **Which number**: a patch version for fixes only, a minor version for new features (before 1.0.0, also for changes that break existing configurations, which the release notes must call out), a major version for breaking changes after 1.0.0.
+- **Prereleases**: a version with a prerelease suffix becomes a GitHub prerelease. Use one (`X.Y.Z-rc.1`) to rehearse a release or to get feedback before the final version.
+
+Then start the workflow on `master`: **Actions → Release → Run workflow**, branch `master`, with the version. From the command line:
+
+```bash
+gh workflow run release.yml --ref master -f version=0.1.0
+```
+
+| Job | What it does | Timeout |
+|---|---|---|
+| `validate` | Fails unless the run is on `master`. Checks out with every tag and runs `node scripts/release-version.mjs check`. Outputs the tag, whether it is a prerelease, and the commit the run started from (the source commit) | 10 min |
+| `verify` | On the source commit: applies the version (`release-version.mjs apply`), then `npm run verify` | 45 min |
+| `e2e` | The same bump, then `xvfb-run --auto-servernum npm run test:e2e` | 60 min |
+| `package` | The same bump, then `xvfb-run --auto-servernum npm run test:packaging`. Fails unless `dist/` holds exactly `Veydr-X.Y.Z-amd64.deb` and `Veydr-X.Y.Z-x86_64.AppImage`, and uploads them as `release-packages` | 60 min |
+| `smoke` | `scripts/smoke-linux.sh` on the `release-packages` files | 90 min |
+| `acceptance` | `scripts/acceptance-linux.sh` on the `release-packages` files; uploads its results as `release-acceptance-linux` | 60 min |
+| `publish` | Only if every job above succeeded; see below | 20 min |
+
+All jobs except `publish` have `contents: read` only and keep no credentials. Every job runs the setup action with `cache: "false"`, so nothing comes from a cache. `publish`:
+
+1. checks out the source commit with every tag, applies the version again, and commits `package.json` and `package-lock.json` as `github-actions[bot]` ("release vX.Y.Z"), failing if the commit changes any other file;
+2. checks the remote: `master` must still be the source commit. If `master` moved during the run, it stops here, because the commit that would be released is not the one that was tested; start a new release from the current `master`;
+3. downloads `release-packages` and the acceptance results, writes `SHA256SUMS` for the two packages and checks it, and checks that the acceptance record names the SHA-256 of the attached `.deb`;
+4. creates a build provenance attestation for every package in `SHA256SUMS`;
+5. creates the annotated tag `vX.Y.Z` and pushes the commit and the tag with one `git push --atomic`, so both land or neither does;
+6. creates a **draft** release for the tag with generated notes (marked as a prerelease for a prerelease version), attaching both packages, `SHA256SUMS` and `acceptance-linux-steps.jsonl`.
+
+Nothing reaches the remote repository before step 5. An attestation from step 4 stays in the attestation log even if the push then fails; it names packages that were never released, which is harmless.
+
+`publish` stores its write credentials in the checkout, so the steps after it (the setup action from the source commit, the official download and attestation actions, and the scripts above) run next to them. It never runs `npm ci`, so no dependency's install script does.
+
+The acceptance record names the SHA-256 of the `.deb` it tested, and `publish` checks it against the attached `.deb`. The AppImage has no such record of its own: it is tied to the gate only by coming from the same `release-packages` artifact that `smoke` tested. Only one release runs at a time: a second run waits for the first, and a running release is never cancelled by a new one. (GitHub keeps only one waiting run per concurrency group, so starting a third run while one is waiting cancels the waiting one.)
+
+### Before publishing the draft
+
+The draft is visible only to people with write access until you publish it. The tag and the version commit are already public on `master`. In **Releases**, open the draft and check:
+
+- **Tag and commit**: the tag is `vX.Y.Z`, its commit changes only `package.json` and `package-lock.json`, and its parent is the commit you meant to release.
+- **Files**: exactly `Veydr-X.Y.Z-amd64.deb`, `Veydr-X.Y.Z-x86_64.AppImage`, `SHA256SUMS` and `acceptance-linux-steps.jsonl`.
+- **Prerelease**: set only for a version with a prerelease suffix.
+- **Notes**: the generated list of pull requests. Edit it into a short summary of what changed for users, call out anything that breaks existing configurations, and repeat the open platform limitations (Ubuntu 24.04, see the README's platform notes).
+- **The downloads verify**: download the files and run the checks users run (below). Optionally install the `.deb` on a real machine and run `veydr --smoke-test`.
+
+Then **Publish release**. To discard it instead, see [Recovering from a failed release](#recovering-from-a-failed-release).
+
+### Verifying a release package
+
+Users (and you, before publishing) check a download in two ways. In the folder with the downloaded files:
+
+```bash
+sha256sum --check --ignore-missing SHA256SUMS
+```
+
+Every downloaded package must report `OK`. `--ignore-missing` skips the package you did not download.
+
+Then check the build provenance with the [GitHub CLI](https://cli.github.com/):
+
+```bash
+gh attestation verify Veydr-X.Y.Z-amd64.deb --repo alexnakagama/veydr --signer-workflow alexnakagama/veydr/.github/workflows/release.yml
+```
+
+It succeeds only for a file whose digest was attested by this repository's release workflow, and prints the workflow run and the source commit it was built from. That commit is the parent of the tagged commit: the release tests and builds the source commit plus the version bump, and the tagged commit is exactly that bump. Provenance attestations need a public repository (see [Repository settings](#repository-settings)); if the repository becomes private, the attestation step fails and the release stops before pushing.
+
+### Recovering from a failed release
+
+What to do depends on where the run stopped. The run's summary shows which job failed.
+
+- **`validate` failed** (wrong branch, malformed or too low version, existing tag): nothing was built or pushed. Fix the input and start a new run.
+- **A gate job failed** (`verify`, `e2e`, `package`, `smoke`, `acceptance`): nothing was pushed, and the same version can be requested again.
+  - For a flaky or infrastructure failure (a Docker Hub rate limit, for example), use **Re-run failed jobs**. GitHub reruns the failed job and the jobs that depend on it, on the same source commit. Do not weaken a flaky check to get a release through (see [Triaging a nightly failure](#triaging-a-nightly-failure)).
+  - For a real failure, fix it in a pull request, then start a new release from the new `master`.
+- **`publish` failed before "Tag and push"** (for example the attestation, or "master moved"): nothing was pushed. Rerun the failed jobs, or, if `master` moved, start a new release.
+- **`publish` failed after "Tag and push"** (creating the draft or uploading a file): the commit and the tag are on the remote. Use **Re-run failed jobs**, not **Re-run all jobs**: a full rerun starts again at `validate`, which checks out the new `master` and refuses the version because its tag now exists. `publish` recognises the tag as its own (its commit's parent is the source commit and its content is the same bump), skips the commit and the push, and creates the draft, or uploads the files again to the existing draft.
+- **To abandon a version after the push**: delete the draft and the tag with `gh release delete vX.Y.Z --cleanup-tag`. The version commit stays on `master` (force pushes are blocked), so the next release must be greater than that version anyway. Release the next patch or prerelease number instead of reusing the abandoned one. A rerun of the old run's `publish` after the tag was deleted stops with "master moved", because `master` now holds the version commit; that is expected, and the way forward is again a new release with the next version.
+
+A rerun of `publish` refuses to do anything if the tag exists but is not its own commit, or if a release for the tag exists and is already published.
+
 ## Code owners
 
 `.github/CODEOWNERS` makes the maintainer (`@alexnakagama`) the owner of everything, and names them again explicitly for `.github/` (the workflows, the setup action, Dependabot and these files) and for `scripts/release-version.mjs` (the release version logic). The explicit entries come last, so they still apply if a broader owner is added for `*` later. With **Require review from Code Owners** turned on in the `master` ruleset, a change to the pipeline cannot be merged without the maintainer's review.
@@ -202,8 +310,9 @@ Every third-party action is pinned to a commit SHA, with its version as a commen
 | `actions/checkout` | v7.0.1 | Every workflow |
 | `actions/setup-node` | v7.1.0 | `.github/actions/setup` |
 | `actions/cache` | v6.1.0 | `.github/actions/setup` |
-| `actions/upload-artifact` | v7.0.2 | `ci.yml`, `nightly.yml`, `build.yml` |
-| `actions/download-artifact` | v8.0.2 | `build.yml` |
+| `actions/upload-artifact` | v7.0.2 | `ci.yml`, `nightly.yml`, `build.yml`, `release.yml` |
+| `actions/download-artifact` | v8.0.2 | `build.yml`, `release.yml` |
+| `actions/attest-build-provenance` | v4.2.2 | `release.yml` |
 | `actions/dependency-review-action` | v5.0.0 | `security.yml` |
 | `github/codeql-action` (`init`, `analyze`) | v4.39.0 | `security.yml` |
 | `rhysd/actionlint` Docker image | 1.7.12, pinned by digest | `ci.yml` |

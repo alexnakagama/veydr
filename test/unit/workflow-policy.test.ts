@@ -1,9 +1,9 @@
 import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { chmodSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, relative, resolve } from 'node:path'
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it } from 'vitest'
 
 // Design D11: the security rules for everything under .github/ (docs/ci.md#workflow-security-rules),
 // checked on the files as text with line-level patterns, so no YAML parser is needed. The style is
@@ -381,6 +381,7 @@ describe('workflow policy (design D11)', () => {
         '.github/workflows/security.yml',
         '.github/workflows/nightly.yml',
         '.github/workflows/build.yml',
+        '.github/workflows/release.yml',
         '.github/dependabot.yml',
         '.github/CODEOWNERS',
         '.github/pull_request_template.md',
@@ -1224,5 +1225,443 @@ describe('code owners and pull request template', () => {
     expect(items[0]).toContain('`npm run verify`')
     expect(items[1]).toContain('[spec:')
     expect(items[2]).toMatch(/[Dd]ocumentation/)
+  })
+})
+
+// release.yml (design D6, D7): a manual release on master, gated on the bumped tree, published last.
+
+describe('release.yml (design D6)', () => {
+  const w = loadWorkflow('.github/workflows/release.yml')
+  const gates = ['verify', 'e2e', 'package']
+  const packageTests = ['smoke', 'acceptance']
+  const sourceSha = '${{ needs.validate.outputs.source_sha }}'
+  const versionEnv = '${{ inputs.version }}'
+  const dirs: string[] = []
+  afterEach(() => {
+    for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true })
+  })
+  const tempDir = (prefix: string): string => {
+    const dir = mkdtempSync(join(tmpdir(), `veydr-release-${prefix}-`))
+    dirs.push(dir)
+    return dir
+  }
+  /** The `env:` of the step with this `name:`, as `key: value` pairs. */
+  const stepEnv = (job: string, step: string): Record<string, string> => {
+    const found = w.steps(job).find((s) => w.field(s, 'name') === step)
+    expect(found, `step "${step}" in job ${job}`).toBeDefined()
+    const env = found === undefined ? undefined : stepField(w.lines, found)('env')
+    if (env === undefined) return {}
+    return Object.fromEntries(childrenOf(w.lines, w.lines.indexOf(env)).map((i) => [(w.lines[i] as Line).key ?? '', (w.lines[i] as Line).value ?? '']))
+  }
+  /** Names (or `uses:` actions) of a job's steps, in order. */
+  const stepNames = (job: string): string[] => w.steps(job).map((s) => w.field(s, 'name') ?? (w.field(s, 'uses') ?? '').split('@')[0] ?? '')
+  const needs = (job: string): string[] => childNames(w.lines, childAt(w.lines, w.job(job).start, 'needs'))
+
+  const git = (cwd: string, ...args: string[]): string => {
+    const result = spawnSync('git', ['-c', 'user.name=test', '-c', 'user.email=test@example.invalid', '-c', 'commit.gpgsign=false', '-c', 'tag.gpgsign=false', ...args], {
+      cwd,
+      encoding: 'utf8',
+    })
+    expect(result.status, `git ${args.join(' ')}: ${result.stderr}`).toBe(0)
+    return result.stdout.trim()
+  }
+  /** Git, as the runner configures it: nothing signs, and no global identity. */
+  const gitEnv = { GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' }
+
+  /**
+   * A bare `origin` whose master holds the project's package.json, package-lock.json and
+   * release-version.mjs, and a clone of it checked out at that commit with every tag, the way
+   * publish's checkout leaves it.
+   */
+  function remote(): { origin: string; source: string; clone: () => string } {
+    const seed = tempDir('seed')
+    mkdirSync(join(seed, 'scripts'))
+    for (const file of ['package.json', 'package-lock.json', 'scripts/release-version.mjs']) copyFileSync(join(root, file), join(seed, file))
+    git(seed, 'init', '--quiet', '--initial-branch', 'master')
+    git(seed, 'add', '.')
+    git(seed, 'commit', '--quiet', '--message', 'source')
+    const origin = join(tempDir('origin'), 'origin.git')
+    git(seed, 'clone', '--quiet', '--bare', seed, origin)
+    const source = git(seed, 'rev-parse', 'HEAD')
+    const clone = (): string => {
+      const dir = join(tempDir('clone'), 'repo')
+      git(tmpdir(), 'clone', '--quiet', origin, dir)
+      git(dir, 'checkout', '--quiet', '--detach', source)
+      return dir
+    }
+    return { origin, source, clone }
+  }
+
+  /** Runs publish's commit, remote check and (when the check says so) push steps in `dir`. */
+  function publishSteps(dir: string, source: string, version = '0.1.0'): { commit: ScriptRun; check: ScriptRun; push?: ScriptRun; output: string } {
+    const env = { ...gitEnv, VERSION: version, TAG: `v${version}`, SOURCE_SHA: source }
+    const commit = w.runStep('publish', 'Commit the version', { cwd: dir, env })
+    if (commit.status !== 0) return { commit, check: commit, output: '' }
+    const outputFile = join(tempDir('output'), 'github-output')
+    writeFileSync(outputFile, '')
+    const check = w.runStep('publish', 'Check the remote', { cwd: dir, env: { ...env, GITHUB_OUTPUT: outputFile } })
+    const output = readFileSync(outputFile, 'utf8')
+    if (check.status !== 0 || output !== 'push=true\n') return { commit, check, output }
+    return { commit, check, output, push: w.runStep('publish', 'Tag and push', { cwd: dir, env }) }
+  }
+
+  const digest = (text: string): string => createHash('sha256').update(text).digest('hex')
+  /** Runs publish's SHA256SUMS step on `files` (name → contents) with an acceptance record whose first step names `tested`. */
+  const checksums = (files: Record<string, string>, tested: string | undefined, version = '1.2.3') => {
+    const dir = tempDir('sums')
+    for (const [name, contents] of Object.entries(files)) writeFileSync(join(dir, name), contents)
+    const acceptance = join(tempDir('acceptance'), 'steps.jsonl')
+    if (tested !== undefined) {
+      writeFileSync(acceptance, `${JSON.stringify({ step: 'environment', ok: true, detail: { deb: tested } })}\n${JSON.stringify({ step: 'launch', ok: true })}\n`)
+    }
+    const run = w.runStep('publish', 'Write SHA256SUMS', { cwd: dir, env: { VERSION: version, ACCEPTANCE: acceptance } })
+    const read = (name: string): string | undefined => (existsSync(join(dir, name)) ? readFileSync(join(dir, name), 'utf8') : undefined)
+    return { run, dir, sums: read('SHA256SUMS'), record: read('acceptance-linux-steps.jsonl') }
+  }
+
+  /** Runs the draft release step with a fake `gh`; `releases` is what the releases API lists. */
+  const draftRelease = (options: { releases?: { tag_name: string; draft: boolean }[]; prerelease?: string; failOn?: string } = {}) => {
+    const dir = tempDir('gh')
+    const log = join(dir, 'gh.log')
+    writeFileSync(
+      join(dir, 'gh'),
+      `#!/usr/bin/env node
+const { appendFileSync } = require('node:fs')
+const args = process.argv.slice(2)
+appendFileSync(process.env.GH_LOG, JSON.stringify(args) + '\\n')
+if (process.env.FAKE_GH_FAIL && args.slice(0, 2).join(' ') === process.env.FAKE_GH_FAIL) process.exit(1)
+if (args[0] === 'api') {
+  // The step's --jq filter, applied the way gh applies it to each page.
+  const releases = JSON.parse(process.env.FAKE_RELEASES)
+  for (const r of releases) if (r.tag_name === process.env.TAG) console.log(String(r.draft))
+}
+`,
+    )
+    chmodSync(join(dir, 'gh'), 0o755)
+    const run = w.runStep('publish', 'Create the draft release', {
+      cwd: dir,
+      env: {
+        PATH: `${dir}:${process.env['PATH'] ?? ''}`,
+        GH_LOG: log,
+        GH_TOKEN: 'token',
+        GH_REPO: 'owner/veydr',
+        VERSION: '1.2.3-rc.1',
+        TAG: 'v1.2.3-rc.1',
+        PRERELEASE: options.prerelease ?? 'true',
+        FAKE_RELEASES: JSON.stringify(options.releases ?? []),
+        FAKE_GH_FAIL: options.failOn,
+      },
+    })
+    const calls = existsSync(log) ? readFileSync(log, 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l) as string[]) : []
+    return { run, calls }
+  }
+  const releaseFiles = ['Veydr-1.2.3-rc.1-amd64.deb', 'Veydr-1.2.3-rc.1-x86_64.AppImage', 'SHA256SUMS', 'acceptance-linux-steps.jsonl']
+
+  it('exists and has the expected jobs', () => {
+    expect(w.source.text).not.toBe('')
+    expect(w.jobs.map((j) => j.name)).toEqual(['validate', ...gates, ...packageTests, 'publish'])
+    // One release at a time, and a running release is never cancelled.
+    const concurrency = topLevelBlock(w.lines, 'concurrency')?.start ?? -1
+    expect(w.lines[childAt(w.lines, concurrency, 'group')]?.value).toBe('release')
+    expect(w.lines[childAt(w.lines, concurrency, 'cancel-in-progress')]?.value).toBe('false')
+    // No step may fail without failing its job.
+    expect(w.lines.filter((l) => l.kind === 'node' && l.key === 'continue-on-error')).toEqual([])
+  })
+
+  it('[spec:release-automation/release-started-from-master] starts only by hand, with a required version, and prepares vX.Y.Z from master', () => {
+    expect(w.triggers()).toEqual(['workflow_dispatch'])
+    expect(Object.keys(w.dispatchInputs())).toEqual(['version'])
+    expect(w.dispatchInputs()['version']).toMatchObject({ required: 'true', type: 'string' })
+    expect(w.dispatchInputs()['version']).not.toHaveProperty('default')
+    expect(w.runStep('validate', 'Require master', { env: { REF: 'refs/heads/master' } }).status).toBe(0)
+
+    // validate checks the version against every tag, so the checkout fetches all of them.
+    const checkout = w.stepsUsing('validate', 'actions/checkout')
+    expect(checkout).toHaveLength(1)
+    expect(w.withValue(checkout[0] as Range, 'fetch-depth')).toBe('0')
+    expect(w.withValue(checkout[0] as Range, 'ref')).toBeUndefined()
+    expect(stepEnv('validate', 'Check the version')).toEqual({ VERSION: versionEnv })
+    expect(w.scripts('validate')).toContain('node scripts/release-version.mjs check "$VERSION"')
+    const outputs = childAt(w.lines, w.job('validate').start, 'outputs')
+    expect(Object.fromEntries(childrenOf(w.lines, outputs).map((i) => [(w.lines[i] as Line).key, (w.lines[i] as Line).value]))).toEqual({
+      tag: '${{ steps.check.outputs.tag }}',
+      prerelease: '${{ steps.check.outputs.prerelease }}',
+      source_sha: '${{ steps.source.outputs.sha }}',
+    })
+    const source = w.steps('validate').find((s) => w.field(s, 'id') === 'source')
+    expect(source === undefined ? undefined : w.field(source, 'run')).toBe('echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"')
+
+    // The check step, run in a repository at 0.0.0, outputs the tag for 0.1.0.
+    const dir = tempDir('validate')
+    mkdirSync(join(dir, 'scripts'))
+    copyFileSync(join(root, 'scripts/release-version.mjs'), join(dir, 'scripts/release-version.mjs'))
+    writeFileSync(join(dir, 'package.json'), '{ "name": "veydr", "version": "0.0.0" }\n')
+    git(dir, 'init', '--quiet')
+    const output = join(dir, 'github-output')
+    writeFileSync(output, '')
+    const run = w.runStep('validate', 'Check the version', { cwd: dir, env: { VERSION: '0.1.0', GITHUB_OUTPUT: output } })
+    expect(run.status, run.stderr).toBe(0)
+    expect(readFileSync(output, 'utf8')).toBe('tag=v0.1.0\nprerelease=false\n')
+  })
+
+  it('[spec:release-automation/release-started-from-another-branch] fails on any other ref before building anything', () => {
+    // The guard is the first step of the first job, and every other job needs that job.
+    expect(stepNames('validate')[0]).toBe('Require master')
+    expect(stepEnv('validate', 'Require master')).toEqual({ REF: '${{ github.ref }}' })
+    for (const ref of ['refs/heads/feature/x', 'refs/tags/v1.0.0', 'refs/heads/master-old', 'refs/pull/1/merge', '']) {
+      const run = w.runStep('validate', 'Require master', { env: { REF: ref } })
+      expect(run.status, ref).toBe(1)
+      expect(run.stdout, ref).toContain('::error title=Release refused::a release runs only on master')
+    }
+    for (const job of w.jobs.map((j) => j.name).filter((name) => name !== 'validate')) expect(needs(job), job).toContain('validate')
+  })
+
+  it('[spec:release-automation/packages-carry-the-release-version] applies the bump in every gate job, and builds packages named for the version', () => {
+    for (const job of gates) {
+      const checkout = w.stepsUsing(job, 'actions/checkout')
+      expect(checkout, job).toHaveLength(1)
+      expect(w.withValue(checkout[0] as Range, 'ref'), job).toBe(sourceSha)
+      const setup = w.steps(job).find((s) => w.field(s, 'uses') === './.github/actions/setup')
+      expect(setup === undefined ? undefined : w.withValue(setup, 'cache'), job).toBe('"false"')
+      // Checkout, setup, bump, then the checks of the job on the bumped tree.
+      expect(stepNames(job).slice(0, 3), job).toEqual(['actions/checkout', './.github/actions/setup', 'Apply the version'])
+      expect(stepEnv(job, 'Apply the version'), job).toEqual({ VERSION: versionEnv })
+      expect(w.scripts(job)[0], job).toBe('node scripts/release-version.mjs apply "$VERSION"')
+    }
+    expect(w.scripts('verify')).toEqual(['node scripts/release-version.mjs apply "$VERSION"', 'npm run verify'])
+    expect(w.scripts('e2e')).toContain('xvfb-run --auto-servernum npm run test:e2e')
+    expect(w.scripts('package')).toContain('xvfb-run --auto-servernum npm run test:packaging')
+
+    // The packages job uploads exactly the two packages named for the requested version.
+    const names = (files: string[], version = '1.2.3'): ScriptRun => {
+      const dir = tempDir('names')
+      for (const file of files) writeFileSync(join(dir, file), file)
+      return w.runStep('package', 'Check the package names', { cwd: dir, env: { VERSION: version } })
+    }
+    expect(names(['Veydr-1.2.3-amd64.deb', 'Veydr-1.2.3-x86_64.AppImage', 'builder-debug.yml']).status).toBe(0)
+    expect(names(['Veydr-1.2.3-rc.1-amd64.deb', 'Veydr-1.2.3-rc.1-x86_64.AppImage'], '1.2.3-rc.1').status).toBe(0)
+    for (const files of [[], ['Veydr-0.0.0-amd64.deb', 'Veydr-0.0.0-x86_64.AppImage'], ['Veydr-1.2.3-amd64.deb'], ['Veydr-1.2.3-amd64.deb', 'Veydr-1.2.3-x86_64.AppImage', 'Veydr-1.2.2-amd64.deb']]) {
+      const run = names(files)
+      expect(run.status, files.join(' ')).toBe(1)
+      expect(run.stdout, files.join(' ')).toContain('::error title=Unexpected packages::')
+    }
+    const upload = w.stepsUsing('package', 'actions/upload-artifact')
+    expect(upload).toHaveLength(1)
+    expect(w.withValue(upload[0] as Range, 'name')).toBe('release-packages')
+    expect(w.withValue(upload[0] as Range, 'path')).toBe('dist/*.deb\ndist/*.AppImage')
+    expect(w.withValue(upload[0] as Range, 'if-no-files-found')).toBe('error')
+    expect(stepNames('package').indexOf('Check the package names')).toBeLessThan(stepNames('package').indexOf('Upload packages'))
+  })
+
+  it('[spec:release-automation/gate-fails] pushes, tags and releases nothing unless every gate job succeeded', () => {
+    // publish needs every other job and has no if:, so it is skipped when any of them fails or is skipped.
+    expect(needs('publish').sort()).toEqual(w.jobs.map((j) => j.name).filter((name) => name !== 'publish').sort())
+    expect(w.jobField('publish', 'if')).toBeUndefined()
+    for (const job of w.jobs.map((j) => j.name)) expect(w.jobField(job, 'if'), job).toBeUndefined()
+    // Only publish can write, and only publish contains anything that reaches the remote.
+    for (const job of w.jobs.map((j) => j.name).filter((name) => name !== 'publish')) {
+      expect(w.permissions(job), job).toEqual({ contents: 'read' })
+      const text = within(w.lines, w.job(job)).filter((l) => l.kind !== 'comment').map((l) => l.body).join('\n')
+      expect(text, job).not.toMatch(/git (?:push|tag|commit)|gh (?:release|api)|secrets\./)
+      // The gate jobs keep no credentials, so even a compromised test could not push.
+      for (const checkout of w.stepsUsing(job, 'actions/checkout')) expect(w.withValue(checkout, 'persist-credentials'), job).toBe('false')
+    }
+    // The same version can be requested again: validate refuses only existing tags, and a failed run
+    // created none (checked against the CLI in release-version.test.ts).
+    expect(w.scripts('validate').filter((s) => s.includes('release-version.mjs'))).toEqual(['node scripts/release-version.mjs check "$VERSION"'])
+    // smoke and acceptance test the uploaded packages, not a rebuild.
+    for (const job of packageTests) {
+      expect(needs(job), job).toEqual(['validate', 'package'])
+      const download = w.stepsUsing(job, 'actions/download-artifact')
+      expect(download, job).toHaveLength(1)
+      expect(w.withValue(download[0] as Range, 'name'), job).toBe('release-packages')
+      expect(w.withValue(download[0] as Range, 'path'), job).toBe('dist')
+      expect(w.scripts(job).join('\n'), job).not.toMatch(/npm run (?:dist|build|test:packaging)|release-version/)
+    }
+    expect(w.scripts('smoke')).toEqual(['scripts/smoke-linux.sh'])
+    expect(w.scripts('acceptance')).toEqual(['scripts/acceptance-linux.sh'])
+  })
+
+  it('[spec:release-automation/gate-passes] pushes one commit changing only the version files, and its tag, atomically', () => {
+    expect(w.permissions('publish')).toEqual({ contents: 'write', 'id-token': 'write', attestations: 'write' })
+    const checkout = w.stepsUsing('publish', 'actions/checkout')
+    expect(checkout).toHaveLength(1)
+    expect(w.withValue(checkout[0] as Range, 'ref')).toBe(sourceSha)
+    expect(w.withValue(checkout[0] as Range, 'fetch-depth')).toBe('0')
+    // Design D7: the deploy key when the secret exists, the job token otherwise.
+    expect(w.withValue(checkout[0] as Range, 'ssh-key')).toBe('${{ secrets.RELEASE_DEPLOY_KEY }}')
+    // No npm ci next to the stored write token.
+    const setup = w.steps('publish').find((s) => w.field(s, 'uses') === './.github/actions/setup')
+    expect(setup === undefined ? undefined : w.withValue(setup, 'dependencies')).toBe('"false"')
+    expect(w.scripts('publish').join('\n')).toContain('git push --atomic origin HEAD:refs/heads/master "refs/tags/$TAG"')
+    expect(w.field(w.steps('publish').find((s) => w.field(s, 'name') === 'Tag and push') as Range, 'if')).toBe("steps.remote.outputs.push == 'true'")
+
+    const { origin, source, clone } = remote()
+    const first = publishSteps(clone(), source)
+    expect(first.commit.status, first.commit.stdout + first.commit.stderr).toBe(0)
+    expect(first.check.status, first.check.stdout + first.check.stderr).toBe(0)
+    expect(first.output).toBe('push=true\n')
+    expect(first.push?.status, first.push?.stderr).toBe(0)
+    // master advanced by exactly one commit, by github-actions[bot], changing only the two files to the new version.
+    const master = git(origin, 'rev-parse', 'refs/heads/master')
+    expect(git(origin, 'rev-parse', `${master}^`)).toBe(source)
+    expect(git(origin, 'diff', '--name-only', source, master).split('\n')).toEqual(['package-lock.json', 'package.json'])
+    expect(git(origin, 'log', '-1', '--format=%an <%ae>%n%s', master)).toBe('github-actions[bot] <41898282+github-actions[bot]@users.noreply.github.com>\nrelease v0.1.0')
+    expect((JSON.parse(git(origin, 'show', `${master}:package.json`)) as { version?: string }).version).toBe('0.1.0')
+    // An annotated tag pointing at that commit.
+    expect(git(origin, 'cat-file', '-t', 'refs/tags/v0.1.0')).toBe('tag')
+    expect(git(origin, 'rev-parse', 'refs/tags/v0.1.0^{commit}')).toBe(master)
+
+    // A rerun of publish after the push recognises its own commit and pushes nothing.
+    const rerun = publishSteps(clone(), source)
+    expect(rerun.check.status, rerun.check.stdout + rerun.check.stderr).toBe(0)
+    expect(rerun.output).toBe('push=false\n')
+    expect(rerun.check.stdout).toContain('::notice title=Already pushed::')
+    expect(rerun.push).toBeUndefined()
+    expect(git(origin, 'rev-parse', 'refs/heads/master')).toBe(master)
+  })
+
+  it('refuses to push when master moved or the tag belongs to another commit', () => {
+    // master moved after the release started: refused before anything is pushed.
+    const moved = remote()
+    const dir = moved.clone()
+    const other = moved.clone()
+    git(other, 'checkout', '--quiet', 'master')
+    writeFileSync(join(other, 'README.md'), 'moved\n')
+    git(other, 'add', 'README.md')
+    git(other, 'commit', '--quiet', '--message', 'moved')
+    git(other, 'push', '--quiet', 'origin', 'master')
+    const refused = publishSteps(dir, moved.source)
+    expect(refused.check.status).toBe(1)
+    expect(refused.check.stdout).toContain('::error title=master moved::')
+    expect(git(moved.origin, 'tag', '--list')).toBe('')
+
+    // A tag that is not this release's commit on the source commit: refused, nothing changes.
+    const foreign = remote()
+    const tagger = foreign.clone()
+    git(tagger, 'tag', 'v0.1.0')
+    git(tagger, 'push', '--quiet', 'origin', 'v0.1.0')
+    const run = publishSteps(foreign.clone(), foreign.source)
+    expect(run.check.status).toBe(1)
+    expect(run.check.stdout).toContain('::error title=Tag exists::v0.1.0 already exists')
+    expect(git(foreign.origin, 'rev-parse', 'refs/heads/master')).toBe(foreign.source)
+
+    // The same tag on a different bump of the source commit (another version's content): refused.
+    const different = remote()
+    const first = publishSteps(different.clone(), different.source, '0.1.0')
+    expect(first.push?.status).toBe(0)
+    const retagged = different.clone()
+    const second = publishSteps(retagged, different.source, '0.1.0')
+    expect(second.output).toBe('push=false\n')
+    writeFileSync(join(retagged, 'package.json'), readFileSync(join(retagged, 'package.json'), 'utf8').replace('"0.1.0"', '"0.1.1"'))
+    git(retagged, 'commit', '--quiet', '--all', '--amend', '--no-edit')
+    const outputFile = join(tempDir('output'), 'github-output')
+    const mismatch = w.runStep('publish', 'Check the remote', {
+      cwd: retagged,
+      env: { ...gitEnv, TAG: 'v0.1.0', SOURCE_SHA: different.source, GITHUB_OUTPUT: outputFile },
+    })
+    expect(mismatch.status).toBe(1)
+    expect(mismatch.stdout).toContain('::error title=Tag exists::')
+  })
+
+  it('[spec:release-automation/checksums-match] writes SHA256SUMS for exactly the tested packages, which sha256sum -c accepts', () => {
+    const deb = 'Veydr-1.2.3-amd64.deb'
+    const appimage = 'Veydr-1.2.3-x86_64.AppImage'
+    const files = { [deb]: 'deb contents\n', [appimage]: 'appimage contents\n' }
+    const good = checksums(files, `${digest('deb contents\n')}  ${deb}`)
+    expect(good.run.status, good.run.stdout + good.run.stderr).toBe(0)
+    expect(good.sums).toBe(`${digest('deb contents\n')}  ${deb}\n${digest('appimage contents\n')}  ${appimage}\n`)
+    // A user's check: sha256sum -c succeeds on the downloaded files.
+    const check = spawnSync('sha256sum', ['-c', 'SHA256SUMS'], { cwd: good.dir, encoding: 'utf8', env: { ...process.env, LC_ALL: 'C' } })
+    expect(check.status, check.stderr).toBe(0)
+    expect(check.stdout).toBe(`${deb}: OK\n${appimage}: OK\n`)
+    writeFileSync(join(good.dir, deb), 'tampered\n')
+    expect(spawnSync('sha256sum', ['-c', '--quiet', 'SHA256SUMS'], { cwd: good.dir }).status).toBe(1)
+    // The acceptance record that is attached is the one of the run that tested this .deb.
+    expect(good.record?.split('\n')[0]).toContain(digest('deb contents\n'))
+
+    // Anything but exactly the two packages of this version fails.
+    for (const other of [{ [deb]: 'x' }, { ...files, 'extra.deb': 'x' }, { 'Veydr-1.2.2-amd64.deb': 'x', [appimage]: 'x' }]) {
+      const bad = checksums(other, `${digest('x')}  ${deb}`)
+      expect(bad.run.status, Object.keys(other).join(' ')).toBe(1)
+      expect(bad.run.stdout).toContain('::error title=Unexpected packages::')
+    }
+    // A missing record, or one that tested another .deb, fails instead of attaching the wrong evidence.
+    const missing = checksums(files, undefined)
+    expect(missing.run.status).toBe(1)
+    expect(missing.run.stdout).toContain('::error title=No acceptance record::')
+    for (const tested of [`${digest('other\n')}  ${deb}`, `${digest('deb contents\n')}  Veydr-1.2.2-amd64.deb`, '']) {
+      const mismatch = checksums(files, tested)
+      expect(mismatch.run.status, tested).toBe(1)
+      expect(mismatch.run.stdout, tested).toContain('::error title=Acceptance record mismatch::')
+      expect(mismatch.record, tested).toBeUndefined()
+    }
+  })
+
+  it('[spec:release-automation/verifying-a-release-package] attests every attached package before anything is pushed', () => {
+    const attest = w.stepsUsing('publish', 'actions/attest-build-provenance')
+    expect(attest).toHaveLength(1)
+    // The subjects are exactly the packages in SHA256SUMS; the attestation names this workflow run
+    // and the commit it checked out, the source commit, which is the parent of the tagged commit.
+    expect(w.withValue(attest[0] as Range, 'subject-checksums')).toBe('${{ runner.temp }}/release/SHA256SUMS')
+    const order = stepNames('publish')
+    expect(order).toEqual([
+      'actions/checkout',
+      './.github/actions/setup',
+      'Commit the version',
+      'Check the remote',
+      'Download packages',
+      'Download the acceptance record',
+      'Write SHA256SUMS',
+      'Attest build provenance',
+      'Tag and push',
+      'Create the draft release',
+    ])
+    expect(w.field(w.steps('publish').find((s) => w.field(s, 'name') === 'Write SHA256SUMS') as Range, 'working-directory')).toBe('${{ runner.temp }}/release')
+  })
+
+  it('[spec:release-automation/draft-created] creates a draft with generated notes, the packages, SHA256SUMS and the acceptance record', () => {
+    // The packages publish attaches are the ones package uploaded, and the record is acceptance's.
+    const downloads = w.stepsUsing('publish', 'actions/download-artifact').map((s) => [w.withValue(s, 'name'), w.withValue(s, 'path')])
+    expect(downloads).toEqual([
+      ['release-packages', '${{ runner.temp }}/release'],
+      ['release-acceptance-linux', '${{ runner.temp }}/acceptance'],
+    ])
+    const upload = w.stepsUsing('acceptance', 'actions/upload-artifact')
+    expect(upload).toHaveLength(1)
+    expect(w.withValue(upload[0] as Range, 'name')).toBe('release-acceptance-linux')
+    expect(w.withValue(upload[0] as Range, 'path')).toBe('test-results/acceptance-linux/')
+    expect(stepEnv('publish', 'Write SHA256SUMS')['ACCEPTANCE']).toBe('${{ runner.temp }}/acceptance/steps.jsonl')
+
+    const created = draftRelease()
+    expect(created.run.status, created.run.stdout + created.run.stderr).toBe(0)
+    expect(created.calls.map((c) => c.slice(0, 2).join(' '))).toEqual(['api --paginate', 'release create'])
+    const create = created.calls[1] ?? []
+    expect(create[2]).toBe('v1.2.3-rc.1')
+    for (const flag of ['--draft', '--verify-tag', '--generate-notes', '--prerelease']) expect(create, flag).toContain(flag)
+    expect(create.slice(create.indexOf('--') + 1)).toEqual(releaseFiles)
+    // Never published automatically.
+    expect(w.source.text).not.toMatch(/--draft[= ]false|gh release edit|--latest/)
+
+    const final = draftRelease({ prerelease: 'false' })
+    expect(final.calls[1]).not.toContain('--prerelease')
+    expect(final.calls[1]).toContain('--draft')
+
+    // A rerun completes the existing draft instead of creating a second one.
+    const existing = draftRelease({ releases: [{ tag_name: 'v1.2.3-rc.1', draft: true }, { tag_name: 'v1.2.2', draft: false }] })
+    expect(existing.run.status, existing.run.stderr).toBe(0)
+    expect(existing.calls.map((c) => c.slice(0, 2).join(' '))).toEqual(['api --paginate', 'release upload'])
+    expect(existing.calls[1]).toContain('--clobber')
+    expect((existing.calls[1] ?? []).slice((existing.calls[1] ?? []).indexOf('--') + 1)).toEqual(releaseFiles)
+    // A published release, two releases for the tag, or a failing API call: nothing is changed.
+    for (const releases of [[{ tag_name: 'v1.2.3-rc.1', draft: false }], [{ tag_name: 'v1.2.3-rc.1', draft: true }, { tag_name: 'v1.2.3-rc.1', draft: true }]]) {
+      const refused = draftRelease({ releases })
+      expect(refused.run.status).toBe(1)
+      expect(refused.calls.map((c) => c[0])).toEqual(['api'])
+    }
+    const unreachable = draftRelease({ failOn: 'api --paginate' })
+    expect(unreachable.run.status).not.toBe(0)
+    expect(unreachable.calls.map((c) => c[0])).toEqual(['api'])
+    expect(draftRelease({ failOn: 'release create' }).run.status).not.toBe(0)
   })
 })

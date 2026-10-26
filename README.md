@@ -29,7 +29,7 @@ Veydr is a desktop app for developers who run several long-lived commands across
 Veydr does nothing unless you ask it to. A command starts only when you press **Start**, a command that exits is never restarted on its own, and when you quit, Veydr stops what it started. It runs entirely on your machine: no accounts, no cloud sync, no telemetry, and no network access of its own.
 
 > [!NOTE]
-> **Linux only; Windows not yet supported.** Veydr is an early release (version 0.0.0). It runs on Linux x64. Windows and macOS are not supported yet, and no prebuilt releases have been published. You build the packages from source (see [Installation](#installation)).
+> **Linux only; Windows not yet supported.** Veydr is an early release. It runs on Linux x64. Windows and macOS are not supported yet. Released versions are published as packages on [GitHub Releases](https://github.com/alexnakagama/veydr/releases), and you can always build them from source (see [Installation](#installation)).
 
 ## Contents
 
@@ -129,9 +129,31 @@ Veydr is deliberately not a terminal emulator. Commands get no interactive input
 
 ## Installation
 
+In the commands below, replace `X.Y.Z` with the version you install.
+
 ### Download a release
 
-No releases have been published yet. Until they are, build the packages yourself as described below. It takes one command.
+Download the packages from the [GitHub Releases page](https://github.com/alexnakagama/veydr/releases). Every release has:
+
+- `Veydr-X.Y.Z-amd64.deb` and `Veydr-X.Y.Z-x86_64.AppImage`, the packages;
+- `SHA256SUMS`, the checksums of both packages;
+- `acceptance-linux-steps.jsonl`, the record of the acceptance test the release ran on exactly these packages.
+
+Check a download before installing it. In the folder you downloaded to:
+
+```bash
+sha256sum --check --ignore-missing SHA256SUMS
+```
+
+Every package you downloaded must report `OK`. To also check that it was built by this repository's release workflow, use the [GitHub CLI](https://cli.github.com/):
+
+```bash
+gh attestation verify Veydr-X.Y.Z-amd64.deb --repo alexnakagama/veydr --signer-workflow alexnakagama/veydr/.github/workflows/release.yml
+```
+
+Then install the package as described below, using the downloaded file instead of the one in `dist/`. More on these checks is in [docs/ci.md](docs/ci.md#verifying-a-release-package).
+
+If there is no release yet, or you want an unreleased version, build the packages yourself. It takes one command.
 
 ### Build the Linux packages
 
@@ -144,17 +166,17 @@ npm ci
 npm run dist:linux
 ```
 
-This writes two packages to `dist/`. With the current version they are named:
+This writes two packages to `dist/`, named after the version in `package.json`:
 
-- `dist/Veydr-0.0.0-amd64.deb`
-- `dist/Veydr-0.0.0-x86_64.AppImage`
+- `dist/Veydr-X.Y.Z-amd64.deb`
+- `dist/Veydr-X.Y.Z-x86_64.AppImage`
 
 The first run downloads electron-builder's Linux packaging tools into `~/.cache/electron-builder`.
 
 ### Install the `.deb` (Debian, Ubuntu; recommended)
 
 ```bash
-sudo apt install ./dist/Veydr-0.0.0-amd64.deb
+sudo apt install ./dist/Veydr-X.Y.Z-amd64.deb
 ```
 
 `apt` pulls in the libraries Veydr needs. Veydr is installed to `/opt/Veydr`, linked as `/usr/bin/veydr`, and gets a desktop entry. Where AppArmor supports it, the package also installs a profile (`/etc/apparmor.d/veydr`) that lets Chromium's sandbox work under Ubuntu 24.04's user-namespace restriction (see the note above).
@@ -174,8 +196,8 @@ sudo apt remove veydr
 ### Run the AppImage (other distributions)
 
 ```bash
-chmod +x dist/Veydr-0.0.0-x86_64.AppImage
-./dist/Veydr-0.0.0-x86_64.AppImage
+chmod +x dist/Veydr-X.Y.Z-x86_64.AppImage
+./dist/Veydr-X.Y.Z-x86_64.AppImage
 ```
 
 The AppImage needs two things from the system:
@@ -189,7 +211,7 @@ The AppImage needs two things from the system:
 veydr --smoke-test
 ```
 
-The smoke test checks that Veydr can run on this system (sandbox, configuration directory, `/proc` access, interface), prints a line starting with `VEYDR_SMOKE_TEST` with a JSON report, and exits with status 0 if every check passed. For the AppImage, run `./dist/Veydr-0.0.0-x86_64.AppImage --smoke-test`. Close a running Veydr first: the smoke test exits with status 1 when another instance is running.
+The smoke test checks that Veydr can run on this system (sandbox, configuration directory, `/proc` access, interface), prints a line starting with `VEYDR_SMOKE_TEST` with a JSON report, and exits with status 0 if every check passed. For the AppImage, run `./dist/Veydr-X.Y.Z-x86_64.AppImage --smoke-test`. Close a running Veydr first: the smoke test exits with status 1 when another instance is running.
 
 More details, including requirements and troubleshooting, are in [docs/install-linux.md](docs/install-linux.md).
 

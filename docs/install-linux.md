@@ -9,10 +9,12 @@ Veydr is built for **Linux x64** only; Windows and macOS are not supported yet. 
 
 ## Install
 
+Released packages, with `SHA256SUMS` and a build provenance attestation, are on [GitHub Releases](https://github.com/alexnakagama/veydr/releases); check a download as described in [ci.md](ci.md#verifying-a-release-package) before installing it. In the commands below, replace `X.Y.Z` with the version.
+
 **.deb** (Debian, Ubuntu):
 
 ```bash
-sudo apt install ./Veydr-0.0.0-amd64.deb
+sudo apt install ./Veydr-X.Y.Z-amd64.deb
 ```
 
 `apt` installs the libraries Veydr needs. Veydr is installed in `/opt/Veydr`, linked as `/usr/bin/veydr`, and gets a desktop entry. The package also:
@@ -25,8 +27,8 @@ Remove it with `sudo apt remove veydr` (the profile is unloaded and removed too)
 **AppImage**:
 
 ```bash
-chmod +x Veydr-0.0.0-x86_64.AppImage
-./Veydr-0.0.0-x86_64.AppImage
+chmod +x Veydr-X.Y.Z-x86_64.AppImage
+./Veydr-X.Y.Z-x86_64.AppImage
 ```
 
 ## Requirements

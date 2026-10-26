@@ -1,0 +1,397 @@
+# Release (docs/ci.md#releasing, design D6). The maintainer starts it by hand on master with a
+# version. Every gate job applies the version bump to the same commit and tests that tree; only
+# publish, after all of them passed, pushes the bump commit and the tag together and creates a draft
+# release with the packages the gate tested. A run that fails before publish pushes, tags and
+# releases nothing (an attestation that publish already created stays in the attestation log).
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version to release, without a leading "v" (e.g. 1.2.3 or 1.2.3-rc.1)
+        required: true
+        type: string
+
+permissions: {}
+
+# Two releases never interleave, and a running release is never cancelled by a newer one. GitHub
+# keeps one waiting run per group: a newer waiting run replaces an older one.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: validate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      tag: ${{ steps.check.outputs.tag }}
+      prerelease: ${{ steps.check.outputs.prerelease }}
+      source_sha: ${{ steps.source.outputs.sha }}
+    steps:
+      - name: Require master
+        env:
+          REF: ${{ github.ref }}
+        run: |
+          if [ "$REF" != refs/heads/master ]; then
+            echo "::error title=Release refused::a release runs only on master, not on $REF. Start it from master: gh workflow run release.yml --ref master -f version=X.Y.Z"
+            exit 1
+          fi
+      # All history and every tag: check reads `git tag --list 'v*'`, and a tagless shallow clone
+      # would let an existing or lower version through until the final push.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      # The commit the run started from. Every later job checks out exactly this commit, even if
+      # master moves in the meantime; publish then refuses to push.
+      - name: Record the source commit
+        id: source
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - uses: ./.github/actions/setup
+        with:
+          cache: "false"
+          dependencies: "false"
+      - name: Check the version
+        id: check
+        env:
+          VERSION: ${{ inputs.version }}
+        run: node scripts/release-version.mjs check "$VERSION"
+
+  verify:
+    name: verify
+    needs:
+      - validate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.validate.outputs.source_sha }}
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+        with:
+          electron: "true"
+          cache: "false"
+      - name: Apply the version
+        env:
+          VERSION: ${{ inputs.version }}
+        run: node scripts/release-version.mjs apply "$VERSION"
+      - name: Verify
+        run: npm run verify
+
+  e2e:
+    name: e2e
+    needs:
+      - validate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.validate.outputs.source_sha }}
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+        with:
+          electron: "true"
+          cache: "false"
+      - name: Apply the version
+        env:
+          VERSION: ${{ inputs.version }}
+        run: node scripts/release-version.mjs apply "$VERSION"
+      - name: End-to-end tests
+        run: xvfb-run --auto-servernum npm run test:e2e
+      - name: Upload test results
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-e2e-test-results
+          path: test-results/
+          retention-days: 14
+          if-no-files-found: ignore
+          overwrite: true
+
+  # Builds the packages once. smoke and acceptance test these files, and publish attests and
+  # attaches the same files: what ships is what was tested.
+  package:
+    name: package
+    needs:
+      - validate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.validate.outputs.source_sha }}
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+        with:
+          electron: "true"
+          cache: "false"
+      - name: Apply the version
+        env:
+          VERSION: ${{ inputs.version }}
+        run: node scripts/release-version.mjs apply "$VERSION"
+      - name: Build packages and run the packaging tests
+        run: xvfb-run --auto-servernum npm run test:packaging
+      - name: Check the package names
+        working-directory: dist
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          shopt -s nullglob
+          found=(*.deb *.AppImage)
+          expected=("Veydr-$VERSION-amd64.deb" "Veydr-$VERSION-x86_64.AppImage")
+          if [ "${found[*]}" != "${expected[*]}" ]; then
+            echo "::error title=Unexpected packages::expected exactly ${expected[*]} in dist/, found: ${found[*]}"
+            exit 1
+          fi
+      - name: Upload packages
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-packages
+          path: |
+            dist/*.deb
+            dist/*.AppImage
+          retention-days: 14
+          if-no-files-found: error
+          overwrite: true
+
+  smoke:
+    name: smoke
+    needs:
+      - validate
+      - package
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.validate.outputs.source_sha }}
+          persist-credentials: false
+      # The containers run the packages with user namespaces allowed, which the runner's AppArmor
+      # restriction also blocks inside Docker.
+      - uses: ./.github/actions/setup
+        with:
+          electron: "true"
+          cache: "false"
+      - name: Download packages
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-packages
+          path: dist
+      - name: Distribution smoke matrix
+        run: scripts/smoke-linux.sh
+      - name: Upload smoke results
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-smoke-linux
+          path: test-results/smoke-linux/
+          retention-days: 14
+          if-no-files-found: ignore
+          overwrite: true
+
+  acceptance:
+    name: acceptance
+    needs:
+      - validate
+      - package
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.validate.outputs.source_sha }}
+          persist-credentials: false
+      # The driver runs on this Node with the repository's Playwright, inside a container that needs
+      # user namespaces.
+      - uses: ./.github/actions/setup
+        with:
+          electron: "true"
+          cache: "false"
+      - name: Download packages
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-packages
+          path: dist
+      - name: Packaged acceptance pass
+        run: scripts/acceptance-linux.sh
+      # publish attaches steps.jsonl from this artifact; it exists only for a run that passed, since
+      # publish needs this job to succeed.
+      - name: Upload acceptance results
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-acceptance-linux
+          path: test-results/acceptance-linux/
+          retention-days: 14
+          if-no-files-found: ignore
+          overwrite: true
+
+  # The only job with write scopes, and the only one that reaches the remote. Safe to rerun: a tag
+  # this run already pushed is recognised and not pushed again, and an existing draft is completed
+  # instead of duplicated (design D6).
+  publish:
+    name: publish
+    needs:
+      - validate
+      - verify
+      - e2e
+      - package
+      - smoke
+      - acceptance
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      # Pushes with the job token (GitHub Actions bypasses the master ruleset), or over SSH with the
+      # deploy key when the RELEASE_DEPLOY_KEY secret exists (design D7). All tags, for the check below.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.validate.outputs.source_sha }}
+          fetch-depth: 0
+          ssh-key: ${{ secrets.RELEASE_DEPLOY_KEY }}
+      # Node and the pinned npm only: no npm ci, so no dependency's install script runs next to the
+      # write token this checkout stored.
+      - uses: ./.github/actions/setup
+        with:
+          cache: "false"
+          dependencies: "false"
+      - name: Commit the version
+        env:
+          VERSION: ${{ inputs.version }}
+          TAG: ${{ needs.validate.outputs.tag }}
+        run: |
+          node scripts/release-version.mjs apply "$VERSION"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -- package.json package-lock.json
+          git commit --quiet --message "release $TAG"
+          # git lists the paths in byte order, whatever the locale.
+          changed="$(git diff --name-only HEAD^ HEAD | paste -sd ' ' -)"
+          if [ "$changed" != "package-lock.json package.json" ]; then
+            echo "::error title=Unexpected release commit::the commit must change only package.json and package-lock.json, it changes: $changed"
+            exit 1
+          fi
+      # Without the tag, master must still be the source commit, or the push could only fail later.
+      # With the tag, it must be this release's commit from an earlier attempt: the source commit
+      # plus the same bump. Anything else is refused.
+      - name: Check the remote
+        id: remote
+        env:
+          TAG: ${{ needs.validate.outputs.tag }}
+          SOURCE_SHA: ${{ needs.validate.outputs.source_sha }}
+        run: |
+          tagged="$(git rev-parse --quiet --verify "refs/tags/$TAG^{commit}")" || tagged=""
+          if [ -z "$tagged" ]; then
+            master="$(git ls-remote --exit-code origin refs/heads/master | cut -f1)"
+            if [ "$master" != "$SOURCE_SHA" ]; then
+              echo "::error title=master moved::master is at $master, but this release tested $SOURCE_SHA. Start a new release from the current master."
+              exit 1
+            fi
+            echo "push=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          parent="$(git rev-parse --quiet --verify "$tagged^1")" || parent=""
+          if [ "$parent" != "$SOURCE_SHA" ] || [ "$(git rev-parse "$tagged^{tree}")" != "$(git rev-parse "HEAD^{tree}")" ]; then
+            echo "::error title=Tag exists::$TAG already exists at $tagged, which is not this release's version commit on $SOURCE_SHA."
+            exit 1
+          fi
+          echo "::notice title=Already pushed::$TAG and its commit were pushed by an earlier attempt; skipping the commit and the push."
+          echo "push=false" >> "$GITHUB_OUTPUT"
+      - name: Download packages
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-packages
+          path: ${{ runner.temp }}/release
+      - name: Download the acceptance record
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-acceptance-linux
+          path: ${{ runner.temp }}/acceptance
+      # SHA256SUMS covers exactly the two packages. The acceptance record names the SHA-256 of the
+      # .deb it tested, which must be the one attached.
+      - name: Write SHA256SUMS
+        working-directory: ${{ runner.temp }}/release
+        env:
+          VERSION: ${{ inputs.version }}
+          ACCEPTANCE: ${{ runner.temp }}/acceptance/steps.jsonl
+        run: |
+          shopt -s nullglob
+          found=(*)
+          deb="Veydr-$VERSION-amd64.deb"
+          appimage="Veydr-$VERSION-x86_64.AppImage"
+          if [ "${#found[@]}" -ne 2 ] || [ ! -f "$deb" ] || [ ! -f "$appimage" ]; then
+            echo "::error title=Unexpected packages::expected exactly $deb and $appimage, found: ${found[*]}"
+            exit 1
+          fi
+          sha256sum -- "$deb" "$appimage" > SHA256SUMS
+          sha256sum -c SHA256SUMS
+          if [ ! -s "$ACCEPTANCE" ]; then
+            echo "::error title=No acceptance record::steps.jsonl is missing from the acceptance results"
+            exit 1
+          fi
+          tested="$(head -n 1 "$ACCEPTANCE" | node -e 'let s = ""; process.stdin.on("data", (d) => (s += d)).on("end", () => console.log(JSON.parse(s).detail?.deb ?? ""))')"
+          if ! grep -Fxq -- "$tested" SHA256SUMS; then
+            echo "::error title=Acceptance record mismatch::the acceptance record tested '$tested', which is not the attached $deb"
+            exit 1
+          fi
+          cp -- "$ACCEPTANCE" acceptance-linux-steps.jsonl
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-checksums: ${{ runner.temp }}/release/SHA256SUMS
+      - name: Tag and push
+        if: steps.remote.outputs.push == 'true'
+        env:
+          VERSION: ${{ inputs.version }}
+          TAG: ${{ needs.validate.outputs.tag }}
+        run: |
+          git tag --annotate "$TAG" --message "Veydr $VERSION"
+          git push --atomic origin HEAD:refs/heads/master "refs/tags/$TAG"
+      # A draft is not found by its tag through the API, so look for it in the list of releases.
+      # An existing draft (an earlier attempt failed while uploading) gets every file again.
+      - name: Create the draft release
+        working-directory: ${{ runner.temp }}/release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ inputs.version }}
+          TAG: ${{ needs.validate.outputs.tag }}
+          PRERELEASE: ${{ needs.validate.outputs.prerelease }}
+        run: |
+          files=("Veydr-$VERSION-amd64.deb" "Veydr-$VERSION-x86_64.AppImage" SHA256SUMS acceptance-linux-steps.jsonl)
+          draft="$(gh api --paginate "repos/$GH_REPO/releases" --jq '.[] | select(.tag_name == env.TAG) | .draft')"
+          case "$draft" in
+            "")
+              flags=()
+              if [ "$PRERELEASE" = true ]; then flags+=(--prerelease); fi
+              gh release create "$TAG" --draft --verify-tag --generate-notes --title "Veydr $VERSION" "${flags[@]}" -- "${files[@]}"
+              ;;
+            true)
+              echo "::notice title=Draft exists::completing the existing draft for $TAG"
+              gh release upload "$TAG" --clobber -- "${files[@]}"
+              ;;
+            *)
+              echo "::error title=Release exists::a release for $TAG already exists and is not a draft (or there are several); not changing it"
+              exit 1
+              ;;
+          esac

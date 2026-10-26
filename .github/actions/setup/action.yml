@@ -11,6 +11,10 @@ inputs:
     description: "'false' turns off the npm, Electron and electron-builder caches (the release, design D8)."
     required: false
     default: "true"
+  dependencies:
+    description: "'false' skips npm ci, for a job that needs only Node and npm (the release publish job, which holds a write token)."
+    required: false
+    default: "true"
 
 runs:
   using: composite
@@ -20,8 +24,13 @@ runs:
       env:
         ELECTRON: ${{ inputs.electron }}
         CACHE: ${{ inputs.cache }}
+        DEPENDENCIES: ${{ inputs.dependencies }}
       run: |
-        for pair in "electron=$ELECTRON" "cache=$CACHE"; do
+        if [ "$ELECTRON" = true ] && [ "$DEPENDENCIES" = false ]; then
+          echo "::error title=Invalid setup input::electron: 'true' needs the dependencies; do not combine it with dependencies: 'false'"
+          exit 1
+        fi
+        for pair in "electron=$ELECTRON" "cache=$CACHE" "dependencies=$DEPENDENCIES"; do
           case "${pair#*=}" in
             true | false) ;;
             *)
@@ -53,7 +62,7 @@ runs:
         fi
 
     - name: Cache Electron and electron-builder downloads
-      if: inputs.cache == 'true'
+      if: inputs.cache == 'true' && inputs.dependencies == 'true'
       uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         path: |
@@ -62,6 +71,7 @@ runs:
         key: electron-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
 
     - name: Install dependencies
+      if: inputs.dependencies == 'true'
       shell: bash
       run: npm ci
 
