@@ -519,6 +519,13 @@ describe('workflow policy (design D11)', () => {
     expect(sysctl).toBeLessThan(user)
     expect(user).toBeLessThan(net)
     expect(script.filter((l) => l === 'exit 1')).toHaveLength(2)
+
+    // Core dumps are off for Electron jobs, so a crashed renderer is reported at once (docs/ci.md).
+    const dumps = lines.findIndex((l) => l.kind === 'node' && l.key === 'name' && l.value === 'Disable core dumps')
+    expect(dumps).toBeGreaterThan(named)
+    const dumpStep = within(lines, stepAround(lines, dumps))
+    expect(dumpStep).toContainEqual(expect.objectContaining({ key: 'if', value: "inputs.electron == 'true'" }))
+    expect(dumpStep.filter((l) => l.kind === 'scalar').map((l) => l.body)).toEqual(["sudo sysctl -w fs.suid_dumpable=0 'kernel.core_pattern=|/bin/false'"])
   })
 
   it('requires persist-credentials: false on every checkout except in the release publish job', () => {

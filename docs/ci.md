@@ -368,3 +368,9 @@ Chromium's sandbox needs unprivileged user namespaces, and `test/e2e/offline.spe
 With `electron: "true"`, the setup action runs `sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0` before any test. This puts the runner in the state the app was verified in (Debian 13, namespaces allowed), so the sandbox and the offline test run for real. The step then checks `unshare --user true` and `unshare --user --map-root-user --net true`, and fails with a clear error if either does not work, rather than letting the sandbox fail later inside Playwright.
 
 The alternatives were rejected: setting `VEYDR_ALLOW_SKIP_OFFLINE` would hide exactly what the offline test exists for, and installing Veydr's AppArmor profile on the runner covers only the packaged binary, not `node_modules/electron`. The packaged app under Ubuntu 24.04's restriction remains a manual check (see the README's platform notes); CI does not claim to cover it.
+
+## Core dumps on runners
+
+The runner image pipes core dumps to `systemd-coredump` (`kernel.core_pattern=|/usr/lib/systemd/systemd-coredump …`) and sets `fs.suid_dumpable=2`, so even Chromium's sandboxed processes, which mark themselves non-dumpable, are dumped. A crashing process stays in the kernel's exit path until its core has been written, and Electron learns that the process is gone only then. On a runner that took more than 30 seconds for a renderer, so `failure.spec.ts`'s crashed-renderer test hung: the renderer had crashed, but Veydr had not been told yet.
+
+With `electron: "true"`, the setup action therefore runs `sudo sysctl -w fs.suid_dumpable=0 'kernel.core_pattern=|/bin/false'`: no process on the runner writes a core dump. Nothing collected the dumps anyway; a crash still shows in the test output, as it does on a developer machine with dumps disabled (`ulimit -c 0`).
