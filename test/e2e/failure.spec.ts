@@ -9,6 +9,49 @@ import { seed } from './support/seed'
 
 const electronBinary = createRequire(__filename)('electron') as string
 
+const readText = (path: string): string => {
+  try {
+    return readFileSync(path, 'utf8').trim()
+  } catch (error) {
+    return `unreadable (${(error as NodeJS.ErrnoException).code ?? String(error)})`
+  }
+}
+
+/**
+ * What a hang looks like from outside, for the failure message: the kernel's core dump handler,
+ * every process descended from `root` (state, kernel wait channel, Chromium process type), and
+ * any crash handler process that is running.
+ */
+function hangReport(root: number | undefined): string {
+  const procs = readdirSync('/proc')
+    .filter((name) => /^\d+$/.test(name))
+    .map((name) => {
+      const stat = readText(`/proc/${name}/stat`)
+      const fields = stat.slice(stat.lastIndexOf(')') + 2).split(' ')
+      const argv = readText(`/proc/${name}/cmdline`).split('\0')
+      return { pid: Number(name), state: fields[0] ?? '?', ppid: Number(fields[1]), wchan: readText(`/proc/${name}/wchan`), argv }
+    })
+  const descendants = new Set(root === undefined ? [] : [root])
+  for (let grew = true; grew; ) {
+    grew = false
+    for (const p of procs) {
+      if (descendants.has(p.pid) || !descendants.has(p.ppid)) continue
+      descendants.add(p.pid)
+      grew = true
+    }
+  }
+  const describe = (p: (typeof procs)[number]): string =>
+    `  ${p.pid} ppid=${p.ppid} state=${p.state} wchan=${p.wchan} ${p.argv.find((a) => a.startsWith('--type=')) ?? p.argv[0] ?? ''}`
+  return [
+    `core_pattern: ${readText('/proc/sys/kernel/core_pattern')}`,
+    `suid_dumpable: ${readText('/proc/sys/fs/suid_dumpable')}`,
+    `processes under ${root ?? '?'}:`,
+    ...procs.filter((p) => descendants.has(p.pid)).map(describe),
+    'crash handlers:',
+    ...procs.filter((p) => /apport|coredump/.test(p.argv.join(' '))).map(describe),
+  ].join('\n')
+}
+
 test('a crashed renderer is reported and the app exits with an error', async () => {
   const veydr = await launchVeydr({ preloads: [noDialogPath] })
   const stderr: string[] = []
@@ -21,7 +64,7 @@ test('a crashed renderer is reported and the app exits with an error', async () 
       .catch(() => undefined)
     // Bounded, so a hang fails with the app's own output instead of a bare test timeout.
     const code = await Promise.race([exit, new Promise<'no exit'>((resolve) => setTimeout(() => resolve('no exit'), 30_000))])
-    expect(code, `app did not exit with 1 within 30 s; stderr:\n${stderr.join('')}`).toBe(1)
+    expect(code, `app did not exit with 1 within 30 s; stderr:\n${stderr.join('')}\n${code === 'no exit' ? hangReport(child.pid) : ''}`).toBe(1)
     const output = stderr.join('')
     expect(output).toContain('window.renderer-gone')
     expect(output).toContain('ERRORBOX Veydr cannot continue')
