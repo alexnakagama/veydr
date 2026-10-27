@@ -1291,16 +1291,22 @@ describe('release.yml (design D6)', () => {
   const stepNames = (job: string): string[] => w.steps(job).map((s) => w.field(s, 'name') ?? (w.field(s, 'uses') ?? '').split('@')[0] ?? '')
   const needs = (job: string): string[] => childNames(w.lines, childAt(w.lines, w.job(job).start, 'needs'))
 
+  /** Git, as the runner configures it: nothing signs, and no global identity. */
+  const gitEnv = { GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' }
+  /**
+   * Git for preparing the test repositories, with the same configuration as the steps. Without it,
+   * the machine's settings would apply, e.g. Git for Windows' system-wide `core.autocrlf=true`,
+   * which checks the clone out with CRLF while the steps compare against LF.
+   */
   const git = (cwd: string, ...args: string[]): string => {
     const result = spawnSync('git', ['-c', 'user.name=test', '-c', 'user.email=test@example.invalid', '-c', 'commit.gpgsign=false', '-c', 'tag.gpgsign=false', ...args], {
       cwd,
       encoding: 'utf8',
+      env: { ...process.env, ...gitEnv },
     })
     expect(result.status, `git ${args.join(' ')}: ${result.stderr}`).toBe(0)
     return result.stdout.trim()
   }
-  /** Git, as the runner configures it: nothing signs, and no global identity. */
-  const gitEnv = { GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' }
 
   /**
    * A bare `origin` whose master holds the project's package.json, package-lock.json and
