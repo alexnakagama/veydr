@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { selectPlatform, UnsupportedPlatformError, type Platform } from '../../src/main/platform'
+import { envNameKey } from '../../src/shared/config'
 import type { CommandSpec, SpawnPlan } from '../../src/main/platform/types'
 import { createWindowsPlatform } from '../../src/main/platform/windows'
 
@@ -34,6 +35,26 @@ describe('platform selection', () => {
     expect(selectPlatform('win32')).toMatchObject({ name: 'windows', supported: false })
     expect(selectPlatform('darwin')).toMatchObject({ name: 'unsupported', supported: false })
     expect(selectPlatform('freebsd')).toMatchObject({ name: 'unsupported', supported: false })
+  })
+
+  it('gives each selected platform its conventions', () => {
+    expect(selectPlatform('linux').conventions).toEqual({ envNames: 'exact', defaultShell: '/bin/sh', directorySync: true })
+    expect(selectPlatform('win32').conventions).toEqual({ envNames: 'case-insensitive', defaultShell: null, directorySync: false })
+    expect(selectPlatform('darwin').conventions).toEqual({ envNames: 'exact', defaultShell: null, directorySync: true })
+    expect(selectPlatform('freebsd').conventions).toEqual({ envNames: 'exact', defaultShell: null, directorySync: true })
+  })
+})
+
+describe('environment variable name keys', () => {
+  it('keeps names unchanged under the exact rule', () => {
+    expect(envNameKey('Path', 'exact')).toBe('Path')
+    expect(envNameKey('Path', 'exact')).not.toBe(envNameKey('PATH', 'exact'))
+  })
+
+  it('gives names differing only in case the same key under the case-insensitive rule', () => {
+    expect(envNameKey('Path', 'case-insensitive')).toBe(envNameKey('PATH', 'case-insensitive'))
+    expect(envNameKey('node_env', 'case-insensitive')).toBe(envNameKey('NODE_ENV', 'case-insensitive'))
+    expect(envNameKey('PATH', 'case-insensitive')).not.toBe(envNameKey('PATHEXT', 'case-insensitive'))
   })
 })
 

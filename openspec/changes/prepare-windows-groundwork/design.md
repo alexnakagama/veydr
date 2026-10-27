@@ -48,7 +48,7 @@ interface PlatformConventions {
 
 *Alternative:* let each consumer read `process.platform`. Rejected: breaks the D5 lint boundary and makes Windows behavior untestable on Linux.
 
-*Why `null` for the Windows default shell:* Veydr's shell mode runs `<shell> -c <script>`. Neither `cmd.exe` nor PowerShell accepts `-c` with that meaning, so offering one now would encode a wrong convention. W2 sets the value together with the argument convention.
+*Why `null` for the Windows default shell:* Veydr's shell mode runs `<shell> -c <script>`. `cmd.exe` uses `/c`, and while PowerShell accepts `-c` (short for `-Command`), its quoting and argument rules differ, so offering either now would encode a wrong convention. W2 sets the value together with the argument convention.
 
 ### D2. Duplicate-override checks: exact in static schemas, platform rule in main and the editor
 

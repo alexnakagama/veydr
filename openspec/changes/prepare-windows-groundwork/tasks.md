@@ -4,8 +4,8 @@ Note: `npm run spec-coverage` runs in required mode and also reads this change's
 
 ## 1. Platform conventions
 
-- [ ] 1.1 Add `EnvNameRule` (`'exact' | 'case-insensitive'`) and the pure helper `envNameKey(name, rule)` to `src/shared/config` (design D1). Add `PlatformConventions` (`envNames`, `defaultShell`, `directorySync`) and `Platform.conventions` to `src/main/platform/types.ts`. Verify: `npm run typecheck` passes.
-- [ ] 1.2 Set the conventions per design D1: Linux `exact` / `/bin/sh` / `true`; `createUnsupportedPlatform` takes conventions as a parameter; the Windows stub passes `case-insensitive` / `null` / `false`, and the unsupported platform passes `exact` / `null` / `true`. Extend `test/unit/platform.test.ts`: the conventions of each selected platform, the existing check that every Windows operation still rejects with `UnsupportedPlatformError`, and `envNameKey` for both rules. Verify: `npm test` passes.
+- [x] 1.1 Add `EnvNameRule` (`'exact' | 'case-insensitive'`) and the pure helper `envNameKey(name, rule)` to `src/shared/config` (design D1). Add `PlatformConventions` (`envNames`, `defaultShell`, `directorySync`) and `Platform.conventions` to `src/main/platform/types.ts`. Verify: `npm run typecheck` passes.
+- [x] 1.2 Set the conventions per design D1: Linux `exact` / `/bin/sh` / `true`; `createUnsupportedPlatform` takes conventions as a parameter; the Windows stub passes `case-insensitive` / `null` / `false`, and the unsupported platform passes `exact` / `null` / `true`. Extend `test/unit/platform.test.ts`: the conventions of each selected platform, the existing check that every Windows operation still rejects with `UnsupportedPlatformError`, and `envNameKey` for both rules. Verify: `npm test` passes.
 
 ## 2. Environment variable names follow the platform rule
 

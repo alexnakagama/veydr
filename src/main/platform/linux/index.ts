@@ -1,4 +1,4 @@
-import type { Platform, PlatformLog } from '../types'
+import type { Platform, PlatformConventions, PlatformLog } from '../types'
 import { createCleanSpawner } from './executable'
 import { createLinuxEnvProvider } from './environment'
 import { createLinuxPortInspector } from './ports'
@@ -13,6 +13,8 @@ export interface LinuxPlatformOptions {
   readonly inherited?: Readonly<Record<string, string | undefined>>
 }
 
+const LINUX_CONVENTIONS: PlatformConventions = { envNames: 'exact', defaultShell: '/bin/sh', directorySync: true }
+
 /**
  * Linux platform: process trees (L3), crash survivors (L4), command resolution and the login
  * environment (L5), and listening ports (L7).
@@ -26,6 +28,7 @@ export function createLinuxPlatform(options: LinuxPlatformOptions = {}): Platfor
   return {
     name: 'linux',
     supported: true,
+    conventions: LINUX_CONVENTIONS,
     processTree: {
       spawn: (plan) => tree.spawn(plan),
       launchDetached: (plan) => tree.launchDetached(plan),
