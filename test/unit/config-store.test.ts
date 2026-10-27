@@ -95,6 +95,27 @@ describe('saving', () => {
     expect(mode(dir)).toBe(0o700)
   })
 
+  it('skips the directory flush when the platform cannot flush a directory', async () => {
+    const dir = setupDir()
+    let opened = 0
+    const noDirectorySync: ConfigFs = {
+      ...nodeConfigFs,
+      openDirectory: () => {
+        opened += 1
+        return Promise.reject(Object.assign(new Error('EISDIR: illegal operation on a directory'), { code: 'EISDIR' }))
+      },
+    }
+    const log = quietLog()
+    const store = createConfigStore({ dir, log, fs: noDirectorySync, directorySync: false })
+    expect(await store.load()).toMatchObject({ status: { writable: true }, notices: [] })
+    await store.update(() => older)
+    await store.update(() => good)
+    expect(json(dir, 'config.json')).toEqual(good)
+    expect(json(dir, 'config.json.bak')).toEqual(older)
+    expect(opened).toBe(0)
+    expect(log.entries().map((e) => e.event)).not.toContain('config.directory-sync-failed')
+  })
+
   it('[spec:config-storage/invalid-change-rejected] rejects an invalid change with the field and leaves storage unchanged', async () => {
     const dir = setupDir()
     seed(dir, { 'config.json': good, 'config.json.bak': older })

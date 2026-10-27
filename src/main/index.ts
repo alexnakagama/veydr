@@ -67,7 +67,7 @@ function start(): void {
   // `userData` honors XDG_CONFIG_HOME on Linux (~/.config/Veydr by default). The single-instance
   // lock above makes this process the only configuration writer.
   const configDir = app.getPath('userData')
-  const config = createConfigStore({ dir: configDir, log })
+  const config = createConfigStore({ dir: configDir, log, directorySync: platform.conventions.directorySync })
 
   // The Vite dev server is used only by `electron-vite dev` (the flag is
   // compiled out of every other build); built and packaged apps always load
@@ -94,6 +94,7 @@ function start(): void {
   const ledger = createRunLedger({
     dir: configDir,
     log,
+    directorySync: platform.conventions.directorySync,
     onWriteError: (message) =>
       notices.add({
         kind: 'ledger-problem',

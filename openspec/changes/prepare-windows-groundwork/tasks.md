@@ -18,14 +18,14 @@ Note: `npm run spec-coverage` runs in required mode and also reads this change's
 
 ## 4. Atomic writes
 
-- [ ] 4.1 Add bounded rename retries to `writeFileAtomic` (`src/main/config/atomic.ts`) per design D4: retry only `EPERM`, `EBUSY`, and `EACCES`, at most 5 attempts with linear backoff starting at 50 ms, with an injectable `sleep`; any other error and the last error propagate unchanged. Replace the Windows note in the module comment with a description of the retry. In `test/unit/config-atomic.test.ts`, use the fault-injecting `ConfigFs`:
+- [x] 4.1 Add bounded rename retries to `writeFileAtomic` (`src/main/config/atomic.ts`) per design D4: retry only `EPERM`, `EBUSY`, and `EACCES`, at most 5 attempts with linear backoff starting at 50 ms, with an injectable `sleep`; any other error and the last error propagate unchanged. Replace the Windows note in the module comment with a description of the retry. In `test/unit/config-atomic.test.ts`, use the fault-injecting `ConfigFs`:
   - a test tagged `[spec:config-storage/file-briefly-held-by-another-program]`: `EBUSY` twice, then success; the target holds the new content;
   - a test tagged `[spec:config-storage/file-held-beyond-the-retry-bound]`: `EPERM` on every attempt; the call rejects with that error, and the target is still the complete previous content;
   - a test that `ENOSPC` is not retried.
 
   Verify: `npm test` passes.
-- [ ] 4.2 Add a `directorySync: boolean` option to `createConfigStore` and `createRunLedger`, defaulting to `true`. With `false`, no directory is opened, and no `DirectorySyncError` is raised or logged. `src/main/index.ts` passes `platform.conventions.directorySync`. In `test/unit/config-store.test.ts` and `test/unit/run-ledger.test.ts`, add tests that with `directorySync: false` the fake filesystem's `openDirectory` is never called and no `config.directory-sync-failed` record is logged. Verify: `npm test` passes, and `npm run lint` passes (no `process.platform` read outside the allowed modules).
-- [ ] 4.3 Document in `docs/configuration.md` that a save briefly retries when another program holds the file, and still fails cleanly with the previous file intact. Verify: `npm test` passes, including `config-docs.test.ts`.
+- [x] 4.2 Add a `directorySync: boolean` option to `createConfigStore` and `createRunLedger`, defaulting to `true`. With `false`, no directory is opened, and no `DirectorySyncError` is raised or logged. `src/main/index.ts` passes `platform.conventions.directorySync`. In `test/unit/config-store.test.ts` and `test/unit/run-ledger.test.ts`, add tests that with `directorySync: false` the fake filesystem's `openDirectory` is never called and no `config.directory-sync-failed` record is logged. Verify: `npm test` passes, and `npm run lint` passes (no `process.platform` read outside the allowed modules).
+- [x] 4.3 Document in `docs/configuration.md` that a save briefly retries when another program holds the file, and still fails cleanly with the previous file intact. Verify: `npm test` passes, including `config-docs.test.ts`.
 
 ## 5. App info and renderer
 

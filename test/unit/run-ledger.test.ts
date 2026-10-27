@@ -149,6 +149,30 @@ describe('run ledger', () => {
     expect(onDisk(configDir).entries.map((e) => e.runId)).toEqual(['new'])
   })
 
+  it('skips the directory flush when the platform cannot flush a directory', async () => {
+    const configDir = dir()
+    let opened = 0
+    const fs: ConfigFs = {
+      ...nodeConfigFs,
+      openDirectory: () => {
+        opened += 1
+        return Promise.reject(Object.assign(new Error('EISDIR: illegal operation on a directory'), { code: 'EISDIR' }))
+      },
+    }
+    const log = quietLog()
+    const errors: string[] = []
+    const ledger = createRunLedger({ dir: configDir, log, fs, directorySync: false, onWriteError: (message) => errors.push(message) })
+    await ledger.load()
+    await ledger.add(entry('a'))
+    ledger.remove('a')
+    await ledger.flush()
+    expect(onDisk(configDir)).toEqual({ version: 1, entries: [] })
+    expect(opened).toBe(0)
+    expect(errors).toEqual([])
+    expect(log.entries().map((e) => e.event)).not.toContain('ledger.write-failed')
+    expect(log.entries().map((e) => e.event)).not.toContain('config.directory-sync-failed')
+  })
+
   it('reports a damaged ledger instead of guessing its content, and keeps it for inspection', async () => {
     const configDir = dir()
     const runtime = join(configDir, 'runtime')

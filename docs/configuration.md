@@ -45,6 +45,8 @@ A valid change is saved atomically:
 3. `config.json.tmp` is renamed over `config.json`.
 4. The directory is flushed (`fsync`) so the renames survive a power loss.
 
+If a rename fails because another program briefly holds the file (for example a backup tool, a virus scanner, or a file indexer), Veydr retries it a few times, waiting a little longer each time (under half a second in total), so the save normally succeeds without you noticing. If the file is still held after the last attempt, the save fails cleanly: the change is reported as not saved, and `config.json` is still the complete previous version. Any other failure (for example a full disk) is reported at once, without retrying.
+
 If `config.json` is a symbolic link (for example, managed by a dotfile tool), the first save replaces the link with a regular file in the Veydr directory; the file the link pointed to is left as it was.
 
 If Veydr, the system, or the power fails at any point, `config.json` is either the complete previous version or the complete new version, never a mix. Saves run one at a time, in order. Only one Veydr instance runs per user session (a second launch just focuses the existing window), so there is only ever one writer.

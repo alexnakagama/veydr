@@ -1,4 +1,5 @@
 import { dirname } from 'node:path'
+import { setTimeout as delay } from 'node:timers/promises'
 import { isChmodUnsupported, isErrno, type ConfigFs } from './fs'
 
 export const FILE_MODE = 0o600
@@ -18,13 +19,65 @@ export class DirectorySyncError extends Error {
   }
 }
 
+/** How a rename that fails because another program holds the file is retried. */
+export interface RenameRetry {
+  /** Rename attempts in total, including the first: an integer of at least 1. */
+  readonly attempts: number
+  /** Wait before the second attempt, at least 0; each later wait is longer by the same amount. */
+  readonly delayMs: number
+  /** Waits `ms` milliseconds (injected by tests). */
+  readonly sleep?: (ms: number) => Promise<void>
+}
+
+/** 5 attempts, waiting 50, 100, 150, and 200 ms in between (0.5 s in total). */
+export const DEFAULT_RENAME_RETRY: RenameRetry = { attempts: 5, delayMs: 50 }
+
+/**
+ * Rename errors that mean another program briefly holds the source or target
+ * open (on Windows: an antivirus scanner, a search indexer, or an editor).
+ */
+const TRANSIENT_RENAME_ERRORS = ['EPERM', 'EBUSY', 'EACCES'] as const
+
+const isTransientRenameError = (error: unknown): boolean => TRANSIENT_RENAME_ERRORS.some((code) => isErrno(error, code))
+
 export interface AtomicWriteOptions {
   /**
    * Flush the directory after the rename (default true). A caller that writes
    * several files into one directory may skip it for all but the last write,
-   * since one directory fsync persists every rename before it.
+   * since one directory fsync persists every rename before it. Callers on a
+   * platform that cannot flush a directory always pass false.
    */
   readonly syncDirectory?: boolean
+  /** Retries of a rename that fails transiently (default `DEFAULT_RENAME_RETRY`). */
+  readonly renameRetry?: RenameRetry
+}
+
+/** Rejects a retry policy whose loop might not terminate (e.g. `attempts: NaN`) or wait sensibly. */
+function checkRenameRetry(retry: RenameRetry): void {
+  if (!Number.isInteger(retry.attempts) || retry.attempts < 1) {
+    throw new RangeError(`renameRetry.attempts must be an integer of at least 1, got ${retry.attempts}`)
+  }
+  if (!Number.isFinite(retry.delayMs) || retry.delayMs < 0) {
+    throw new RangeError(`renameRetry.delayMs must be a finite number of at least 0, got ${retry.delayMs}`)
+  }
+}
+
+/**
+ * Renames `from` over `to`, retrying only the errors in `TRANSIENT_RENAME_ERRORS`
+ * with linear backoff. Any other error, and the last attempt's error, is
+ * rethrown unchanged.
+ */
+async function renameWithRetry(fs: ConfigFs, from: string, to: string, retry: RenameRetry): Promise<void> {
+  const sleep = retry.sleep ?? ((ms: number) => delay(ms))
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      await fs.rename(from, to)
+      return
+    } catch (error) {
+      if (attempt >= retry.attempts || !isTransientRenameError(error)) throw error
+    }
+    await sleep(retry.delayMs * attempt)
+  }
 }
 
 /**
@@ -34,8 +87,12 @@ export interface AtomicWriteOptions {
  * fsync the directory. A stale `<path>.tmp` from an earlier interruption is
  * removed first; nothing else ever reads it.
  *
- * Windows needs rename retries on `EPERM`/`EBUSY` and has no directory fsync;
- * both belong to the Windows follow-up changes and are isolated here.
+ * A rename failing with `EPERM`, `EBUSY`, or `EACCES` (another program briefly
+ * holding the file, common on Windows) is retried a bounded number of times
+ * (`renameRetry`); on Linux these errors are permanent, so the same error is
+ * reported after at most the total backoff. When the rename finally fails,
+ * `path` is untouched and the complete `<path>.tmp` is left for the next write
+ * to remove.
  */
 export async function writeFileAtomic(
   fs: ConfigFs,
@@ -43,6 +100,9 @@ export async function writeFileAtomic(
   data: Uint8Array,
   options: AtomicWriteOptions = {},
 ): Promise<void> {
+  const retry = options.renameRetry ?? DEFAULT_RENAME_RETRY
+  // Checked before anything is written, so an invalid policy never leaves a temporary file.
+  checkRenameRetry(retry)
   const tmp = `${path}.tmp`
   try {
     await fs.unlink(tmp)
@@ -64,7 +124,7 @@ export async function writeFileAtomic(
   } finally {
     await file.close()
   }
-  await fs.rename(tmp, path)
+  await renameWithRetry(fs, tmp, path, retry)
 
   if (options.syncDirectory === false) return
   try {

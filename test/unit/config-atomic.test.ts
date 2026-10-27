@@ -2,8 +2,8 @@ import { readFileSync, statSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { validateConfig, type Config } from '../../src/shared/config'
-import { DirectorySyncError, writeFileAtomic } from '../../src/main/config/atomic'
-import { nodeConfigFs } from '../../src/main/config/fs'
+import { DEFAULT_RENAME_RETRY, DirectorySyncError, writeFileAtomic } from '../../src/main/config/atomic'
+import { nodeConfigFs, type ConfigFs } from '../../src/main/config/fs'
 import { createConfigStore, serializeConfig } from '../../src/main/config/store'
 import { config, FaultyFs, project, quietLog, tempDir } from './support/config'
 
@@ -23,6 +23,28 @@ function readJson(path: string): unknown {
 }
 
 const mode = (path: string): number => statSync(path).mode & 0o777
+
+const errno = (code: string): NodeJS.ErrnoException => Object.assign(new Error(`${code}: rename failed`), { code })
+
+/** The real filesystem, except that the first `times` renames fail with `code`. Counts rename attempts. */
+function failingRenames(code: string, times: number): ConfigFs & { readonly renames: number } {
+  const fs = {
+    ...nodeConfigFs,
+    renames: 0,
+    async rename(from: string, to: string) {
+      fs.renames += 1
+      if (fs.renames <= times) throw errno(code)
+      await nodeConfigFs.rename(from, to)
+    },
+  }
+  return fs
+}
+
+/** Records requested waits without waiting. */
+function recordedSleep(): { readonly waits: number[]; sleep: (ms: number) => Promise<void> } {
+  const waits: number[] = []
+  return { waits, sleep: (ms) => (waits.push(ms), Promise.resolve()) }
+}
 
 describe('writeFileAtomic', () => {
   it('writes the file with mode 0600 and leaves no temporary file', async () => {
@@ -54,6 +76,96 @@ describe('writeFileAtomic', () => {
     expect(fs.steps[7]).toMatch(/^openDirectory /)
     expect(error).toBeInstanceOf(DirectorySyncError)
     expect(readFileSync(target, 'utf8')).toBe('new')
+  })
+})
+
+describe('writeFileAtomic rename retries', () => {
+  const encode = (text: string): Uint8Array => new TextEncoder().encode(text)
+
+  function previousFile(): string {
+    const target = join(setupDir(), 'file.json')
+    writeFileSync(target, 'previous', { mode: 0o600 })
+    return target
+  }
+
+  it('[spec:config-storage/file-briefly-held-by-another-program] retries a busy rename and saves', async () => {
+    const target = previousFile()
+    const fs = failingRenames('EBUSY', 2)
+    const { waits, sleep } = recordedSleep()
+    await writeFileAtomic(fs, target, encode('new'), { renameRetry: { ...DEFAULT_RENAME_RETRY, sleep } })
+    expect(readFileSync(target, 'utf8')).toBe('new')
+    expect(fs.renames).toBe(3)
+    expect(waits).toEqual([50, 100])
+    expect(() => statSync(`${target}.tmp`)).toThrow()
+  })
+
+  it('[spec:config-storage/file-held-beyond-the-retry-bound] gives up after the last attempt and keeps the previous file', async () => {
+    const target = previousFile()
+    const fs = failingRenames('EPERM', Number.POSITIVE_INFINITY)
+    const { waits, sleep } = recordedSleep()
+    const error: unknown = await writeFileAtomic(fs, target, encode('new'), { renameRetry: { ...DEFAULT_RENAME_RETRY, sleep } }).catch(
+      (e: unknown) => e,
+    )
+    expect(error).toMatchObject({ code: 'EPERM', message: 'EPERM: rename failed' })
+    expect(fs.renames).toBe(5)
+    expect(waits).toEqual([50, 100, 150, 200])
+    expect(readFileSync(target, 'utf8')).toBe('previous')
+  })
+
+  it('retries EACCES as well', async () => {
+    const target = previousFile()
+    const fs = failingRenames('EACCES', 1)
+    const { sleep } = recordedSleep()
+    await writeFileAtomic(fs, target, encode('new'), { renameRetry: { ...DEFAULT_RENAME_RETRY, sleep } })
+    expect(readFileSync(target, 'utf8')).toBe('new')
+    expect(fs.renames).toBe(2)
+  })
+
+  it('does not retry other errors such as ENOSPC', async () => {
+    const target = previousFile()
+    const fs = failingRenames('ENOSPC', 1)
+    const { waits, sleep } = recordedSleep()
+    await expect(writeFileAtomic(fs, target, encode('new'), { renameRetry: { ...DEFAULT_RENAME_RETRY, sleep } })).rejects.toMatchObject({
+      code: 'ENOSPC',
+    })
+    expect(fs.renames).toBe(1)
+    expect(waits).toEqual([])
+    expect(readFileSync(target, 'utf8')).toBe('previous')
+  })
+
+  it('a later save succeeds after giving up, replacing the leftover temporary file', async () => {
+    const target = previousFile()
+    const { sleep } = recordedSleep()
+    const retry = { ...DEFAULT_RENAME_RETRY, sleep }
+    await expect(writeFileAtomic(failingRenames('EBUSY', Number.POSITIVE_INFINITY), target, encode('lost'), { renameRetry: retry })).rejects.toThrow('EBUSY')
+    await writeFileAtomic(nodeConfigFs, target, encode('new'), { renameRetry: retry })
+    expect(readFileSync(target, 'utf8')).toBe('new')
+    expect(() => statSync(`${target}.tmp`)).toThrow()
+  })
+
+  it('retries with the default policy when none is given', async () => {
+    const target = previousFile()
+    const fs = failingRenames('EBUSY', 1)
+    await writeFileAtomic(fs, target, encode('new'))
+    expect(fs.renames).toBe(2)
+    expect(readFileSync(target, 'utf8')).toBe('new')
+  })
+
+  it.each([
+    { attempts: 0, delayMs: 50 },
+    { attempts: -1, delayMs: 50 },
+    { attempts: 2.5, delayMs: 50 },
+    { attempts: Number.NaN, delayMs: 50 },
+    { attempts: Number.POSITIVE_INFINITY, delayMs: 50 },
+    { attempts: 5, delayMs: -1 },
+    { attempts: 5, delayMs: Number.NaN },
+  ])('rejects the retry policy $attempts attempts / $delayMs ms before writing anything', async (policy) => {
+    const target = previousFile()
+    const fs = failingRenames('EBUSY', Number.POSITIVE_INFINITY)
+    await expect(writeFileAtomic(fs, target, encode('new'), { renameRetry: policy })).rejects.toBeInstanceOf(RangeError)
+    expect(fs.renames).toBe(0)
+    expect(readFileSync(target, 'utf8')).toBe('previous')
+    expect(() => statSync(`${target}.tmp`)).toThrow()
   })
 })
 
