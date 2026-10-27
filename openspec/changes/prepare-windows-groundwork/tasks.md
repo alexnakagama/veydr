@@ -59,13 +59,13 @@ Note: `npm run spec-coverage` runs in required mode and also reads this change's
   - the `pull-request-runs-the-full-check-set` test also asserts the Windows job's typecheck, lint, and unit steps.
 
   Verify: `npm test` passes, and `actionlint` (the pinned image) reports no errors.
-- [ ] 7.4 Push the branch, open a pull request, and triage the `windows` job until it is green: fix each failing unit test or mark it Linux-only per design D7. Record in the PR description which tests were fixed and which were marked, with their reasons. Verify: the `windows` job and `ci-ok` succeed on the pull request.
+- [x] 7.4 Push the branch, open a pull request, and triage the `windows` job until it is green: fix each failing unit test or mark it Linux-only per design D7. Record in the PR description which tests were fixed and which were marked, with their reasons. Verify: the `windows` job and `ci-ok` succeed on the pull request.
 - [x] 7.5 Document the `windows` job in `docs/ci.md` (job table: command, runner, what it does not cover yet), and the `[linux-only: …]` convention. Note in `docs/deferred-checks.md` that Windows now runs typecheck, lint, and unit tests, while runtime behavior is still unverified. Verify: `npm test` passes, including the docs tests and `readme-docs.test.ts`, whose platform label is unchanged.
 
 ## 8. Integration check
 
-- [ ] 8.1 Run `npm run verify` and `npm run test:e2e` on Linux. Verify: both pass, and `spec-coverage` reports zero unmapped scenarios, including this change's new ones.
-- [ ] 8.2 Check that nothing claims Windows support: `grep -rn "Windows" README.md docs/` shows only "not yet supported" statements and the new CI notes, and `test/unit/supervisor.test.ts`'s `start-on-windows` test still passes. Verify: both checks hold, as recorded in the pull request.
+- [x] 8.1 Run `npm run verify` and `npm run test:e2e` on Linux. Verify: both pass, and `spec-coverage` reports zero unmapped scenarios, including this change's new ones.
+- [x] 8.2 Check that nothing claims Windows support: `grep -rn "Windows" README.md docs/` shows only "not yet supported" statements and the new CI notes, and `test/unit/supervisor.test.ts`'s `start-on-windows` test still passes. Verify: both checks hold, as recorded in the pull request.
 
 ## Workflow follow-up
 
