@@ -1,0 +1,8 @@
+# Check out text files with LF on every OS, so tests that compare text see the same bytes on Windows.
+* text=auto eol=lf
+
+# Byte-exact files: images, and fixtures whose bytes are what a test compares.
+*.bin binary
+*.png binary
+*.ico binary
+*.jsonl binary

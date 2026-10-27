@@ -46,8 +46,8 @@ Note: `npm run spec-coverage` runs in required mode and also reads this change's
 
 ## 6. Tooling
 
-- [ ] 6.1 Fix `scripts/verify.mjs` per design D8: run npm through `process.execPath` with `npm_execpath` when it is set; otherwise spawn `npm` with `shell: true` on Windows only. Verify: `npm run verify` on Linux still runs and reports every stage.
-- [ ] 6.2 Add `.gitattributes` with `* text=auto eol=lf` and `binary` for `*.bin`, `*.png`, `*.ico`, and `*.jsonl` fixtures. Verify: `git add --renormalize . && git status --short` shows no content changes. A fresh clone with `core.autocrlf=true` (in a temporary directory) has LF in `test/fixtures/procfs/stat-cat.txt`, and `cmp` reports no differences for `test/fixtures/procfs/cmdline-parentheses.bin`.
+- [x] 6.1 Fix `scripts/verify.mjs` per design D8: run npm through `process.execPath` with `npm_execpath` when it is set; otherwise spawn `npm` with `shell: true` on Windows only. Verify: `npm run verify` on Linux still runs and reports every stage.
+- [x] 6.2 Add `.gitattributes` with `* text=auto eol=lf` and `binary` for `*.bin`, `*.png`, `*.ico`, and `*.jsonl` fixtures. Verify: `git add --renormalize . && git status --short` shows no content changes. A fresh clone with `core.autocrlf=true` (in a temporary directory) has LF in `test/fixtures/procfs/stat-cat.txt`, and `cmp` reports no differences for `test/fixtures/procfs/cmdline-parentheses.bin`.
 
 ## 7. Windows CI lane
 
