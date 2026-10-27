@@ -1,5 +1,5 @@
 import type * as FsPromises from 'node:fs/promises'
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -32,8 +32,9 @@ afterEach(() => {
   fakeFolders.clear()
 })
 
+/** A fresh directory by its real path, the form the service stores (on Windows, `tmpdir()` may be an 8.3 short name such as `RUNNER~1`). */
 function tempDir(prefix: string): string {
-  const dir = mkdtempSync(join(tmpdir(), prefix))
+  const dir = realpathSync.native(mkdtempSync(join(tmpdir(), prefix)))
   dirs.push(dir)
   return dir
 }

@@ -291,7 +291,7 @@ A rerun of `publish` refuses to do anything if the tag exists but is not its own
 
 ## Code owners
 
-`.github/CODEOWNERS` makes the maintainer (`@alexnakagama`) the owner of everything, and names them again explicitly for `.github/` (the workflows, the setup action, Dependabot and these files) and for `scripts/release-version.mjs` (the release version logic). The explicit entries come last, so they still apply if a broader owner is added for `*` later. With **Require review from Code Owners** turned on in the `master` ruleset, a change to the pipeline cannot be merged without the maintainer's review.
+`.github/CODEOWNERS` makes the maintainer (`@alexnakagama`) the owner of everything, and names them again explicitly for `.github/` (the workflows, the setup action, Dependabot and these files) and for `scripts/release-version.mjs` (the release version logic) and `scripts/npm.mjs`, which it runs npm through. The explicit entries come last, so they still apply if a broader owner is added for `*` later. With **Require review from Code Owners** turned on in the `master` ruleset, a change to the pipeline cannot be merged without the maintainer's review.
 
 ## Pull request template
 

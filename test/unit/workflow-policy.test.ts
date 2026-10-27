@@ -837,7 +837,8 @@ describe('ci.yml (design D4)', () => {
     for (const name of checks()) expect(run.stdout).toContain(`${name}: success`)
   })
 
-  it('[spec:quality-gates/one-check-fails-or-is-skipped] fails when any check failed, was cancelled or was skipped', () => {
+  // About 40 runs of the script; starting bash and Node takes much longer on Windows than on Linux.
+  it('[spec:quality-gates/one-check-fails-or-is-skipped] fails when any check failed, was cancelled or was skipped', { timeout: 60_000 }, () => {
     for (const name of checks()) {
       for (const result of ['failure', 'cancelled', 'skipped', 'neutral', '']) {
         const run = ciOk(Object.fromEntries(checks().map((other) => [other, other === name ? result : 'success'])))
@@ -1152,7 +1153,8 @@ describe('build.yml', () => {
     expect(w.jobs.map((j) => j.name)).toEqual(['package', 'smoke'])
   })
 
-  it('[spec:release-automation/building-a-branch] builds the packages and SHA256SUMS of any ref as artifacts, and changes nothing in the repository', () => {
+  // Git Bash's sha256sum marks files as binary (`*name`); the step only ever runs on the ubuntu runner.
+  it.skipIf(process.platform !== 'linux')('[linux-only: GNU sha256sum text-mode output] [spec:release-automation/building-a-branch] builds the packages and SHA256SUMS of any ref as artifacts, and changes nothing in the repository', () => {
     // Manual only, for any branch, tag or commit.
     expect(w.triggers()).toEqual(['workflow_dispatch'])
     expect(Object.keys(w.dispatchInputs())).toEqual(['ref', 'smoke'])
@@ -1240,8 +1242,10 @@ describe('code owners and pull request template', () => {
       ['*', '@alexnakagama'],
       ['/.github/', '@alexnakagama'],
       ['/scripts/release-version.mjs', '@alexnakagama'],
+      // The release version logic runs npm through this module.
+      ['/scripts/npm.mjs', '@alexnakagama'],
     ])
-    expect(existsSync(join(root, 'scripts/release-version.mjs'))).toBe(true)
+    for (const script of ['scripts/release-version.mjs', 'scripts/npm.mjs']) expect(existsSync(join(root, script)), script).toBe(true)
   })
 
   it('asks for verify, tagged scenarios and updated docs', () => {
@@ -1256,6 +1260,9 @@ describe('code owners and pull request template', () => {
 })
 
 // release.yml (design D6, D7): a manual release on master, gated on the bumped tree, published last.
+
+/** The release version logic and the module it runs npm through, copied into the throwaway repositories. */
+const releaseScripts = ['scripts/release-version.mjs', 'scripts/npm.mjs']
 
 describe('release.yml (design D6)', () => {
   const w = loadWorkflow('.github/workflows/release.yml')
@@ -1303,7 +1310,7 @@ describe('release.yml (design D6)', () => {
   function remote(): { origin: string; source: string; clone: () => string } {
     const seed = tempDir('seed')
     mkdirSync(join(seed, 'scripts'))
-    for (const file of ['package.json', 'package-lock.json', 'scripts/release-version.mjs']) copyFileSync(join(root, file), join(seed, file))
+    for (const file of ['package.json', 'package-lock.json', ...releaseScripts]) copyFileSync(join(root, file), join(seed, file))
     git(seed, 'init', '--quiet', '--initial-branch', 'master')
     git(seed, 'add', '.')
     git(seed, 'commit', '--quiet', '--message', 'source')
@@ -1421,7 +1428,7 @@ if (args[0] === 'api') {
     // The check step, run in a repository at 0.0.0, outputs the tag for 0.1.0.
     const dir = tempDir('validate')
     mkdirSync(join(dir, 'scripts'))
-    copyFileSync(join(root, 'scripts/release-version.mjs'), join(dir, 'scripts/release-version.mjs'))
+    for (const file of releaseScripts) copyFileSync(join(root, file), join(dir, file))
     writeFileSync(join(dir, 'package.json'), '{ "name": "veydr", "version": "0.0.0" }\n')
     git(dir, 'init', '--quiet')
     const output = join(dir, 'github-output')
@@ -1591,7 +1598,7 @@ if (args[0] === 'api') {
     expect(mismatch.stdout).toContain('::error title=Tag exists::')
   })
 
-  it('[spec:release-automation/checksums-match] writes SHA256SUMS for exactly the tested packages, which sha256sum -c accepts', () => {
+  it.skipIf(process.platform !== 'linux')('[linux-only: GNU sha256sum text-mode output] [spec:release-automation/checksums-match] writes SHA256SUMS for exactly the tested packages, which sha256sum -c accepts', () => {
     const deb = 'Veydr-1.2.3-amd64.deb'
     const appimage = 'Veydr-1.2.3-x86_64.AppImage'
     const files = { [deb]: 'deb contents\n', [appimage]: 'appimage contents\n' }
