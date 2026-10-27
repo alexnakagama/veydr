@@ -221,10 +221,16 @@ function testFiles(): string[] {
     .sort()
 }
 
+let repositoryScan: { files: string[]; guards: PlatformGuard[]; violations: Violation[] } | undefined
+
+/** Every test file scanned once (parsing them all is the slow part), shared by the policy tests. */
 function scanRepository(): { files: string[]; guards: PlatformGuard[]; violations: Violation[] } {
-  const files = testFiles()
-  const results = files.map((file) => scan(file, readFileSync(join(repoRoot, file), 'utf8')))
-  return { files, guards: results.flatMap((r) => r.guards), violations: results.flatMap((r) => r.violations) }
+  if (repositoryScan === undefined) {
+    const files = testFiles()
+    const results = files.map((file) => scan(file, readFileSync(join(repoRoot, file), 'utf8')))
+    repositoryScan = { files, guards: results.flatMap((r) => r.guards), violations: results.flatMap((r) => r.violations) }
+  }
+  return repositoryScan
 }
 
 /** Whether a guard runs its test on exactly the system its reason names (and no other). */

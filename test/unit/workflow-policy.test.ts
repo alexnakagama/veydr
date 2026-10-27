@@ -993,7 +993,9 @@ describe('dependabot.yml (design D10)', () => {
 
 // nightly.yml (design D9): the slow checks on a schedule and on demand, reported in one tracking issue.
 
-describe('nightly.yml (design D9)', () => {
+// These tests run the step scripts with bash, a fake gh and git; starting those processes takes
+// several times longer on the Windows runner than on Linux. A hang still fails, after a minute.
+describe('nightly.yml (design D9)', { timeout: 60_000 }, () => {
   const w = loadWorkflow('.github/workflows/nightly.yml')
   const checks = ['perf', 'smoke', 'acceptance']
 
@@ -1264,7 +1266,9 @@ describe('code owners and pull request template', () => {
 /** The release version logic and the module it runs npm through, copied into the throwaway repositories. */
 const releaseScripts = ['scripts/release-version.mjs', 'scripts/npm.mjs']
 
-describe('release.yml (design D6)', () => {
+// These tests build git repositories and run the step scripts with bash, git and npm; starting
+// those processes takes several times longer on the Windows runner. A hang still fails, after a minute.
+describe('release.yml (design D6)', { timeout: 60_000 }, () => {
   const w = loadWorkflow('.github/workflows/release.yml')
   const gates = ['verify', 'e2e', 'package']
   const packageTests = ['smoke', 'acceptance']
