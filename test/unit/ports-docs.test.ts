@@ -19,8 +19,10 @@ describe('docs/ports.md', () => {
     expect(owners).toContain('could not be read for lack of permission')
     expect(owners).toContain("Other users' processes, which can never be read, do not count here.")
     expect(owners).toContain('When Veydr runs as root')
-    // The view explains the marker with the same words.
-    expect(view).toContain('the port belongs to another user or to the system, and Linux does not show its process to you')
+    // The view explains the marker in the same terms, without naming an operating system.
+    expect(view).toContain('the port belongs to another user or to the system, and the operating system does not show its process to you')
+    expect(view).toContain('title="Owned by another user or the system; the operating system does not show its process to you."')
+    expect(view).not.toContain('Linux does not show')
   })
 
   it('states the scope and the refresh interval of the code', () => {

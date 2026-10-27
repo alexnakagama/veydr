@@ -51,13 +51,21 @@ describe('run ledger', () => {
     expect(ledger.entries()).toEqual([])
   })
 
-  it('writes a started run at once, in a 0700 directory as a 0600 file', async () => {
+  it('writes a started run at once', async () => {
     const configDir = dir()
     const ledger = createRunLedger({ dir: configDir, log: quietLog() })
     await ledger.load()
     void ledger.add(entry('a'))
     await ledger.flush()
     expect(onDisk(configDir)).toEqual({ version: 1, entries: [entry('a')] })
+  })
+
+  it.skipIf(process.platform !== 'linux')('[linux-only: POSIX file modes] writes the ledger in a 0700 directory as a 0600 file', async () => {
+    const configDir = dir()
+    const ledger = createRunLedger({ dir: configDir, log: quietLog() })
+    await ledger.load()
+    void ledger.add(entry('a'))
+    await ledger.flush()
     expect(statSync(ledgerPath(configDir)).mode & 0o777).toBe(0o600)
     expect(statSync(join(configDir, 'runtime')).mode & 0o777).toBe(0o700)
   })
@@ -147,6 +155,30 @@ describe('run ledger', () => {
     second.remove('old')
     await second.flush()
     expect(onDisk(configDir).entries.map((e) => e.runId)).toEqual(['new'])
+  })
+
+  it('skips the directory flush when the platform cannot flush a directory', async () => {
+    const configDir = dir()
+    let opened = 0
+    const fs: ConfigFs = {
+      ...nodeConfigFs,
+      openDirectory: () => {
+        opened += 1
+        return Promise.reject(Object.assign(new Error('EISDIR: illegal operation on a directory'), { code: 'EISDIR' }))
+      },
+    }
+    const log = quietLog()
+    const errors: string[] = []
+    const ledger = createRunLedger({ dir: configDir, log, fs, directorySync: false, onWriteError: (message) => errors.push(message) })
+    await ledger.load()
+    await ledger.add(entry('a'))
+    ledger.remove('a')
+    await ledger.flush()
+    expect(onDisk(configDir)).toEqual({ version: 1, entries: [] })
+    expect(opened).toBe(0)
+    expect(errors).toEqual([])
+    expect(log.entries().map((e) => e.event)).not.toContain('ledger.write-failed')
+    expect(log.entries().map((e) => e.event)).not.toContain('config.directory-sync-failed')
   })
 
   it('reports a damaged ledger instead of guessing its content, and keeps it for inspection', async () => {

@@ -8,7 +8,7 @@ import { displayName, isLive, isPidEntry, parseBootId, parseCmdline, parseStat, 
 const captured = (name: string): Buffer => readFileSync(join(__dirname, '../fixtures/procfs', name))
 const text = (name: string): string => captured(name).toString('utf8')
 
-describe('/proc parsing (captured fixtures)', () => {
+describe.skipIf(process.platform !== 'linux')('[linux-only: /proc] /proc parsing (captured fixtures)', () => {
   it('parses a command name with spaces and parentheses', () => {
     expect(parseStat(text('stat-parentheses.txt'))).toEqual({
       pid: 108240,
@@ -89,7 +89,7 @@ describe('/proc parsing (captured fixtures)', () => {
   })
 })
 
-describe('/proc reader', () => {
+describe.skipIf(process.platform !== 'linux')('[linux-only: /proc] /proc reader', () => {
   const roots: string[] = []
   afterEach(() => {
     for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })

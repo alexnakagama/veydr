@@ -65,6 +65,11 @@ export interface RunLedgerOptions {
   readonly onWriteError?: (message: string) => void
   readonly fs?: ConfigFs
   readonly now?: () => number
+  /**
+   * Whether the platform can flush a directory (`platform.conventions.directorySync`, default
+   * true). When false, writes skip the directory flush instead of failing on it.
+   */
+  readonly directorySync?: boolean
 }
 
 const messageOf = (error: unknown): string => (error instanceof Error ? error.message : String(error))
@@ -89,12 +94,14 @@ export function ledgerPath(configDir: string): string {
 
 /**
  * The ledger at `<configDir>/runtime/ledger.json`, written atomically (`writeFileAtomic`: 0600
- * temporary file, fsync, rename, directory fsync) in a 0700 directory. Writes are serialized and
- * coalesced: each write stores the state at the moment it starts.
+ * temporary file, fsync, rename, directory fsync where the platform supports it) in a 0700
+ * directory. Writes are serialized and coalesced: each write stores the state at the moment it
+ * starts.
  */
 export function createRunLedger(options: RunLedgerOptions): RunLedger {
   const fs = options.fs ?? nodeConfigFs
   const now = options.now ?? Date.now
+  const syncDirectory = options.directorySync ?? true
   const dir = join(options.dir, LEDGER_DIR)
   const path = join(dir, LEDGER_FILE)
   const runs = new Map<string, LedgerEntry>()
@@ -126,7 +133,7 @@ export function createRunLedger(options: RunLedgerOptions): RunLedger {
       const data = new TextEncoder().encode(`${JSON.stringify({ version: 1, entries: [...runs.values()] }, null, 2)}\n`)
       try {
         await prepareDirectory()
-        await writeFileAtomic(fs, path, data)
+        await writeFileAtomic(fs, path, data, { syncDirectory })
       } catch (error) {
         options.log.record('error', 'ledger.write-failed', { path, message: messageOf(error) })
         options.onWriteError?.(messageOf(error))

@@ -1,12 +1,12 @@
 import { Fragment, useState, type FormEvent, type JSX } from 'react'
-import type { CommandInput, CommandView } from '../../shared/api'
-import { DEFAULT_STOP_TIMEOUT_MS, MAX_STOP_TIMEOUT_MS } from '../../shared/config'
+import type { AppInfo, CommandInput, CommandView } from '../../shared/api'
+import { DEFAULT_STOP_TIMEOUT_MS, envNameKey, isAbsolutePath, MAX_STOP_TIMEOUT_MS } from '../../shared/config'
 import { MIN_REDACTED_SECRET_LENGTH, REDACTION_MARKER } from '../../shared/logs/limits'
 import { Modal } from './components/Modal'
 import type { ProjectActions } from './state/actions'
 
-/** Shell offered for new shell-mode commands (design D6). */
-export const DEFAULT_SHELL = '/bin/sh'
+/** The platform conventions the editor follows, from `app.getInfo` (design D5). */
+export type EditorConventions = Pick<AppInfo, 'defaultShell' | 'envNames'>
 
 /** Shown wherever secret values are entered (spec: secret environment values masked; docs/configuration.md). */
 export const SECRET_STORAGE_DISCLOSURE =
@@ -33,7 +33,7 @@ interface EnvRow {
   readonly revealed: boolean
 }
 
-interface Draft {
+export interface Draft {
   readonly name: string
   readonly mode: 'direct' | 'shell'
   readonly file: string
@@ -49,14 +49,15 @@ interface Draft {
 let nextRowId = 1
 const rowId = (): number => nextRowId++
 
-function draftFrom(command: CommandView | null): Draft {
+/** The editor's starting state; a new shell command starts with `defaultShell`, or empty when there is none. */
+export function draftFrom(command: CommandView | null, defaultShell: string | null): Draft {
   const execution = command?.execution ?? { mode: 'direct' as const, file: '', args: [] }
   return {
     name: command?.name ?? '',
     mode: execution.mode,
     file: execution.mode === 'direct' ? execution.file : '',
     args: execution.mode === 'direct' ? execution.args.map((value) => ({ rowId: rowId(), value })) : [],
-    shell: execution.mode === 'shell' ? execution.shell : DEFAULT_SHELL,
+    shell: execution.mode === 'shell' ? execution.shell : (defaultShell ?? ''),
     script: execution.mode === 'shell' ? execution.script : '',
     cwd: command?.cwd ?? '.',
     env: (command?.env ?? []).map((entry) => ({
@@ -71,8 +72,20 @@ function draftFrom(command: CommandView | null): Draft {
   }
 }
 
-/** The request for `draft`, or a message saying what to fix. */
-function inputFrom(draft: Draft, id: string | null): CommandInput | string {
+/**
+ * `draft` with `defaultShell` filled into an empty shell field. Used when the default arrives after
+ * the editor opened (the app info was still loading); a shell the user entered is never replaced.
+ */
+export function withDefaultShell(draft: Draft, defaultShell: string | null): Draft {
+  return defaultShell !== null && draft.shell === '' ? { ...draft, shell: defaultShell } : draft
+}
+
+/**
+ * The request for `draft`, or a message saying what to fix. Main checks the same rules again; the
+ * duplicate-variable message matches its message (spec: overrides differing only in case rejected
+ * on Windows).
+ */
+export function inputFrom(draft: Draft, id: string | null, { defaultShell, envNames }: EditorConventions): CommandInput | string {
   if (draft.name.trim() === '') return 'Enter a name.'
   const seconds = Number(draft.stopTimeout)
   const stopTimeoutMs = Math.round(seconds * 1000)
@@ -81,12 +94,16 @@ function inputFrom(draft: Draft, id: string | null): CommandInput | string {
   }
   if (draft.mode === 'direct' && draft.file.trim() === '') return 'Enter the executable to run.'
   if (draft.mode === 'shell' && draft.script.trim() === '') return 'Enter the script the shell runs.'
-  if (draft.mode === 'shell' && !draft.shell.startsWith('/')) return 'The shell must be an absolute path, e.g. /bin/sh.'
+  // Surrounding spaces in the shell field are never meant (e.g. pasted text); they are dropped.
+  const shell = draft.shell.trim()
+  if (draft.mode === 'shell' && shell === '') return 'Enter the shell that runs the script.'
+  if (draft.mode === 'shell' && !isAbsolutePath(shell)) return `The shell must be an absolute path${defaultShell === null ? '' : `, e.g. ${defaultShell}`}.`
   const keys = new Set<string>()
   for (const row of draft.env) {
     if (row.key === '' || row.key.includes('=')) return 'Every variable needs a name without "=".'
-    if (keys.has(row.key)) return `The variable "${row.key}" is listed twice.`
-    keys.add(row.key)
+    const key = envNameKey(row.key, envNames)
+    if (keys.has(key)) return `Duplicate variable "${row.key}"`
+    keys.add(key)
     // A stored secret keeps its value only under its stored name, and only as a secret.
     if (row.value === null && row.key !== row.storedKey) return `Enter a value for the secret variable "${row.key}".`
     if (row.value === null && !row.secret) return `Reveal or enter the value of "${row.key}" before making it a normal variable.`
@@ -95,7 +112,7 @@ function inputFrom(draft: Draft, id: string | null): CommandInput | string {
     id,
     name: draft.name,
     // Arguments are passed exactly as entered: no trimming, splitting, or quoting.
-    execution: draft.mode === 'direct' ? { mode: 'direct', file: draft.file, args: draft.args.map((a) => a.value) } : { mode: 'shell', shell: draft.shell, script: draft.script },
+    execution: draft.mode === 'direct' ? { mode: 'direct', file: draft.file, args: draft.args.map((a) => a.value) } : { mode: 'shell', shell, script: draft.script },
     cwd: draft.cwd.trim() === '' ? '.' : draft.cwd,
     env: draft.env.map((row) => ({ key: row.key, secret: row.secret, value: row.value })),
     stopTimeoutMs,
@@ -107,16 +124,23 @@ export interface CommandEditorProps {
   readonly projectName: string
   /** `null` adds a new command. */
   readonly command: CommandView | null
+  readonly conventions: EditorConventions
   readonly actions: Pick<ProjectActions, 'saveCommand' | 'revealSecret'>
   readonly onSaved: (command: CommandView) => void
   readonly onClose: () => void
 }
 
 /** Adds or edits a command (spec: configure commands, direct and shell mode, environment overrides). */
-export function CommandEditor({ projectId, projectName, command, actions, onSaved, onClose }: CommandEditorProps): JSX.Element {
-  const [draft, setDraft] = useState<Draft>(() => draftFrom(command))
+export function CommandEditor({ projectId, projectName, command, conventions, actions, onSaved, onClose }: CommandEditorProps): JSX.Element {
+  const [draft, setDraft] = useState<Draft>(() => draftFrom(command, conventions.defaultShell))
   const [error, setError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
+  // A default shell that arrives after opening fills an empty shell field (adjusted during render, not in an effect).
+  const [appliedDefaultShell, setAppliedDefaultShell] = useState(conventions.defaultShell)
+  if (appliedDefaultShell !== conventions.defaultShell) {
+    setAppliedDefaultShell(conventions.defaultShell)
+    setDraft((d) => withDefaultShell(d, conventions.defaultShell))
+  }
   const update = (change: Partial<Draft>): void => setDraft((d) => ({ ...d, ...change }))
   const updateRow = (id: number, change: Partial<EnvRow>): void => setDraft((d) => ({ ...d, env: d.env.map((row) => (row.rowId === id ? { ...row, ...change } : row)) }))
 
@@ -133,7 +157,7 @@ export function CommandEditor({ projectId, projectName, command, actions, onSave
 
   const submit = (event: FormEvent): void => {
     event.preventDefault()
-    const input = inputFrom(draft, command?.id ?? null)
+    const input = inputFrom(draft, command?.id ?? null, conventions)
     if (typeof input === 'string') return setError(input)
     setSaving(true)
     setError(null)
@@ -144,7 +168,7 @@ export function CommandEditor({ projectId, projectName, command, actions, onSave
     })
   }
 
-  const shellLabel = `Shell command — runs through ${draft.shell === '' ? '(no shell set)' : draft.shell}`
+  const shellLabel = draft.shell.trim() === '' ? 'Shell command — enter the shell that runs it below' : `Shell command — runs through ${draft.shell.trim()}`
 
   return (
     <Modal title={command === null ? `Add command to ${projectName}` : `Edit ${command.name}`} onClose={onClose} testId="command-editor" wide>
@@ -201,7 +225,13 @@ export function CommandEditor({ projectId, projectName, command, actions, onSave
             </p>
             <label className="field">
               <span>Shell</span>
-              <input type="text" value={draft.shell} onChange={(e) => update({ shell: e.target.value })} spellCheck={false} />
+              <input
+                type="text"
+                value={draft.shell}
+                onChange={(e) => update({ shell: e.target.value })}
+                placeholder={conventions.defaultShell ?? 'Absolute path of the shell'}
+                spellCheck={false}
+              />
             </label>
             <label className="field">
               <span>Script</span>

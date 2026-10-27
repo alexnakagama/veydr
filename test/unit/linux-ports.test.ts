@@ -9,7 +9,7 @@ import { createLinuxPortInspector, type PortProcFs } from '../../src/main/platfo
 const captured = (name: string): string => readFileSync(join(__dirname, '../fixtures/procnet', name), 'utf8')
 const BOOT = '3f0c2b1a-9d8e-4c7b-a6f5-0e1d2c3b4a59'
 
-describe('/proc/net/tcp parsing (captured fixtures)', () => {
+describe.skipIf(process.platform !== 'linux')('[linux-only: /proc/net] /proc/net/tcp parsing (captured fixtures)', () => {
   it('the fixtures were captured on a little-endian host, like this one', () => {
     expect(HOST_LITTLE_ENDIAN).toBe(true)
   })
@@ -150,7 +150,7 @@ function processEntries(
 const inspector = (fs: PortProcFs, log: { record: (...args: unknown[]) => void } = { record: () => undefined }, uid = 1000) =>
   createLinuxPortInspector({ fs, uid, bootId: () => BOOT, now: () => 1_761_400_000_000, log })
 
-describe('Linux port inspector (simulated /proc with captured socket tables)', () => {
+describe.skipIf(process.platform !== 'linux')('[linux-only: /proc/net] Linux port inspector (simulated /proc with captured socket tables)', () => {
   const tables = { '/proc/net/tcp': captured('tcp.txt'), '/proc/net/tcp6': captured('tcp6.txt') }
 
   it('lists every listening socket with its holder, identified by PID and start time, and none of the connections', async () => {

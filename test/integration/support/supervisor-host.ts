@@ -35,6 +35,7 @@ const supervisor = createSupervisor({
   plan: createPlanner({
     resolver: createLinuxCommandResolver(),
     environment: { base: () => Promise.resolve({ env: withoutRuntimeVariables(process.env), warnings: [] }) },
+    envNames: 'exact',
   }),
   ledger,
   log,

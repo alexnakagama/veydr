@@ -33,14 +33,45 @@ describe('environment service', () => {
       { key: 'PORT', value: '3000', secret: false },
       { key: 'TOKEN', value: 'hunter2', secret: true },
     ]
-    expect(effectiveEnvironment(base, overrides)).toEqual({ PATH: '/usr/bin', PORT: '3000', TOKEN: 'hunter2' })
-    const preview = previewEntries(base, { env: overrides })
+    expect(effectiveEnvironment(base, overrides, 'exact')).toEqual({ PATH: '/usr/bin', PORT: '3000', TOKEN: 'hunter2' })
+    const preview = previewEntries(base, { env: overrides }, 'exact')
     expect(preview).toEqual([
       { key: 'PATH', secret: false, value: '/usr/bin', source: 'base' },
       { key: 'PORT', secret: false, value: '3000', source: 'override' },
       { key: 'TOKEN', secret: true, value: null, source: 'override' },
     ])
     expect(JSON.stringify(preview)).not.toContain('hunter2')
+  })
+
+  it('[spec:project-registry/override-differing-in-case-on-windows] replaces the base variable of any case, keeping the override name', () => {
+    const base = { Path: 'C:\\Windows', TEMP: 'C:\\Temp' }
+    const overrides = [{ key: 'PATH', value: 'C:\\Tools', secret: false }]
+    expect(effectiveEnvironment(base, overrides, 'case-insensitive')).toEqual({ PATH: 'C:\\Tools', TEMP: 'C:\\Temp' })
+    expect(previewEntries(base, { env: overrides }, 'case-insensitive')).toEqual([
+      { key: 'PATH', secret: false, value: 'C:\\Tools', source: 'override' },
+      { key: 'TEMP', secret: false, value: 'C:\\Temp', source: 'base' },
+    ])
+  })
+
+  it('[spec:project-registry/override-differing-in-case-on-linux] keeps a base variable differing from the override only in case', () => {
+    const base = { Path: '/opt/bin', TEMP: '/tmp' }
+    const overrides = [{ key: 'PATH', value: '/usr/bin', secret: false }]
+    expect(effectiveEnvironment(base, overrides, 'exact')).toEqual({ Path: '/opt/bin', PATH: '/usr/bin', TEMP: '/tmp' })
+    expect(previewEntries(base, { env: overrides }, 'exact')).toEqual([
+      { key: 'PATH', secret: false, value: '/usr/bin', source: 'override' },
+      { key: 'Path', secret: false, value: '/opt/bin', source: 'base' },
+      { key: 'TEMP', secret: false, value: '/tmp', source: 'base' },
+    ])
+  })
+
+  it('replaces every base spelling of an overridden variable and masks a secret override under a case-insensitive rule', () => {
+    const base = { Path: 'a', path: 'b', Other: 'c' }
+    const overrides = [{ key: 'PATH', value: 'secret-path', secret: true }]
+    expect(effectiveEnvironment(base, overrides, 'case-insensitive')).toEqual({ Other: 'c', PATH: 'secret-path' })
+    expect(previewEntries(base, { env: overrides }, 'case-insensitive')).toEqual([
+      { key: 'Other', secret: false, value: 'c', source: 'base' },
+      { key: 'PATH', secret: true, value: null, source: 'override' },
+    ])
   })
 })
 

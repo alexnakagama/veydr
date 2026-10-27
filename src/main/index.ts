@@ -67,7 +67,7 @@ function start(): void {
   // `userData` honors XDG_CONFIG_HOME on Linux (~/.config/Veydr by default). The single-instance
   // lock above makes this process the only configuration writer.
   const configDir = app.getPath('userData')
-  const config = createConfigStore({ dir: configDir, log })
+  const config = createConfigStore({ dir: configDir, log, directorySync: platform.conventions.directorySync })
 
   // The Vite dev server is used only by `electron-vite dev` (the flag is
   // compiled out of every other build); built and packaged apps always load
@@ -94,6 +94,7 @@ function start(): void {
   const ledger = createRunLedger({
     dir: configDir,
     log,
+    directorySync: platform.conventions.directorySync,
     onWriteError: (message) =>
       notices.add({
         kind: 'ledger-problem',
@@ -126,7 +127,7 @@ function start(): void {
     processTree: platform.processTree,
     states: processStates,
     lookup: (commandId) => findCommand(config.current(), commandId),
-    plan: createPlanner({ resolver: platform.commandResolver, environment }),
+    plan: createPlanner({ resolver: platform.commandResolver, environment, envNames: platform.conventions.envNames }),
     output: logs,
     ledger,
     log,
@@ -148,6 +149,8 @@ function start(): void {
     version: app.getVersion(),
     platform: platform.name,
     platformSupported: platform.supported,
+    defaultShell: platform.conventions.defaultShell,
+    envNames: platform.conventions.envNames,
     versions: {
       electron: process.versions.electron,
       chrome: process.versions.chrome,
@@ -165,6 +168,7 @@ function start(): void {
   const projects = createProjectService({
     store: config,
     activeCommands: () => new Set(supervisor.active().map((run) => run.commandId)),
+    envNames: platform.conventions.envNames,
   })
   const desktop = createDesktopActions({
     config: () => config.current(),
@@ -176,7 +180,19 @@ function start(): void {
   })
   registerOperations(
     registry,
-    createOperationHandlers({ info, config: () => config.current(), processStates, supervisor, recovery, projects, environment, desktop, logs, ports }),
+    createOperationHandlers({
+      info,
+      config: () => config.current(),
+      processStates,
+      supervisor,
+      recovery,
+      projects,
+      environment,
+      envNames: platform.conventions.envNames,
+      desktop,
+      logs,
+      ports,
+    }),
   )
 
   // Quitting stops every running command first (design D10); see `app/quit.ts`.

@@ -1,8 +1,19 @@
 import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
-import { describeExecution } from '../../src/renderer/src/App'
-import { CommandEditor, isUnredactableSecret, SECRET_REDACTION_NOTE, SECRET_STORAGE_DISCLOSURE, SHORT_SECRET_WARNING } from '../../src/renderer/src/CommandEditor'
+import { describeExecution, editorConventions } from '../../src/renderer/src/App'
+import {
+  CommandEditor,
+  draftFrom,
+  inputFrom,
+  withDefaultShell,
+  isUnredactableSecret,
+  SECRET_REDACTION_NOTE,
+  SECRET_STORAGE_DISCLOSURE,
+  SHORT_SECRET_WARNING,
+  type Draft,
+  type EditorConventions,
+} from '../../src/renderer/src/CommandEditor'
 import { folderName } from '../../src/renderer/src/ProjectDialogs'
 import { shortcutFor } from '../../src/renderer/src/shortcuts'
 import { createProjectActions } from '../../src/renderer/src/state/actions'
@@ -20,12 +31,16 @@ const secretCommand: CommandView = {
   stopTimeoutMs: 5000,
 }
 
-const editor = (command: CommandView | null): string =>
+const linux: EditorConventions = { defaultShell: '/bin/sh', envNames: 'exact' }
+const windows: EditorConventions = { defaultShell: null, envNames: 'case-insensitive' }
+
+const editor = (command: CommandView | null, conventions: EditorConventions = linux): string =>
   renderToStaticMarkup(
     createElement(CommandEditor, {
       projectId: '7a2e9b5d-4d2f-4f66-8b8c-1e7e2a3c0b12',
       projectName: 'shop',
       command,
+      conventions,
       actions: { saveCommand: () => Promise.reject(new Error('unused')), revealSecret: () => Promise.reject(new Error('unused')) },
       onSaved: () => undefined,
       onClose: () => undefined,
@@ -63,6 +78,64 @@ describe('command editor', () => {
     const added = editor(null)
     expect(added).toContain('Add command to shop')
     expect(added).not.toContain('Shell command — runs through')
+  })
+})
+
+describe('command editor validation', () => {
+  const shellDraft = (shell: string, conventions: EditorConventions = linux): Draft => ({ ...draftFrom(null, conventions.defaultShell), name: 'api', mode: 'shell', shell, script: 'npm run dev' })
+  const withEnv = (...keys: string[]): Draft => ({
+    ...shellDraft('/bin/sh'),
+    env: keys.map((key, index) => ({ rowId: index + 1, key, secret: false, value: '1', storedKey: null, revealed: false })),
+  })
+
+  it('accepts an absolute shell path of either syntax', () => {
+    for (const shell of ['C:\\Windows\\System32\\cmd.exe', '/bin/sh', '\\\\server\\share\\sh.exe']) {
+      const input = inputFrom(shellDraft(shell), null, linux)
+      expect(input, shell).toMatchObject({ execution: { mode: 'shell', shell, script: 'npm run dev' } })
+    }
+  })
+
+  it('drops spaces around the shell path', () => {
+    expect(inputFrom(shellDraft(' /bin/sh '), null, linux)).toMatchObject({ execution: { shell: '/bin/sh' } })
+    expect(inputFrom(shellDraft('   ', windows), null, windows)).toBe('Enter the shell that runs the script.')
+  })
+
+  it('rejects a relative shell path, naming the default shell as example only when there is one', () => {
+    expect(inputFrom(shellDraft('bin/sh'), null, linux)).toBe('The shell must be an absolute path, e.g. /bin/sh.')
+    expect(inputFrom(shellDraft('bin/sh', windows), null, windows)).toBe('The shell must be an absolute path.')
+    expect(inputFrom(shellDraft('', windows), null, windows)).toBe('Enter the shell that runs the script.')
+  })
+
+  it('starts a new shell command with the default shell from the app info, or an empty field without one', () => {
+    expect(draftFrom(null, '/bin/sh').shell).toBe('/bin/sh')
+    expect(draftFrom(null, null).shell).toBe('')
+    expect(draftFrom({ ...secretCommand, env: [] }, null).shell).toBe('/bin/bash')
+    const info = { name: 'Veydr', version: '0.0.0', platform: 'windows', platformSupported: false, versions: { electron: '1', chrome: '1', node: '1' } } as const
+    expect(editorConventions({ status: 'ready', info: { ...info, defaultShell: null, envNames: 'case-insensitive' } })).toEqual(windows)
+    expect(editorConventions({ status: 'ready', info: { ...info, platform: 'linux', platformSupported: true, defaultShell: '/bin/sh', envNames: 'exact' } })).toEqual(linux)
+    expect(editorConventions({ status: 'loading' })).toEqual({ defaultShell: null, envNames: 'exact' })
+    expect(editor(null, windows)).toContain('Add command to shop')
+  })
+
+  it('fills in a default shell that arrives after the editor opened, never replacing an entered one', () => {
+    const opened = draftFrom(null, null)
+    expect(withDefaultShell(opened, '/bin/sh').shell).toBe('/bin/sh')
+    expect(withDefaultShell({ ...opened, shell: '/bin/bash' }, '/bin/sh').shell).toBe('/bin/bash')
+    expect(withDefaultShell(opened, null)).toBe(opened)
+  })
+
+  it('labels a shell command without a shell', () => {
+    expect(editor({ ...secretCommand, execution: { mode: 'shell', shell: '/bin/zsh', script: 'x' } })).toContain('Shell command — runs through /bin/zsh')
+    expect(editor({ ...secretCommand, env: [], execution: { mode: 'shell', shell: '', script: 'x' } }, windows)).toContain('Shell command — enter the shell that runs it below')
+  })
+
+  it('flags variables that name the same variable under the platform rule, with the message main uses', () => {
+    expect(inputFrom(withEnv('PATH', 'Path'), null, windows)).toBe('Duplicate variable "Path"')
+    expect(inputFrom(withEnv('PATH', 'Path'), null, linux)).toMatchObject({ env: [{ key: 'PATH' }, { key: 'Path' }] })
+    expect(inputFrom(withEnv('PATH', 'PATH'), null, linux)).toBe('Duplicate variable "PATH"')
+    // A stored secret (value unknown here) still counts: the duplicate is reported before the secret checks.
+    const stored = { ...withEnv('TOKEN'), env: [{ rowId: 1, key: 'TOKEN', secret: true, value: null, storedKey: 'TOKEN', revealed: false }] }
+    expect(inputFrom({ ...stored, env: [...stored.env, { rowId: 2, key: 'token', secret: false, value: '1', storedKey: null, revealed: false }] }, null, windows)).toBe('Duplicate variable "token"')
   })
 })
 

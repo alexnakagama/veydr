@@ -1,5 +1,5 @@
 import type { AppInfo } from '../../shared/api'
-import type { Config } from '../../shared/config'
+import type { Config, EnvNameRule } from '../../shared/config'
 import type { LogService } from '../logs/service'
 import type { PortService } from '../ports/service'
 import type { DesktopActions } from '../projects/desktop'
@@ -22,6 +22,8 @@ export interface HandlerServices {
   readonly recovery: Pick<CrashRecovery, 'resolve'>
   readonly projects: ProjectService
   readonly environment: EnvironmentService
+  /** How the platform compares environment variable names (`PlatformConventions.envNames`). */
+  readonly envNames: EnvNameRule
   readonly desktop: DesktopActions
   readonly logs: Pick<LogService, 'read' | 'clear' | 'ack'>
   readonly ports: PortService
@@ -29,7 +31,7 @@ export interface HandlerServices {
 
 /** The handler of every operation in the contract. */
 export function createOperationHandlers(services: HandlerServices): OperationHandlers {
-  const { info, config, processStates, supervisor, recovery, projects, environment, desktop, logs, ports } = services
+  const { info, config, processStates, supervisor, recovery, projects, environment, envNames, desktop, logs, ports } = services
   return {
     app: {
       getInfo: () => info,
@@ -63,7 +65,7 @@ export function createOperationHandlers(services: HandlerServices): OperationHan
         const found = findCommand(config(), commandId)
         if (found === null) throw new NotFoundError(`Command ${commandId} does not exist`)
         const base = await (refresh ? environment.refresh() : environment.base())
-        return { entries: previewEntries(base.env, found.command), warnings: [...base.warnings] }
+        return { entries: previewEntries(base.env, found.command, envNames), warnings: [...base.warnings] }
       },
       revealSecret: ({ commandId, key }) => ({ value: projects.revealSecret(commandId, key) }),
     },

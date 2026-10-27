@@ -1,18 +1,18 @@
 # CI and releases
 
-Veydr's checks run on GitHub Actions, on GitHub-hosted `ubuntu-24.04` runners. The workflows call the same npm scripts you run locally (`npm run verify`, `npm run test:e2e`, `npm run test:packaging`, and so on) and never re-implement them, so a failure in CI can be reproduced with the same command. The requirements are in `openspec/specs/quality-gates` and `openspec/specs/release-automation`, and the decisions in the `design.md` of the archived OpenSpec change `openspec/changes/archive/2026-10-26-add-github-actions`.
+Veydr's checks run on GitHub Actions, on GitHub-hosted `ubuntu-24.04` runners; one job, `windows`, runs on `windows-2025`. The workflows call the same npm scripts you run locally (`npm run verify`, `npm run test:e2e`, `npm run test:packaging`, and so on) and never re-implement them, so a failure in CI can be reproduced with the same command. The requirements are in `openspec/specs/quality-gates` and `openspec/specs/release-automation`, and the decisions in the `design.md` of the archived OpenSpec change `openspec/changes/archive/2026-10-26-add-github-actions`.
 
 ## Pipeline overview
 
 | Workflow | Triggers | Purpose | Blocks |
 |---|---|---|---|
-| `ci.yml` | `pull_request` to `master`, `push` to `master`, `merge_group` | Quality gate: typecheck, lint, spec coverage, production audit, workflow lint, unit, integration, E2E, packaging | Merge, through the aggregate check `ci-ok` |
+| `ci.yml` | `pull_request` to `master`, `push` to `master`, `merge_group` | Quality gate: typecheck, lint, spec coverage, production audit, workflow lint, unit, integration, E2E, packaging; typecheck, lint, and unit tests also on Windows | Merge, through the aggregate check `ci-ok` |
 | `security.yml` | `pull_request`, `push` to `master`, weekly schedule | CodeQL analysis; dependency review (pull requests only) | Merge (dependency review is required; CodeQL alerts go to the Security tab) |
 | `nightly.yml` | Daily schedule, manual run with a `ref` | Performance scenarios P1–P4, `scripts/smoke-linux.sh`, `scripts/acceptance-linux.sh` | Nothing; failures are reported in one tracking issue |
 | `build.yml` | Manual run with a `ref` and a `smoke` option | Packages any ref into downloadable `.deb` and AppImage artifacts with `SHA256SUMS` | Nothing |
 | `release.yml` | Manual run with a `version` | Validates the version, runs the full gate on the bumped tree, then pushes the bump commit and tag and creates a draft release | n/a |
 
-Every job prepares the runner with the local composite action `.github/actions/setup`. It sets up Node from `.nvmrc`, installs npm 11.19.0 (the version [dependencies.md](dependencies.md) was verified with; the step fails if `npm --version` reports anything else), runs `npm ci`, and restores the npm, Electron and electron-builder caches, keyed on `package-lock.json`. Its inputs:
+Every job prepares the runner with the local composite action `.github/actions/setup`. It sets up Node from `.nvmrc`, installs npm 11.19.0 (the version [dependencies.md](dependencies.md) was verified with; the step fails if `npm --version` reports anything else), runs `npm ci`, and restores the npm, Electron and electron-builder caches, keyed on `package-lock.json`. On Windows the Electron and electron-builder cache is left out: no Windows job downloads Electron. Its inputs:
 
 | Input | Default | Effect |
 |---|---|---|
@@ -35,6 +35,7 @@ When a pull request gets a new push while its checks are still running, the olde
 | `integration` | `xvfb-run --auto-servernum npm run test:integration` | `npm run test:integration` (with `xvfb-run --auto-servernum` in front on a machine without a display) | None | 30 min |
 | `e2e` | `xvfb-run --auto-servernum npm run test:e2e` | `npm run test:e2e` (with `xvfb-run --auto-servernum` in front on a machine without a display) | `e2e-test-results`: Playwright's `test-results/`, only when the job fails, kept 7 days | 45 min |
 | `package` | `xvfb-run --auto-servernum npm run test:packaging` | `npm run test:packaging` | `linux-packages`: `dist/*.deb` and `dist/*.AppImage`, kept 7 days | 45 min |
+| `windows` | On `windows-2025`: `npm run typecheck`, `npm run lint`, `npm test` | The same commands on Windows | None | 30 min |
 | `ci-ok` | Checks the result of every job above | n/a | None | 5 min |
 
 Notes on the jobs:
@@ -48,6 +49,8 @@ Notes on the jobs:
   ```
 
 - **Electron jobs** (`integration`, `e2e`, `package`) run the setup action with `electron: "true"`, which installs Xvfb and enables unprivileged user namespaces (see [User namespaces on runners](#user-namespaces-on-runners)). On Ubuntu 24.04 or later, reproducing an E2E failure locally needs the same `sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0`; Debian 13 needs nothing.
+- **`windows` checks shared code on Windows; Windows is still not supported.** Like `static`, it runs each check even after one fails. It catches path-separator, case, and line-ending assumptions in the code and the tests before the Windows platform is implemented. It does not cover yet: integration, end-to-end, and packaging tests (they need Linux and are not run there), the unit tests that need a Linux facility (skipped, see below), and any runtime behavior, since the Windows platform still rejects every operation.
+- **Tests that need Linux are skipped with a reason.** A unit test that needs a Linux facility (`/proc`, POSIX signals, POSIX file modes, the AppImage runtime) is guarded with `describe.skipIf(process.platform !== 'linux')` or `it.skipIf(...)`, and its title starts with `[linux-only: <facility>]`, for example `'[linux-only: /proc] /proc reader'`. On Windows the runner reports it as skipped, and its title names the facility; on Linux it runs as usual. A test whose assumption is incidental, such as a path joined with `/`, is fixed instead of skipped. `test/unit/test-platform-policy.test.ts` scans every script under `test/` and fails on a platform skip (`skipIf`, `runIf`, or a conditional `skip(condition, reason)`) without such a reason, on a guard that does not run its test on exactly the system its reason names (it evaluates the condition for Linux, Windows, and macOS), and on any other branch on the platform in test code (`if`, `?:`, `&&`, `||`, `switch`), which could let a test pass without running. It checks that a reason is present, not that it names the right facility; that is for review. `[windows-only: <facility>]` with `process.platform !== 'win32'` is the counterpart for later Windows work.
 - **Downloading artifacts.** Use the run's summary page, or `gh run download <run-id> --name linux-packages`.
 
 ### `ci-ok`, the aggregate check
@@ -288,7 +291,7 @@ A rerun of `publish` refuses to do anything if the tag exists but is not its own
 
 ## Code owners
 
-`.github/CODEOWNERS` makes the maintainer (`@alexnakagama`) the owner of everything, and names them again explicitly for `.github/` (the workflows, the setup action, Dependabot and these files) and for `scripts/release-version.mjs` (the release version logic). The explicit entries come last, so they still apply if a broader owner is added for `*` later. With **Require review from Code Owners** turned on in the `master` ruleset, a change to the pipeline cannot be merged without the maintainer's review.
+`.github/CODEOWNERS` makes the maintainer (`@alexnakagama`) the owner of everything, and names them again explicitly for `.github/` (the workflows, the setup action, Dependabot and these files) and for `scripts/release-version.mjs` (the release version logic) and `scripts/npm.mjs`, which it runs npm through. The explicit entries come last, so they still apply if a broader owner is added for `*` later. With **Require review from Code Owners** turned on in the `master` ruleset, a change to the pipeline cannot be merged without the maintainer's review.
 
 ## Pull request template
 

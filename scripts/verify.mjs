@@ -1,16 +1,18 @@
 #!/usr/bin/env node
 // `npm run verify` (design D14): typecheck + lint + unit + integration + spec-coverage.
 // Every stage runs even if an earlier one fails; the exit code reflects all of them.
-import { spawnSync } from 'node:child_process'
+import { spawnNpm } from './npm.mjs'
 
 const stages = ['typecheck', 'lint', 'test', 'test:integration', 'spec-coverage']
-const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm'
 const results = []
+
+const runStage = (stage) => spawnNpm(['run', '--silent', stage], { stdio: 'inherit' })
 
 for (const stage of stages) {
   console.log(`\n=== verify: ${stage} ===`)
   const started = Date.now()
-  const run = spawnSync(npm, ['run', '--silent', stage], { stdio: 'inherit' })
+  const run = runStage(stage)
+  if (run.error) console.error(`verify: could not run ${stage}: ${run.error.message}`)
   results.push({ stage, ok: run.status === 0, seconds: ((Date.now() - started) / 1000).toFixed(1) })
 }
 

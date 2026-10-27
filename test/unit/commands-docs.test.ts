@@ -2,8 +2,9 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { LOGIN_SHELL_TIMEOUT_MS } from '../../src/main/platform/linux/environment'
+import { selectPlatform } from '../../src/main/platform'
 import { isRuntimeVariable } from '../../src/main/platform/runtime-env'
-import { DEFAULT_SHELL, SECRET_STORAGE_DISCLOSURE } from '../../src/renderer/src/CommandEditor'
+import { SECRET_STORAGE_DISCLOSURE } from '../../src/renderer/src/CommandEditor'
 
 const root = join(__dirname, '../..')
 const doc = readFileSync(join(root, 'docs/commands.md'), 'utf8')
@@ -25,7 +26,7 @@ describe('docs/commands.md', () => {
 
   it('states the timeout, default shell, and runtime variables of the code', () => {
     expect(doc).toContain(`takes longer than ${LOGIN_SHELL_TIMEOUT_MS / 1000} seconds`)
-    expect(doc).toContain(`The shell defaults to \`${DEFAULT_SHELL}\``)
+    expect(doc).toContain(`The shell defaults to \`${selectPlatform('linux').conventions.defaultShell}\``)
     const line = section('Environment').split('\n').find((l) => l.includes('runtime variables never reach')) ?? ''
     const listed = codeSpans(line.split("The shell's own")[0] ?? '')
     expect(listed.filter((name) => name !== 'ELECTRON_*')).toEqual(['NO_AT_BRIDGE', 'CHROME_DESKTOP', 'APPDIR', 'APPIMAGE', 'ARGV0', 'OWD'])

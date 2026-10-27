@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { envNameRules } from '../config/env-names'
 
 export const platformNames = ['linux', 'windows', 'unsupported'] as const
 export type PlatformName = (typeof platformNames)[number]
@@ -8,6 +9,10 @@ export const appInfoSchema = z.strictObject({
   version: z.string(),
   platform: z.enum(platformNames),
   platformSupported: z.boolean(),
+  /** Shell offered for new shell-mode commands; `null` when the user must enter one (design D5). */
+  defaultShell: z.string().min(1).nullable(),
+  /** How the platform compares environment variable names, for the editor's duplicate check. */
+  envNames: z.enum(envNameRules),
   versions: z.strictObject({
     electron: z.string(),
     chrome: z.string(),

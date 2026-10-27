@@ -23,6 +23,8 @@ const info: AppInfo = {
   version: '0.0.0',
   platform: 'linux',
   platformSupported: true,
+  defaultShell: '/bin/sh',
+  envNames: 'exact',
   versions: { electron: '44.9.3', chrome: '1', node: '24' },
 }
 const token = '11111111-1111-4111-8111-111111111111'
@@ -83,7 +85,7 @@ function setup() {
   const environment = createEnvironmentService({
     provider: { base: () => Promise.resolve({ env: { PATH: '/usr/bin', PORT: '80' }, warnings: ['login shell failed'] }) },
   })
-  const projects = createProjectService({ store, activeCommands: () => new Set(supervisor.active().map((run) => run.commandId)) })
+  const projects = createProjectService({ store, activeCommands: () => new Set(supervisor.active().map((run) => run.commandId)), envNames: 'exact' })
   const opened: string[] = []
   const desktop = {
     pickDirectory: () => Promise.resolve('/home/dev/picked'),
@@ -95,7 +97,7 @@ function setup() {
   }
   const sockets: { snapshot: PortSnapshot } = { snapshot: { takenAt: 1_761_400_000_000, ports: [] } }
   const ports = createPortService({ inspector: { list: () => Promise.resolve(sockets.snapshot) }, attribution: () => supervisor.attribution() })
-  registerOperations(registry, createOperationHandlers({ info, config: () => store.current(), processStates, supervisor, recovery, projects, environment, desktop, logs, ports }))
+  registerOperations(registry, createOperationHandlers({ info, config: () => store.current(), processStates, supervisor, recovery, projects, environment, envNames: 'exact', desktop, logs, ports }))
 
   const invoke = (channel: string, ...args: unknown[]): Promise<unknown> => {
     const listener = listeners.get(channel)

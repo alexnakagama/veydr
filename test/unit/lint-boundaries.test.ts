@@ -38,7 +38,9 @@ async function lint(files: string[]): Promise<Map<string, string[]>> {
   return new Map(results.map((r) => [r.filePath, r.messages.map((m) => m.ruleId ?? `fatal: ${m.message}`)]))
 }
 
-describe('platform boundary lint rules', () => {
+// Type-aware ESLint builds a TypeScript program per run: about 5 s on a Linux laptop, several times
+// that on the Windows runner. A hang still fails, after a minute.
+describe('platform boundary lint rules', { timeout: 60_000 }, () => {
   it('fails each violating fixture with (at least) its rule and no unrelated lint errors', async () => {
     const results = await lint(Object.keys(violations).map((f) => join(fixtures, f)))
     for (const [file, rule] of Object.entries(violations)) {

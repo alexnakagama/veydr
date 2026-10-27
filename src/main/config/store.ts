@@ -80,6 +80,12 @@ export interface ConfigStoreOptions {
   readonly fs?: ConfigFs
   readonly migrations?: Migrations
   readonly now?: () => Date
+  /**
+   * Whether the platform can flush a directory (`platform.conventions.directorySync`, default
+   * true). When false, saves and the pre-migration copy skip the directory flush, so no
+   * `config.directory-sync-failed` is logged.
+   */
+  readonly directorySync?: boolean
 }
 
 type Candidate =
@@ -108,6 +114,7 @@ export function createConfigStore(options: ConfigStoreOptions): ConfigStore {
   const fs = options.fs ?? nodeConfigFs
   const available = options.migrations ?? defaultMigrations
   const now = options.now ?? (() => new Date())
+  const syncDirectory = options.directorySync ?? true
   const { log } = options
   const paths = configPaths(options.dir)
 
@@ -200,7 +207,7 @@ export function createConfigStore(options: ConfigStoreOptions): ConfigStore {
     // One directory fsync after the primary rename also persists the backup rename.
     if (knownGood !== null) await writeFileAtomic(fs, paths.backup, knownGood, { syncDirectory: false })
     try {
-      await writeFileAtomic(fs, paths.config, bytes)
+      await writeFileAtomic(fs, paths.config, bytes, { syncDirectory })
     } catch (error) {
       if (!(error instanceof DirectorySyncError)) throw error
       log.record('warn', 'config.directory-sync-failed', { message: describe(error.cause) })
@@ -336,7 +343,7 @@ export function createConfigStore(options: ConfigStoreOptions): ConfigStore {
     try {
       const target = await uniqueTarget((stamp) => preMigrationName(fromVersion, stamp))
       try {
-        await writeFileAtomic(fs, target, candidate.bytes)
+        await writeFileAtomic(fs, target, candidate.bytes, { syncDirectory })
       } catch (error) {
         // The copy is in place; only its directory flush failed (as for a regular save).
         if (!(error instanceof DirectorySyncError)) throw error

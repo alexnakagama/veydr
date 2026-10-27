@@ -703,7 +703,7 @@ const linesContaining = (source: Source, needles: readonly string[]): string[] =
     .map((l) => `${source.path}:${l.n}: ${l.body}`)
 
 describe('ci.yml (design D4)', () => {
-  const { source: ci, lines, jobs, job, jobField, scripts, withValue, on, branches } = loadWorkflow('.github/workflows/ci.yml')
+  const { source: ci, lines, jobs, job, jobField, permissions, scripts, withValue, on, branches } = loadWorkflow('.github/workflows/ci.yml')
   /** Runs ci-ok's script as the runner does (`bash -e`), with `NEEDS` set to `needs` or left unset. */
   const runCiOk = (needs: string | undefined): { status: number | null; stdout: string } => {
     const step = stepsOf(lines, job('ci-ok')).find((s) => stepField(lines, s)('run') !== undefined)
@@ -720,7 +720,7 @@ describe('ci.yml (design D4)', () => {
 
   it('exists and has the expected jobs', () => {
     expect(ci.text).not.toBe('')
-    expect(jobs.map((j) => j.name)).toEqual(['static', 'unit', 'integration', 'e2e', 'package', 'ci-ok'])
+    expect(jobs.map((j) => j.name)).toEqual(['static', 'unit', 'integration', 'e2e', 'package', 'windows', 'ci-ok'])
   })
 
   it('never skips a check step while the job still succeeds', () => {
@@ -733,10 +733,13 @@ describe('ci.yml (design D4)', () => {
     expect(conditions('integration')).toEqual([undefined, undefined, undefined])
     expect(conditions('e2e')).toEqual([undefined, undefined, undefined, 'failure()'])
     expect(conditions('package')).toEqual([undefined, undefined, undefined, undefined])
+    expect(conditions('windows')).toEqual([undefined, undefined, guard, guard, guard])
     // The guard refers to the setup step by its id, so the setup step must keep it.
-    const setup = stepsOf(lines, job('static')).map((s) => stepField(lines, s))[1]
-    expect(setup?.('id')?.value).toBe('setup')
-    expect(setup?.('uses')?.value).toBe('./.github/actions/setup')
+    for (const name of ['static', 'windows']) {
+      const setup = stepsOf(lines, job(name)).map((s) => stepField(lines, s))[1]
+      expect(setup?.('id')?.value, name).toBe('setup')
+      expect(setup?.('uses')?.value, name).toBe('./.github/actions/setup')
+    }
   })
 
   it('uploads the E2E results on failure and the packages for seven days', () => {
@@ -774,11 +777,28 @@ describe('ci.yml (design D4)', () => {
       ['packaging', 'package', 'xvfb-run --auto-servernum npm run test:packaging'],
     ]
     for (const [check, name, command] of commands) expect(scripts(name), check).toContain(command)
+    // Typecheck, lint, and unit tests also run on Windows, against the same commit.
+    expect(jobField('windows', 'runs-on')?.value).toBe('windows-2025')
+    expect(scripts('windows')).toEqual(['npm run typecheck', 'npm run lint', 'npm test'])
     const actionlint = stepsOf(lines, job('static')).map((s) => stepField(lines, s)('uses')?.value ?? '')
     expect(actionlint).toContainEqual(expect.stringMatching(/^docker:\/\/rhysd\/actionlint@sha256:[0-9a-f]{64}$/))
     // The default checkout of a pull_request run is the merge commit; nothing overrides it, and no
     // check is allowed to fail without failing its job.
     expect(lines.filter((l) => l.kind === 'node' && (l.key === 'ref' || l.key === 'continue-on-error'))).toEqual([])
+  })
+
+  it('runs the Windows checks with read-only contents and without Electron (design D6)', () => {
+    expect(permissions('windows')).toEqual({ contents: 'read' })
+    const setup = stepsOf(lines, job('windows'))[1]
+    expect(setup).toBeDefined()
+    expect(withValue(setup ?? { start: 0, end: 0 }, 'electron')).toBeUndefined()
+    // No Windows job downloads Electron, so the setup action leaves its Linux cache out there.
+    const action = parse(githubFiles().find((f) => f.path === '.github/actions/setup/action.yml')?.text ?? '')
+    const cache = action.findIndex((l) => l.kind === 'node' && l.key === 'name' && l.value === 'Cache Electron and electron-builder downloads')
+    expect(cache).toBeGreaterThan(0)
+    expect(within(action, stepAround(action, cache))).toContainEqual(
+      expect.objectContaining({ key: 'if', value: "inputs.cache == 'true' && inputs.dependencies == 'true' && runner.os != 'Windows'" }),
+    )
   })
 
   it('[spec:quality-gates/push-to-master-runs-the-same-checks] runs the same checks on pushes to master', () => {
@@ -817,7 +837,8 @@ describe('ci.yml (design D4)', () => {
     for (const name of checks()) expect(run.stdout).toContain(`${name}: success`)
   })
 
-  it('[spec:quality-gates/one-check-fails-or-is-skipped] fails when any check failed, was cancelled or was skipped', () => {
+  // About 40 runs of the script; starting bash and Node takes much longer on Windows than on Linux.
+  it('[spec:quality-gates/one-check-fails-or-is-skipped] fails when any check failed, was cancelled or was skipped', { timeout: 60_000 }, () => {
     for (const name of checks()) {
       for (const result of ['failure', 'cancelled', 'skipped', 'neutral', '']) {
         const run = ciOk(Object.fromEntries(checks().map((other) => [other, other === name ? result : 'success'])))
@@ -972,7 +993,9 @@ describe('dependabot.yml (design D10)', () => {
 
 // nightly.yml (design D9): the slow checks on a schedule and on demand, reported in one tracking issue.
 
-describe('nightly.yml (design D9)', () => {
+// These tests run the step scripts with bash, a fake gh and git; starting those processes takes
+// several times longer on the Windows runner than on Linux. A hang still fails, after a minute.
+describe('nightly.yml (design D9)', { timeout: 60_000 }, () => {
   const w = loadWorkflow('.github/workflows/nightly.yml')
   const checks = ['perf', 'smoke', 'acceptance']
 
@@ -1132,7 +1155,8 @@ describe('build.yml', () => {
     expect(w.jobs.map((j) => j.name)).toEqual(['package', 'smoke'])
   })
 
-  it('[spec:release-automation/building-a-branch] builds the packages and SHA256SUMS of any ref as artifacts, and changes nothing in the repository', () => {
+  // Git Bash's sha256sum marks files as binary (`*name`); the step only ever runs on the ubuntu runner.
+  it.skipIf(process.platform !== 'linux')('[linux-only: GNU sha256sum text-mode output] [spec:release-automation/building-a-branch] builds the packages and SHA256SUMS of any ref as artifacts, and changes nothing in the repository', () => {
     // Manual only, for any branch, tag or commit.
     expect(w.triggers()).toEqual(['workflow_dispatch'])
     expect(Object.keys(w.dispatchInputs())).toEqual(['ref', 'smoke'])
@@ -1220,8 +1244,10 @@ describe('code owners and pull request template', () => {
       ['*', '@alexnakagama'],
       ['/.github/', '@alexnakagama'],
       ['/scripts/release-version.mjs', '@alexnakagama'],
+      // The release version logic runs npm through this module.
+      ['/scripts/npm.mjs', '@alexnakagama'],
     ])
-    expect(existsSync(join(root, 'scripts/release-version.mjs'))).toBe(true)
+    for (const script of ['scripts/release-version.mjs', 'scripts/npm.mjs']) expect(existsSync(join(root, script)), script).toBe(true)
   })
 
   it('asks for verify, tagged scenarios and updated docs', () => {
@@ -1237,7 +1263,12 @@ describe('code owners and pull request template', () => {
 
 // release.yml (design D6, D7): a manual release on master, gated on the bumped tree, published last.
 
-describe('release.yml (design D6)', () => {
+/** The release version logic and the module it runs npm through, copied into the throwaway repositories. */
+const releaseScripts = ['scripts/release-version.mjs', 'scripts/npm.mjs']
+
+// These tests build git repositories and run the step scripts with bash, git and npm; starting
+// those processes takes several times longer on the Windows runner. A hang still fails, after a minute.
+describe('release.yml (design D6)', { timeout: 60_000 }, () => {
   const w = loadWorkflow('.github/workflows/release.yml')
   const gates = ['verify', 'e2e', 'package']
   const packageTests = ['smoke', 'acceptance']
@@ -1264,16 +1295,22 @@ describe('release.yml (design D6)', () => {
   const stepNames = (job: string): string[] => w.steps(job).map((s) => w.field(s, 'name') ?? (w.field(s, 'uses') ?? '').split('@')[0] ?? '')
   const needs = (job: string): string[] => childNames(w.lines, childAt(w.lines, w.job(job).start, 'needs'))
 
+  /** Git, as the runner configures it: nothing signs, and no global identity. */
+  const gitEnv = { GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' }
+  /**
+   * Git for preparing the test repositories, with the same configuration as the steps. Without it,
+   * the machine's settings would apply, e.g. Git for Windows' system-wide `core.autocrlf=true`,
+   * which checks the clone out with CRLF while the steps compare against LF.
+   */
   const git = (cwd: string, ...args: string[]): string => {
     const result = spawnSync('git', ['-c', 'user.name=test', '-c', 'user.email=test@example.invalid', '-c', 'commit.gpgsign=false', '-c', 'tag.gpgsign=false', ...args], {
       cwd,
       encoding: 'utf8',
+      env: { ...process.env, ...gitEnv },
     })
     expect(result.status, `git ${args.join(' ')}: ${result.stderr}`).toBe(0)
     return result.stdout.trim()
   }
-  /** Git, as the runner configures it: nothing signs, and no global identity. */
-  const gitEnv = { GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' }
 
   /**
    * A bare `origin` whose master holds the project's package.json, package-lock.json and
@@ -1283,7 +1320,7 @@ describe('release.yml (design D6)', () => {
   function remote(): { origin: string; source: string; clone: () => string } {
     const seed = tempDir('seed')
     mkdirSync(join(seed, 'scripts'))
-    for (const file of ['package.json', 'package-lock.json', 'scripts/release-version.mjs']) copyFileSync(join(root, file), join(seed, file))
+    for (const file of ['package.json', 'package-lock.json', ...releaseScripts]) copyFileSync(join(root, file), join(seed, file))
     git(seed, 'init', '--quiet', '--initial-branch', 'master')
     git(seed, 'add', '.')
     git(seed, 'commit', '--quiet', '--message', 'source')
@@ -1401,7 +1438,7 @@ if (args[0] === 'api') {
     // The check step, run in a repository at 0.0.0, outputs the tag for 0.1.0.
     const dir = tempDir('validate')
     mkdirSync(join(dir, 'scripts'))
-    copyFileSync(join(root, 'scripts/release-version.mjs'), join(dir, 'scripts/release-version.mjs'))
+    for (const file of releaseScripts) copyFileSync(join(root, file), join(dir, file))
     writeFileSync(join(dir, 'package.json'), '{ "name": "veydr", "version": "0.0.0" }\n')
     git(dir, 'init', '--quiet')
     const output = join(dir, 'github-output')
@@ -1571,7 +1608,7 @@ if (args[0] === 'api') {
     expect(mismatch.stdout).toContain('::error title=Tag exists::')
   })
 
-  it('[spec:release-automation/checksums-match] writes SHA256SUMS for exactly the tested packages, which sha256sum -c accepts', () => {
+  it.skipIf(process.platform !== 'linux')('[linux-only: GNU sha256sum text-mode output] [spec:release-automation/checksums-match] writes SHA256SUMS for exactly the tested packages, which sha256sum -c accepts', () => {
     const deb = 'Veydr-1.2.3-amd64.deb'
     const appimage = 'Veydr-1.2.3-x86_64.AppImage'
     const files = { [deb]: 'deb contents\n', [appimage]: 'appimage contents\n' }

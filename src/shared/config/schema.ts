@@ -24,15 +24,26 @@ export function isAbsolutePath(value: string): boolean {
   return value.startsWith('/') || /^[A-Za-z]:[\\/]/.test(value) || value.startsWith('\\\\')
 }
 
+/** A Windows path by syntax: a drive letter followed by a separator, or a `\\` UNC prefix. */
+const WINDOWS_PATH = /^(?:[A-Za-z]:[\\/]|\\\\)/
+
 /**
- * Comparison key for project paths: trailing separators removed, so `/a/b` and `/a/b/`
- * count as the same directory. Not a full normalization: the main process stores real
- * paths (resolved symlinks, no `.`/`..`) when registering projects.
+ * Comparison key for project paths: trailing separators removed, so `/a/b` and `/a/b/` count as
+ * the same directory. A Windows path (by syntax, see `WINDOWS_PATH`) also gets `\` separators and
+ * lower case, since Windows compares paths without regard to case: `C:/Work/Shop/` and
+ * `c:\work\shop` get the same key. POSIX paths compare exactly. This is decided by syntax, not by
+ * the platform, so stored configuration validates the same everywhere (design D3).
+ *
+ * Not a full normalization: the main process stores real paths (resolved symlinks, no `.`/`..`)
+ * when registering projects. The key is only compared, never stored.
  */
 export function projectPathKey(path: string): string {
-  const trimmed = path.replace(/[\\/]+$/, '')
-  // Keep a root (`/`, `C:\`, `\\`) recognisable as such.
-  if (trimmed === '' || /^[A-Za-z]:$/.test(trimmed)) return path
+  const windows = WINDOWS_PATH.test(path)
+  const normalized = windows ? path.replaceAll('/', '\\').toLowerCase() : path
+  const trimmed = normalized.replace(/[\\/]+$/, '')
+  // Keep a root recognisable as such: `/`, `//`, and `\\` as given, a drive root as `c:\`.
+  if (trimmed === '') return normalized
+  if (windows && /^[a-z]:$/.test(trimmed)) return `${trimmed}\\`
   return trimmed
 }
 

@@ -4,3 +4,4 @@
 *                             @alexnakagama
 /.github/                     @alexnakagama
 /scripts/release-version.mjs  @alexnakagama
+/scripts/npm.mjs              @alexnakagama

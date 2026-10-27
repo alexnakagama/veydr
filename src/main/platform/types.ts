@@ -1,5 +1,6 @@
 import type { Readable } from 'node:stream'
 import type { PlatformName } from '../../shared/api'
+import type { EnvNameRule } from '../../shared/config'
 
 /** Environment as an opaque map; key comparison is platform-defined. */
 export type Env = Readonly<Record<string, string>>
@@ -168,10 +169,21 @@ export interface PlatformLog {
   record(level: 'info' | 'warn' | 'error', event: string, detail?: Record<string, unknown>): void
 }
 
+/** Platform conventions that code outside `src/main/platform` and the renderer follow (design D1). */
+export interface PlatformConventions {
+  /** How environment variable names are compared. */
+  readonly envNames: EnvNameRule
+  /** Shell for new shell-mode commands; `null` when there is no default and the user must enter one. */
+  readonly defaultShell: string | null
+  /** Whether a directory can be flushed to disk after a file in it is replaced. */
+  readonly directorySync: boolean
+}
+
 /** Everything platform-dependent, selected once by the composition root. */
 export interface Platform {
   readonly name: PlatformName
   readonly supported: boolean
+  readonly conventions: PlatformConventions
   readonly processTree: ProcessTree
   readonly commandResolver: CommandResolver
   readonly envProvider: EnvProvider

@@ -15,6 +15,7 @@ import { appendFileSync, readFileSync, realpathSync } from 'node:fs'
 import { join } from 'node:path'
 import { isDeepStrictEqual } from 'node:util'
 import { fileURLToPath } from 'node:url'
+import { spawnNpm } from './npm.mjs'
 
 export const FORMAT = 'MAJOR.MINOR.PATCH or MAJOR.MINOR.PATCH-PRERELEASE (e.g. 1.2.3 or 1.2.3-rc.1), without a leading "v" or "+build" metadata'
 
@@ -104,14 +105,18 @@ export function checkVersion({ requested, current, tags }) {
   return { ok: true, tag, prerelease: version.prerelease.length > 0 }
 }
 
-function run(command, args) {
-  const result = spawnSync(command, args, { encoding: 'utf8' })
+/** The output of a finished command; throws if it could not run or exited with an error. */
+function outputOf(description, result) {
   if (result.error !== undefined) throw result.error
   if (result.status !== 0) {
-    throw new Error(`${command} ${args.join(' ')} exited with ${result.status}: ${result.stderr.trim()}`)
+    throw new Error(`${description} exited with ${result.status}: ${result.stderr.trim()}`)
   }
   return result.stdout
 }
+
+const run = (command, args) => outputOf(`${command} ${args.join(' ')}`, spawnSync(command, args, { encoding: 'utf8' }))
+// npm through `spawnNpm`, since on Windows `npm` is a `.cmd` shim that cannot be spawned directly.
+const runNpm = (args) => outputOf(`npm ${args.join(' ')}`, spawnNpm(args, { encoding: 'utf8' }))
 
 const readJson = (file) => JSON.parse(readFileSync(join(process.cwd(), file), 'utf8'))
 
@@ -149,7 +154,7 @@ function apply(requested) {
   }
   const before = bumpedFiles.map(readJson)
   // `--ignore-scripts`: no version lifecycle script may change files or reach the network.
-  run('npm', ['version', requested, '--no-git-tag-version', '--ignore-scripts'])
+  runNpm(['version', requested, '--no-git-tag-version', '--ignore-scripts'])
   const after = bumpedFiles.map(readJson)
 
   const problems = []

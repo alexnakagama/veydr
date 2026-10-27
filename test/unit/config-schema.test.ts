@@ -131,8 +131,39 @@ describe('projectPathKey', () => {
     expect(projectPathKey('/a/b/')).toBe('/a/b')
     expect(projectPathKey('/a/b//')).toBe('/a/b')
     expect(projectPathKey('/a/b')).toBe('/a/b')
-    expect(projectPathKey('C:\\work\\')).toBe('C:\\work')
-    for (const root of ['/', '//', 'C:\\', 'C:/', '\\\\']) expect(projectPathKey(root), root).toBe(root)
+    expect(projectPathKey('C:\\work\\')).toBe('c:\\work')
+    for (const root of ['/', '//', '\\\\']) expect(projectPathKey(root), root).toBe(root)
+    for (const root of ['C:\\', 'C:/', 'c:\\\\']) expect(projectPathKey(root), root).toBe('c:\\')
+  })
+
+  it('compares Windows drive and UNC paths without regard to case or separator style', () => {
+    expect(projectPathKey('C:\\Work\\Shop')).toBe('c:\\work\\shop')
+    expect(projectPathKey('C:/Work/Shop/')).toBe('c:\\work\\shop')
+    expect(projectPathKey('\\\\Server\\Share\\Shop')).toBe('\\\\server\\share\\shop')
+  })
+
+  it('compares POSIX paths exactly, including ones that only look like Windows paths', () => {
+    expect(projectPathKey('/home/dev/Shop')).toBe('/home/dev/Shop')
+    expect(projectPathKey('/home/dev/C:\\Shop')).toBe('/home/dev/C:\\Shop')
+    expect(projectPathKey('//Server/Share')).toBe('//Server/Share')
+  })
+})
+
+describe('project path duplicates', () => {
+  const withPaths = (...paths: string[]): unknown => config(paths.map((path) => project({ path, commands: [] })))
+
+  it('[spec:project-registry/windows-path-differing-only-in-case] rejects a Windows path registered twice in different case', () => {
+    for (const [registered, again] of [
+      ['C:\\Work\\Shop', 'c:\\work\\shop'],
+      ['C:/Work/Shop/', 'c:\\work\\shop'],
+    ] as const) {
+      const issues = issuesOf(withPaths(registered, again))
+      expect(issues, `${registered} / ${again}`).toEqual([{ path: 'projects[1].path', message: 'Directory is already registered' }])
+    }
+  })
+
+  it('[spec:project-registry/posix-path-differing-only-in-case] accepts POSIX paths that differ only in case', () => {
+    expect(validateConfig(withPaths('/home/dev/Shop', '/home/dev/shop')).ok).toBe(true)
   })
 })
 
