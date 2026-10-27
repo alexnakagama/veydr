@@ -51,19 +51,35 @@ const notUtf8 = (() => {
 const invalidSchema = JSON.stringify({ schemaVersion: 1, projects: [{ id: 'x' }], settings: { editor: null } })
 
 describe('first launch', () => {
-  it('creates the directory (0700) and an empty config.json (0600) without notices', async () => {
+  it('creates the directory and an empty config.json without notices', async () => {
     const dir = setupDir()
     const result = await createConfigStore({ dir, log: quietLog() }).load()
     expect(result).toEqual({ config: emptyConfig(), status: { writable: true }, notices: [] })
     expect(files(dir)).toEqual(['config.json'])
     expect(json(dir, 'config.json')).toEqual(emptyConfig())
+  })
+
+  it.skipIf(process.platform !== 'linux')('[linux-only: POSIX file modes] creates the directory with mode 0700 and config.json with mode 0600', async () => {
+    const dir = setupDir()
+    await createConfigStore({ dir, log: quietLog() }).load()
     expect(mode(dir)).toBe(0o700)
     expect(mode(join(dir, 'config.json'))).toBe(0o600)
   })
 })
 
 describe('loading a valid configuration', () => {
-  it('loads it without writing, and tightens loose modes', async () => {
+  it('loads it without writing', async () => {
+    const dir = setupDir()
+    seed(dir, { 'config.json': good, 'config.json.bak': older })
+    const before = read(dir, 'config.json')
+
+    const result = await createConfigStore({ dir, log: quietLog() }).load()
+    expect(result).toEqual({ config: good, status: { writable: true }, notices: [] })
+    expect(read(dir, 'config.json')).toBe(before)
+    expect(files(dir)).toEqual(['config.json', 'config.json.bak'])
+  })
+
+  it.skipIf(process.platform !== 'linux')('[linux-only: POSIX file modes] loads it without writing, and tightens loose modes', async () => {
     const dir = setupDir()
     seed(dir, { 'config.json': good, 'config.json.bak': older })
     chmodSync(dir, 0o755)
@@ -81,7 +97,7 @@ describe('loading a valid configuration', () => {
 })
 
 describe('saving', () => {
-  it('keeps the previous version as config.json.bak and writes both with mode 0600', async () => {
+  it('keeps the previous version as config.json.bak', async () => {
     const dir = setupDir()
     const store = createConfigStore({ dir, log: quietLog() })
     await store.load()
@@ -90,6 +106,14 @@ describe('saving', () => {
     expect(json(dir, 'config.json')).toEqual(good)
     expect(json(dir, 'config.json.bak')).toEqual(older)
     expect(files(dir)).toEqual(['config.json', 'config.json.bak'])
+  })
+
+  it.skipIf(process.platform !== 'linux')('[linux-only: POSIX file modes] writes config.json and config.json.bak with mode 0600', async () => {
+    const dir = setupDir()
+    const store = createConfigStore({ dir, log: quietLog() })
+    await store.load()
+    await store.update(() => older)
+    await store.update(() => good)
     expect(mode(join(dir, 'config.json'))).toBe(0o600)
     expect(mode(join(dir, 'config.json.bak'))).toBe(0o600)
     expect(mode(dir)).toBe(0o700)
@@ -240,7 +264,6 @@ describe('recovery', () => {
       expect(result.notices[0]?.message).toContain(`config.corrupt-${STAMP}.json`)
       // The damaged file is kept byte for byte under a distinct name.
       expect(readFileSync(join(dir, `config.corrupt-${STAMP}.json`))).toEqual(damagedBytes)
-      expect(mode(join(dir, `config.corrupt-${STAMP}.json`))).toBe(0o600)
       // config.json is valid again; the backup is untouched.
       expect(json(dir, 'config.json')).toEqual(good)
       expect(read(dir, 'config.json.bak')).toBe(backupBefore)
@@ -253,7 +276,15 @@ describe('recovery', () => {
     })
   }
 
-  it('tightens a loose backup mode during recovery without changing its content', async () => {
+  it.skipIf(process.platform !== 'linux')('[linux-only: POSIX file modes] keeps the damaged file with mode 0600', async () => {
+    const dir = setupDir()
+    seed(dir, { 'config.json': 'not json', 'config.json.bak': good })
+    chmodSync(join(dir, 'config.json'), 0o644)
+    await createConfigStore({ dir, log: quietLog(), now: fixedNow }).load()
+    expect(mode(join(dir, `config.corrupt-${STAMP}.json`))).toBe(0o600)
+  })
+
+  it.skipIf(process.platform !== 'linux')('[linux-only: POSIX file modes] tightens a loose backup mode during recovery without changing its content', async () => {
     const dir = setupDir()
     seed(dir, { 'config.json': 'not json', 'config.json.bak': good })
     chmodSync(join(dir, 'config.json.bak'), 0o644)

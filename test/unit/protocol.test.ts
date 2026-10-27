@@ -1,17 +1,20 @@
+import { join, resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { CONTENT_SECURITY_POLICY } from '../../src/main/app/csp'
 import { createAppProtocolHandler, resolveAssetPath } from '../../src/main/app/protocol'
 
-const root = '/srv/veydr/renderer'
+// Resolved, so the expected paths have this platform's form (on Windows: a drive and `\` separators).
+const root = resolve('/srv/veydr/renderer')
+const inRoot = (...segments: string[]): string => join(root, ...segments)
 
 describe('resolveAssetPath', () => {
   it('maps bundled URLs into the renderer root', () => {
-    expect(resolveAssetPath(root, 'app://veydr/')).toBe('/srv/veydr/renderer/index.html')
-    expect(resolveAssetPath(root, 'app://veydr/index.html')).toBe('/srv/veydr/renderer/index.html')
-    expect(resolveAssetPath(root, 'app://veydr/assets/index-abc.js?x=1#y')).toBe('/srv/veydr/renderer/assets/index-abc.js')
+    expect(resolveAssetPath(root, 'app://veydr/')).toBe(inRoot('index.html'))
+    expect(resolveAssetPath(root, 'app://veydr/index.html')).toBe(inRoot('index.html'))
+    expect(resolveAssetPath(root, 'app://veydr/assets/index-abc.js?x=1#y')).toBe(inRoot('assets', 'index-abc.js'))
     // URL parsing clamps dot segments at the root, so they cannot escape it.
-    expect(resolveAssetPath(root, 'app://veydr/../../secret.html')).toBe('/srv/veydr/renderer/secret.html')
-    expect(resolveAssetPath(root, 'app://veydr/%2e%2e/%2e%2e/etc/passwd.html')).toBe('/srv/veydr/renderer/etc/passwd.html')
+    expect(resolveAssetPath(root, 'app://veydr/../../secret.html')).toBe(inRoot('secret.html'))
+    expect(resolveAssetPath(root, 'app://veydr/%2e%2e/%2e%2e/etc/passwd.html')).toBe(inRoot('etc', 'passwd.html'))
   })
 
   it('rejects foreign hosts, schemes, traversal, and unknown types', () => {
@@ -31,7 +34,7 @@ describe('resolveAssetPath', () => {
 })
 
 describe('app protocol handler', () => {
-  const files = new Map([['/srv/veydr/renderer/index.html', new TextEncoder().encode('<!doctype html>')]])
+  const files = new Map([[inRoot('index.html'), new TextEncoder().encode('<!doctype html>')]])
   const handler = createAppProtocolHandler(root, (path) => {
     const data = files.get(path)
     return data === undefined ? Promise.reject(new Error('ENOENT')) : Promise.resolve(data)

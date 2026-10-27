@@ -64,7 +64,7 @@ function entry(fields: Partial<LedgerEntry> = {}): LedgerEntry {
 
 const pids = (survivors: readonly Survivor[]): number[] => survivors.map((s) => s.identity.pid).sort((a, b) => a - b)
 
-describe('Linux identity tokens', () => {
+describe.skipIf(process.platform !== 'linux')('[linux-only: /proc boot ID] Linux identity tokens', () => {
   it('round-trips boot ID and start time', () => {
     expect(parseLinuxIdentity(id(12, 345))).toEqual({ bootId: BOOT, starttime: 345 })
     expect(parseLinuxIdentity({ pid: 12, token: 'fake:12' })).toBeNull()
@@ -72,7 +72,7 @@ describe('Linux identity tokens', () => {
   })
 })
 
-describe('findSurvivors', () => {
+describe.skipIf(process.platform !== 'linux')('[linux-only: /proc] findSurvivors', () => {
   it('finds the recorded leader, recorded descendants, and live members of the recorded session', async () => {
     const sim = new SimulatedSystem()
     sim.add(500, { starttime: 1500 })
@@ -143,7 +143,7 @@ describe('findSurvivors', () => {
   })
 })
 
-describe('terminateSurvivors', () => {
+describe.skipIf(process.platform !== 'linux')('[linux-only: /proc, POSIX signals] terminateSurvivors', () => {
   const survivor = (pid: number, starttime: number): Survivor => ({
     commandId: 'cmd',
     runId: 'run',

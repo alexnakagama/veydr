@@ -114,7 +114,7 @@ function system(): SimulatedSystem {
   return sim
 }
 
-describe('Linux process tree stop logic (simulated /proc)', () => {
+describe.skipIf(process.platform !== 'linux')('[linux-only: /proc, POSIX signals] Linux process tree stop logic (simulated /proc)', () => {
   it('[spec:process-supervision/process-could-not-be-terminated] lists processes alive after the forced stop with PID and command name', async () => {
     const sim = system()
     sim.add(501, { ignores: new Set(['SIGTERM', 'SIGKILL']) })

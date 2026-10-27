@@ -1,5 +1,5 @@
 import { mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { emptyConfig, type Config } from '../../src/shared/config'
 import { nodeConfigFs, type ConfigFs } from '../../src/main/config/fs'
@@ -59,7 +59,7 @@ function renameRecorder(): { fs: ConfigFs; renames: string[] } {
       ...nodeConfigFs,
       async rename(from, to) {
         await nodeConfigFs.rename(from, to)
-        renames.push(to.slice(to.lastIndexOf('/') + 1))
+        renames.push(basename(to))
       },
     },
   }
@@ -77,9 +77,8 @@ describe('migrating an older schema (synthetic v0 → v1 fixture)', () => {
     expect(result).toEqual({ config: migratedV0, status: { writable: true }, notices: [] })
     const preMigration = `config.pre-migration-v0-${STAMP}.json`
     expect(files(dir)).toEqual(['config.json', 'config.json.bak', preMigration])
-    // The original is kept byte for byte, with mode 0600, and was in place before config.json was replaced.
+    // The original is kept byte for byte, and was in place before config.json was replaced.
     expect(readFileSync(join(dir, preMigration))).toEqual(original)
-    expect(statSync(join(dir, preMigration)).mode & 0o777).toBe(0o600)
     expect(renames).toEqual([preMigration, 'config.json.bak', 'config.json'])
     // config.json now holds the migrated document; the backup is the previous (v0) file.
     expect(readFileSync(join(dir, 'config.json'))).toEqual(Buffer.from(serializeConfig(migratedV0)))
@@ -89,6 +88,12 @@ describe('migrating an older schema (synthetic v0 → v1 fixture)', () => {
     const again = await createConfigStore({ dir, log: quietLog(), migrations: synthetic, now: fixedNow }).load()
     expect(again).toEqual({ config: migratedV0, status: { writable: true }, notices: [] })
     expect(files(dir)).toEqual(['config.json', 'config.json.bak', preMigration])
+  })
+
+  it.skipIf(process.platform !== 'linux')('[linux-only: POSIX file modes] keeps the pre-migration copy with mode 0600', async () => {
+    const dir = setupDir({ 'config.json': fixture('v0.json') })
+    await createConfigStore({ dir, log: quietLog(), migrations: synthetic, now: fixedNow }).load()
+    expect(statSync(join(dir, `config.pre-migration-v0-${STAMP}.json`)).mode & 0o777).toBe(0o600)
   })
 
   it('migrates a v0 backup during recovery and keeps a pre-migration copy of it', async () => {
@@ -135,14 +140,14 @@ describe('migrating an older schema (synthetic v0 → v1 fixture)', () => {
   it('treats a failed directory flush after the pre-migration copy as kept', async () => {
     const original = fixture('v0.json')
     const dir = setupDir({ 'config.json': original })
+    // The first directory flush fails; the directory is never really opened, so this runs the same on every platform.
     let dirSyncs = 0
     const flakyDirSync: ConfigFs = {
       ...nodeConfigFs,
-      async openDirectory(path) {
-        const handle = await nodeConfigFs.openDirectory(path)
+      openDirectory() {
         dirSyncs += 1
-        if (dirSyncs > 1) return handle
-        return { sync: () => Promise.reject(Object.assign(new Error('EIO: i/o error'), { code: 'EIO' })), close: () => handle.close() }
+        const sync = dirSyncs > 1 ? () => Promise.resolve() : () => Promise.reject(Object.assign(new Error('EIO: i/o error'), { code: 'EIO' }))
+        return Promise.resolve({ sync, close: () => Promise.resolve() })
       },
     }
     const log = quietLog()

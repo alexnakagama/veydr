@@ -703,7 +703,7 @@ const linesContaining = (source: Source, needles: readonly string[]): string[] =
     .map((l) => `${source.path}:${l.n}: ${l.body}`)
 
 describe('ci.yml (design D4)', () => {
-  const { source: ci, lines, jobs, job, jobField, scripts, withValue, on, branches } = loadWorkflow('.github/workflows/ci.yml')
+  const { source: ci, lines, jobs, job, jobField, permissions, scripts, withValue, on, branches } = loadWorkflow('.github/workflows/ci.yml')
   /** Runs ci-ok's script as the runner does (`bash -e`), with `NEEDS` set to `needs` or left unset. */
   const runCiOk = (needs: string | undefined): { status: number | null; stdout: string } => {
     const step = stepsOf(lines, job('ci-ok')).find((s) => stepField(lines, s)('run') !== undefined)
@@ -720,7 +720,7 @@ describe('ci.yml (design D4)', () => {
 
   it('exists and has the expected jobs', () => {
     expect(ci.text).not.toBe('')
-    expect(jobs.map((j) => j.name)).toEqual(['static', 'unit', 'integration', 'e2e', 'package', 'ci-ok'])
+    expect(jobs.map((j) => j.name)).toEqual(['static', 'unit', 'integration', 'e2e', 'package', 'windows', 'ci-ok'])
   })
 
   it('never skips a check step while the job still succeeds', () => {
@@ -733,10 +733,13 @@ describe('ci.yml (design D4)', () => {
     expect(conditions('integration')).toEqual([undefined, undefined, undefined])
     expect(conditions('e2e')).toEqual([undefined, undefined, undefined, 'failure()'])
     expect(conditions('package')).toEqual([undefined, undefined, undefined, undefined])
+    expect(conditions('windows')).toEqual([undefined, undefined, guard, guard, guard])
     // The guard refers to the setup step by its id, so the setup step must keep it.
-    const setup = stepsOf(lines, job('static')).map((s) => stepField(lines, s))[1]
-    expect(setup?.('id')?.value).toBe('setup')
-    expect(setup?.('uses')?.value).toBe('./.github/actions/setup')
+    for (const name of ['static', 'windows']) {
+      const setup = stepsOf(lines, job(name)).map((s) => stepField(lines, s))[1]
+      expect(setup?.('id')?.value, name).toBe('setup')
+      expect(setup?.('uses')?.value, name).toBe('./.github/actions/setup')
+    }
   })
 
   it('uploads the E2E results on failure and the packages for seven days', () => {
@@ -774,11 +777,28 @@ describe('ci.yml (design D4)', () => {
       ['packaging', 'package', 'xvfb-run --auto-servernum npm run test:packaging'],
     ]
     for (const [check, name, command] of commands) expect(scripts(name), check).toContain(command)
+    // Typecheck, lint, and unit tests also run on Windows, against the same commit.
+    expect(jobField('windows', 'runs-on')?.value).toBe('windows-2025')
+    expect(scripts('windows')).toEqual(['npm run typecheck', 'npm run lint', 'npm test'])
     const actionlint = stepsOf(lines, job('static')).map((s) => stepField(lines, s)('uses')?.value ?? '')
     expect(actionlint).toContainEqual(expect.stringMatching(/^docker:\/\/rhysd\/actionlint@sha256:[0-9a-f]{64}$/))
     // The default checkout of a pull_request run is the merge commit; nothing overrides it, and no
     // check is allowed to fail without failing its job.
     expect(lines.filter((l) => l.kind === 'node' && (l.key === 'ref' || l.key === 'continue-on-error'))).toEqual([])
+  })
+
+  it('runs the Windows checks with read-only contents and without Electron (design D6)', () => {
+    expect(permissions('windows')).toEqual({ contents: 'read' })
+    const setup = stepsOf(lines, job('windows'))[1]
+    expect(setup).toBeDefined()
+    expect(withValue(setup ?? { start: 0, end: 0 }, 'electron')).toBeUndefined()
+    // No Windows job downloads Electron, so the setup action leaves its Linux cache out there.
+    const action = parse(githubFiles().find((f) => f.path === '.github/actions/setup/action.yml')?.text ?? '')
+    const cache = action.findIndex((l) => l.kind === 'node' && l.key === 'name' && l.value === 'Cache Electron and electron-builder downloads')
+    expect(cache).toBeGreaterThan(0)
+    expect(within(action, stepAround(action, cache))).toContainEqual(
+      expect.objectContaining({ key: 'if', value: "inputs.cache == 'true' && inputs.dependencies == 'true' && runner.os != 'Windows'" }),
+    )
   })
 
   it('[spec:quality-gates/push-to-master-runs-the-same-checks] runs the same checks on pushes to master', () => {

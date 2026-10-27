@@ -131,6 +131,34 @@ jobs:
           retention-days: 7
           if-no-files-found: error
 
+  # Typecheck, lint, and unit tests on Windows (design D6), so path, case, and line-ending assumptions
+  # surface before the Windows platform is implemented. Integration, end-to-end, and packaging tests
+  # need Linux and do not run here; unit tests that need a Linux facility are skipped with a stated
+  # reason (design D7, docs/ci.md).
+  windows:
+    name: windows
+    runs-on: windows-2025
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - id: setup
+        uses: ./.github/actions/setup
+      # As in static: each check runs even if an earlier one failed; the job fails if any does. The
+      # run steps use the runner's default shell (PowerShell); they only call npm scripts.
+      - name: Typecheck
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        run: npm run typecheck
+      - name: Lint
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        run: npm run lint
+      - name: Unit tests
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        run: npm test
+
   # The one required check. It runs whatever happened to the jobs above and fails unless every one
   # of them succeeded: a plain needs: would let a skipped or cancelled job through.
   ci-ok:
@@ -142,6 +170,7 @@ jobs:
       - integration
       - e2e
       - package
+      - windows
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions: {}

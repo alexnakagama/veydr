@@ -4,8 +4,16 @@ import { join } from 'node:path'
 import type { CommandConfig, Config, ProjectConfig } from '../../../src/shared/config'
 import { createDiagnosticLog } from '../../../src/main/app/diagnostics'
 import { nodeConfigFs, type ConfigFs, type SyncableDirectory, type WritableFile } from '../../../src/main/config/fs'
+import { selectPlatform } from '../../../src/main/platform'
 
 export const fixturesDir = join(__dirname, '../../fixtures/config')
+
+/**
+ * The conventions of the platform these tests run on, as the composition root selects them. Tests
+ * that write through the real filesystem follow them, as production does (e.g. no directory flush
+ * on Windows).
+ */
+export const hostConventions = selectPlatform().conventions
 
 export function tempDir(): { dir: string; cleanup: () => void } {
   const dir = mkdtempSync(join(tmpdir(), 'veydr-config-'))
@@ -107,17 +115,16 @@ export class FaultyFs implements ConfigFs {
       return wrapped
     })
 
+  /**
+   * Records the directory flush without opening the directory, so the step sequence is the same on
+   * every platform (Windows cannot flush a directory). The real flush is exercised by the store
+   * tests that use the real filesystem on Linux.
+   */
   openDirectory = (path: string): Promise<SyncableDirectory> =>
-    this.step(`openDirectory ${path}`, async () => {
-      const real = await nodeConfigFs.openDirectory(path)
-      this.open.push(real)
-      return {
-        sync: () => this.step(`dir.sync ${path}`, () => real.sync()),
-        close: () =>
-          this.step(`dir.close ${path}`, async () => {
-            this.open.splice(this.open.indexOf(real), 1)
-            await real.close()
-          }),
-      }
-    })
+    this.step(`openDirectory ${path}`, () =>
+      Promise.resolve({
+        sync: () => this.step(`dir.sync ${path}`, () => Promise.resolve()),
+        close: () => this.step(`dir.close ${path}`, () => Promise.resolve()),
+      }),
+    )
 }

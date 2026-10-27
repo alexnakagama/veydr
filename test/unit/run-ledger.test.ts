@@ -51,13 +51,21 @@ describe('run ledger', () => {
     expect(ledger.entries()).toEqual([])
   })
 
-  it('writes a started run at once, in a 0700 directory as a 0600 file', async () => {
+  it('writes a started run at once', async () => {
     const configDir = dir()
     const ledger = createRunLedger({ dir: configDir, log: quietLog() })
     await ledger.load()
     void ledger.add(entry('a'))
     await ledger.flush()
     expect(onDisk(configDir)).toEqual({ version: 1, entries: [entry('a')] })
+  })
+
+  it.skipIf(process.platform !== 'linux')('[linux-only: POSIX file modes] writes the ledger in a 0700 directory as a 0600 file', async () => {
+    const configDir = dir()
+    const ledger = createRunLedger({ dir: configDir, log: quietLog() })
+    await ledger.load()
+    void ledger.add(entry('a'))
+    await ledger.flush()
     expect(statSync(ledgerPath(configDir)).mode & 0o777).toBe(0o600)
     expect(statSync(join(configDir, 'runtime')).mode & 0o777).toBe(0o700)
   })
