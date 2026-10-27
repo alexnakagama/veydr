@@ -1,0 +1,522 @@
+{
+  "cmd-direct-spawn": {
+    "prediction": "yes",
+    "question": "26f4314cf2fd55ed"
+  },
+  "cmd-pathext": {
+    "prediction": "yes",
+    "question": "3a6f692c6635ade2"
+  },
+  "cmd-pathext-cwd": {
+    "prediction": "no",
+    "question": "b1d48d8bd67ebd4a"
+  },
+  "cmd-route-shell-amp": {
+    "prediction": "no",
+    "question": "1472fc8cace77378"
+  },
+  "cmd-route-shell-backslash-quote": {
+    "prediction": "no",
+    "question": "3f6a36e912ed13be"
+  },
+  "cmd-route-shell-backslash-trailing": {
+    "prediction": "yes",
+    "question": "a482e7432a190ce7"
+  },
+  "cmd-route-shell-bang-var": {
+    "prediction": "yes",
+    "question": "1db6968af9911563"
+  },
+  "cmd-route-shell-batch-params": {
+    "prediction": "yes",
+    "question": "fe9deb864e095335"
+  },
+  "cmd-route-shell-caret": {
+    "prediction": "no",
+    "question": "79cb5245f60a44c8"
+  },
+  "cmd-route-shell-carriage-return": {
+    "prediction": "no",
+    "question": "3e48ad8996ac2849"
+  },
+  "cmd-route-shell-delimiters": {
+    "prediction": "yes",
+    "question": "315a4d830a9e4524"
+  },
+  "cmd-route-shell-empty": {
+    "prediction": "no",
+    "question": "4d034ce04bd045fd"
+  },
+  "cmd-route-shell-gt": {
+    "prediction": "no",
+    "question": "b44874e3d40f4e4d"
+  },
+  "cmd-route-shell-long": {
+    "prediction": "no",
+    "question": "f4ece6f1cae9d0f9"
+  },
+  "cmd-route-shell-lt": {
+    "prediction": "no",
+    "question": "a69db27661d5ee68"
+  },
+  "cmd-route-shell-near-limit": {
+    "prediction": "yes",
+    "question": "fe312fa59d92776f"
+  },
+  "cmd-route-shell-newline": {
+    "prediction": "no",
+    "question": "5be43ac354645988"
+  },
+  "cmd-route-shell-non-ascii": {
+    "prediction": "yes",
+    "question": "634f9bc143abc1a3"
+  },
+  "cmd-route-shell-paren": {
+    "prediction": "yes",
+    "question": "0152e8ac6e13c22d"
+  },
+  "cmd-route-shell-percent-across": {
+    "prediction": "yes",
+    "question": "bdefe145a26ae150"
+  },
+  "cmd-route-shell-percent-lone": {
+    "prediction": "yes",
+    "question": "64834e04fdb0f28f"
+  },
+  "cmd-route-shell-percent-split": {
+    "prediction": "no",
+    "question": "a556171f441ef63f"
+  },
+  "cmd-route-shell-percent-substitution": {
+    "prediction": "no",
+    "question": "68a72a2f998b45d7"
+  },
+  "cmd-route-shell-percent-var": {
+    "prediction": "no",
+    "question": "1b6fbb5dc7c463b8"
+  },
+  "cmd-route-shell-pipe": {
+    "prediction": "no",
+    "question": "60672342849bd736"
+  },
+  "cmd-route-shell-plain": {
+    "prediction": "yes",
+    "question": "c2b0e0f8064f3956"
+  },
+  "cmd-route-shell-quote-embedded": {
+    "prediction": "no",
+    "question": "107959c0d73d5348"
+  },
+  "cmd-route-shell-quote-inject": {
+    "prediction": "no",
+    "question": "97ac5d67522aaf58"
+  },
+  "cmd-route-shell-quote-unbalanced": {
+    "prediction": "no",
+    "question": "e3c9dc4140027fcb"
+  },
+  "cmd-route-shell-space": {
+    "prediction": "no",
+    "question": "123836b3df166e4d"
+  },
+  "cmd-route-shell-tab": {
+    "prediction": "no",
+    "question": "17fb0163e2c0bbba"
+  },
+  "cmd-route-verbatim-amp": {
+    "prediction": "yes",
+    "question": "a917f420b9b1bf64"
+  },
+  "cmd-route-verbatim-backslash-quote": {
+    "prediction": "yes",
+    "question": "fba23436f93e05c1"
+  },
+  "cmd-route-verbatim-backslash-trailing": {
+    "prediction": "yes",
+    "question": "2e922aea83940056"
+  },
+  "cmd-route-verbatim-bang-var": {
+    "prediction": "yes",
+    "question": "a4efd2c45fa3d65f"
+  },
+  "cmd-route-verbatim-batch-params": {
+    "prediction": "yes",
+    "question": "80a10711258d4e38"
+  },
+  "cmd-route-verbatim-caret": {
+    "prediction": "yes",
+    "question": "1beb0d758f5cf34d"
+  },
+  "cmd-route-verbatim-carriage-return": {
+    "prediction": "yes",
+    "question": "8fdae519253db45c"
+  },
+  "cmd-route-verbatim-delimiters": {
+    "prediction": "yes",
+    "question": "69429d90f9705fe8"
+  },
+  "cmd-route-verbatim-empty": {
+    "prediction": "yes",
+    "question": "1db32b8235dbe121"
+  },
+  "cmd-route-verbatim-gt": {
+    "prediction": "yes",
+    "question": "b80540f18b0bcb8f"
+  },
+  "cmd-route-verbatim-long": {
+    "prediction": "yes",
+    "question": "fb72c3bc49ec8b1e"
+  },
+  "cmd-route-verbatim-lt": {
+    "prediction": "yes",
+    "question": "7bd3ebc89530449f"
+  },
+  "cmd-route-verbatim-near-limit": {
+    "prediction": "yes",
+    "question": "2472f42a7269729d"
+  },
+  "cmd-route-verbatim-newline": {
+    "prediction": "yes",
+    "question": "952eec9fb42cf145"
+  },
+  "cmd-route-verbatim-non-ascii": {
+    "prediction": "yes",
+    "question": "ab14bec334d54ad6"
+  },
+  "cmd-route-verbatim-paren": {
+    "prediction": "yes",
+    "question": "ac98dd4336fa55b8"
+  },
+  "cmd-route-verbatim-percent-across": {
+    "prediction": "yes",
+    "question": "5cfb5a01f0bf4b20"
+  },
+  "cmd-route-verbatim-percent-lone": {
+    "prediction": "yes",
+    "question": "ceb860b4fe3f2753"
+  },
+  "cmd-route-verbatim-percent-split": {
+    "prediction": "yes",
+    "question": "67eeb90f050f2372"
+  },
+  "cmd-route-verbatim-percent-substitution": {
+    "prediction": "yes",
+    "question": "842e0f04934bde15"
+  },
+  "cmd-route-verbatim-percent-var": {
+    "prediction": "yes",
+    "question": "639782be45c2fe20"
+  },
+  "cmd-route-verbatim-pipe": {
+    "prediction": "yes",
+    "question": "44f80603cb144a2e"
+  },
+  "cmd-route-verbatim-plain": {
+    "prediction": "yes",
+    "question": "7576ae001375bb6e"
+  },
+  "cmd-route-verbatim-quote-embedded": {
+    "prediction": "yes",
+    "question": "4d8bafd309c4f27b"
+  },
+  "cmd-route-verbatim-quote-inject": {
+    "prediction": "yes",
+    "question": "58ccb30bf5d8d3ac"
+  },
+  "cmd-route-verbatim-quote-unbalanced": {
+    "prediction": "yes",
+    "question": "8b01b707f51eeeaf"
+  },
+  "cmd-route-verbatim-space": {
+    "prediction": "yes",
+    "question": "01829968cb965f6c"
+  },
+  "cmd-route-verbatim-tab": {
+    "prediction": "yes",
+    "question": "a54709d3078e4572"
+  },
+  "ctx-electron-no-console": {
+    "prediction": "yes",
+    "question": "e2fb4056dce9e3a0"
+  },
+  "ctx-job": {
+    "prediction": "no",
+    "question": "de7b67d16d26b962"
+  },
+  "ctx-no-console": {
+    "prediction": "yes",
+    "question": "a6b1913058782e19"
+  },
+  "ctx-standard-user": {
+    "prediction": "yes",
+    "question": "f1c43ddf50b20c2d"
+  },
+  "electron-launch": {
+    "prediction": "yes",
+    "question": "8f9eebb4b52091e7"
+  },
+  "electron-playwright": {
+    "prediction": "yes",
+    "question": "d851b2175b0a9acc"
+  },
+  "electron-smoke-config-dir-writable": {
+    "prediction": "yes",
+    "question": "ebd349ddedb14118"
+  },
+  "electron-smoke-platform": {
+    "prediction": "no",
+    "question": "fe7ce8f175b0f867"
+  },
+  "electron-smoke-preload-bridge": {
+    "prediction": "yes",
+    "question": "0e6cd5b4f73cd15b"
+  },
+  "electron-smoke-process-sandbox": {
+    "prediction": "yes",
+    "question": "f752c194cdca5104"
+  },
+  "electron-smoke-renderer-isolation": {
+    "prediction": "yes",
+    "question": "834fb29f3f8cdc66"
+  },
+  "electron-smoke-timeout": {
+    "prediction": "yes",
+    "question": "73bfe0dae542c6df"
+  },
+  "electron-smoke-ui-loaded": {
+    "prediction": "yes",
+    "question": "8c8de0832dd2016e"
+  },
+  "enc-child-cmd-plain": {
+    "prediction": "no",
+    "question": "260da99e1defe51d"
+  },
+  "enc-child-cmd-utf8": {
+    "prediction": "yes",
+    "question": "6272172861417fa3"
+  },
+  "enc-child-node-plain": {
+    "prediction": "yes",
+    "question": "89facb1349435d7f"
+  },
+  "enc-child-node-utf8": {
+    "prediction": "yes",
+    "question": "71e56df643db7943"
+  },
+  "enc-child-python-plain": {
+    "prediction": "no",
+    "question": "8960c985a0d4d080"
+  },
+  "enc-child-python-utf8": {
+    "prediction": "yes",
+    "question": "bcb5a4c508c07be1"
+  },
+  "enc-codepages": {
+    "prediction": "no",
+    "question": "df7dc0c9a1c8910a"
+  },
+  "env-path-case": {
+    "prediction": "yes",
+    "question": "f62286ea67987cc6"
+  },
+  "env-registry": {
+    "prediction": "no",
+    "question": "a65cc6d40e7d2972"
+  },
+  "env-registry-std": {
+    "prediction": "yes",
+    "question": "a65cc6d40e7d2972"
+  },
+  "ffi-koffi-electron": {
+    "prediction": "yes",
+    "question": "f74e61a62102e1c3"
+  },
+  "helper-csc-build": {
+    "prediction": "yes",
+    "question": "afa4bb3c620f3315"
+  },
+  "helper-csc-build-std": {
+    "prediction": "yes",
+    "question": "afa4bb3c620f3315"
+  },
+  "nsis-build": {
+    "prediction": "yes",
+    "question": "317a5f208065736f"
+  },
+  "nsis-install": {
+    "prediction": "yes",
+    "question": "e64be026f0fb65de"
+  },
+  "nsis-smoke-config-dir-writable": {
+    "prediction": "yes",
+    "question": "812e1f21ef7d15ec"
+  },
+  "nsis-smoke-devtools-disabled": {
+    "prediction": "yes",
+    "question": "f4bf952b8f80290f"
+  },
+  "nsis-smoke-platform": {
+    "prediction": "no",
+    "question": "c3950c996743c4d0"
+  },
+  "nsis-smoke-preload-bridge": {
+    "prediction": "yes",
+    "question": "dc47a7b689f883bb"
+  },
+  "nsis-smoke-process-sandbox": {
+    "prediction": "yes",
+    "question": "d3d46af3a4c6cb76"
+  },
+  "nsis-smoke-renderer-isolation": {
+    "prediction": "yes",
+    "question": "eedac5f973b043eb"
+  },
+  "nsis-smoke-timeout": {
+    "prediction": "yes",
+    "question": "b7c2888897e3d335"
+  },
+  "nsis-smoke-ui-loaded": {
+    "prediction": "yes",
+    "question": "f73e6c1c2ccbf295"
+  },
+  "port-api": {
+    "prediction": "yes",
+    "question": "e5b2852274366b42"
+  },
+  "port-api-latency": {
+    "prediction": "yes",
+    "question": "af9f6387430b2f6a"
+  },
+  "port-api-std": {
+    "prediction": "yes",
+    "question": "e5b2852274366b42"
+  },
+  "port-control": {
+    "prediction": "yes",
+    "question": "b023b0dada0bbc36"
+  },
+  "port-control-std": {
+    "prediction": "yes",
+    "question": "b023b0dada0bbc36"
+  },
+  "port-netstat": {
+    "prediction": "yes",
+    "question": "6bc33bb84ed3afd7"
+  },
+  "port-owner-identity": {
+    "prediction": "yes",
+    "question": "00a02bbc837e3553"
+  },
+  "port-owner-identity-std": {
+    "prediction": "no",
+    "question": "00a02bbc837e3553"
+  },
+  "port-ps": {
+    "prediction": "yes",
+    "question": "3510151e34a0ee9f"
+  },
+  "port-ps-latency": {
+    "prediction": "no",
+    "question": "00954548e45ed7b0"
+  },
+  "port-ps-std": {
+    "prediction": "yes",
+    "question": "3510151e34a0ee9f"
+  },
+  "pt-console-window": {
+    "prediction": "yes",
+    "question": "b40e5041923c3a35"
+  },
+  "pt-control": {
+    "prediction": "yes",
+    "question": "0c6e3e365f13692f"
+  },
+  "pt-control-std": {
+    "prediction": "yes",
+    "question": "0c6e3e365f13692f"
+  },
+  "pt-ctrl-break-attach-cmd": {
+    "prediction": "yes",
+    "question": "f75d510c84849cda"
+  },
+  "pt-ctrl-break-attach-cmd-std": {
+    "prediction": "yes",
+    "question": "f75d510c84849cda"
+  },
+  "pt-ctrl-break-attach-node": {
+    "prediction": "yes",
+    "question": "5a86ed6150e254f4"
+  },
+  "pt-ctrl-break-attach-node-std": {
+    "prediction": "yes",
+    "question": "5a86ed6150e254f4"
+  },
+  "pt-ctrl-break-attach-npm": {
+    "prediction": "no",
+    "question": "70458362e2313c71"
+  },
+  "pt-ctrl-break-attach-npm-std": {
+    "prediction": "no",
+    "question": "70458362e2313c71"
+  },
+  "pt-ctrl-break-detached": {
+    "prediction": "no",
+    "question": "d2bbac5377956abf"
+  },
+  "pt-ctrl-break-direct": {
+    "prediction": "no",
+    "question": "5c4ddb48d169fff7"
+  },
+  "pt-ctrl-c": {
+    "prediction": "yes",
+    "question": "abdaf5b396c08874"
+  },
+  "pt-identity": {
+    "prediction": "yes",
+    "question": "2f0339ebd82a6a65"
+  },
+  "pt-identity-reuse": {
+    "prediction": "yes",
+    "question": "3e1b9f5ba7885b13"
+  },
+  "pt-job-race": {
+    "prediction": "no",
+    "question": "318cc440a43f6075"
+  },
+  "pt-job-terminate": {
+    "prediction": "yes",
+    "question": "4d521566e0925b1b"
+  },
+  "pt-job-terminate-std": {
+    "prediction": "yes",
+    "question": "4d521566e0925b1b"
+  },
+  "pt-kill-leader": {
+    "prediction": "no",
+    "question": "5c3d2926dd996842"
+  },
+  "pt-libuv-breakaway": {
+    "prediction": "yes",
+    "question": "d0ebbbb7d0bb8e12"
+  },
+  "pt-libuv-job": {
+    "prediction": "yes",
+    "question": "5484920a1ea580ec"
+  },
+  "pt-parent-exit-descendant": {
+    "prediction": "yes",
+    "question": "85eace1875b68194"
+  },
+  "pt-parent-exit-leader": {
+    "prediction": "no",
+    "question": "a71c48eccd22a172"
+  },
+  "pt-taskkill-orphan": {
+    "prediction": "no",
+    "question": "d9f8761b78edfd95"
+  },
+  "pt-taskkill-tree": {
+    "prediction": "yes",
+    "question": "2c9ac726a4f46bc0"
+  }
+}

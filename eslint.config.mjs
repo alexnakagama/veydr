@@ -101,7 +101,7 @@ export default defineConfig(
   {
     languageOptions: {
       parserOptions: {
-        projectService: { allowDefaultProject: ['*.mjs', 'scripts/*.mjs', 'test/e2e/support/*.cjs'] },
+        projectService: { allowDefaultProject: ['*.mjs', 'scripts/*.mjs', 'scripts/windows-probe/*.mjs', 'test/e2e/support/*.cjs'] },
         tsconfigRootDir: import.meta.dirname,
       },
     },

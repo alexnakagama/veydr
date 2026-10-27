@@ -93,10 +93,10 @@ Each check's predicted answer, `yes` or `no`, is recorded in `scripts/windows-pr
 
 Git history alone would not show a prediction edited later, so that is made explicit:
 
-- The first pull request also commits a snapshot of every prediction, `test/windows-probe/predictions.json`. It never changes afterwards, and `docs/windows-evidence.md` names the commit that added it.
-- A prediction changed afterwards must also be listed in `checks.mjs` under `revisions`, with the original prediction, the new one, the reason, and the date. The summary prints such a check's status as revised.
+- The first pull request also commits a snapshot of every prediction, with a hash of its question, `test/windows-probe/predictions.json`. It never changes afterwards, and `docs/windows-evidence.md` names the commit that added it.
+- A change afterwards must also be listed in `checks.mjs` under `REVISIONS`, with the reason and the date: a changed prediction (original and new), a reworded question (old and new hash), a check added later (its prediction and question hash), or a check removed (the prediction it had). The summary prints such a check's status as revised.
 - The summary header records the hash of `checks.mjs`.
-- A unit test fails if a prediction in `checks.mjs` differs from the snapshot without a matching `revisions` entry. It also fails if a check was added without being in the snapshot and without a `revisions` entry marking it as added later.
+- A unit test fails if a prediction or question in `checks.mjs` differs from the snapshot without a matching `REVISIONS` entry. It also fails if a check was added or removed without a `REVISIONS` entry recording it.
 
 The snapshot needs no git history. That matters because CI checks out a single commit (`actions/checkout` with its default depth), so a comparison with an older commit could not run there. Editing the snapshot itself would show up in the pull request's diff, where the evidence is reviewed.
 
@@ -107,16 +107,18 @@ Unless a row says otherwise, checks run from a console-less parent, as administr
 | Context | `ctx-no-console` | Control: does the probe driver have no console, like Electron's main process (D9)? | all probes |
 | | `ctx-standard-user` | Control: is the `-std` driver's token unelevated and outside Administrators (D9)? | all `-std` checks |
 | | `ctx-job` | Is the probe driver outside any Job Object, as Veydr is when started from Explorer? Predicted `no`: the runner probably runs steps inside a job of its own. `data` records the driver's job membership (`IsProcessInJob` with no job handle) and, if possible, the job's limits. If the answer is `no`, every process-tree conclusion is labelled "measured inside a job" (D7). | process-tree, Helper |
-| Process tree | `pt-libuv-job` | Is a child spawned with `child_process.spawn` inside a Job Object that the driver did not create (libuv's own job), per `IsProcessInJob`? | W1 |
+| Process tree | `pt-control` | Control: does every stop method the probe uses end a single plain child that has no descendants? *Also as a standard user.* A failure invalidates the area's results for that account. | all process-tree checks |
+| | `pt-libuv-job` | Is a child spawned with `child_process.spawn` inside a Job Object that the driver did not create (libuv's own job), per `IsProcessInJob`? | W1 |
 | | `pt-libuv-breakaway` | Can a grandchild started with `CREATE_BREAKAWAY_FROM_JOB` leave libuv's job? `data` records the job's limit flags, where readable. | W1 |
 | | `pt-kill-leader` | After `child.kill()` (TerminateProcess on the leader), are the leader's descendants ended too? | W1 |
 | | `pt-taskkill-tree` | Does `taskkill /T /F` on a live leader end every descendant? | W1, G-4 |
 | | `pt-taskkill-orphan` | Does `taskkill /T /F` on the leader also end a grandchild whose parent already exited? | W1, G-4 |
 | | `pt-job-terminate` | Does an own Job Object, assigned right after spawn, contain all later descendants, including orphans, and does `TerminateJobObject` end them all? *Also as a standard user.* | W1, G-4 |
-| | `pt-parent-exit` | When the spawning process is killed (as a crash would end Veydr), do its children and grandchildren keep running? This decides whether crash recovery on Windows finds survivors, as on Linux, or whether libuv's job ends them (`process-supervision` crash scenarios). | W1 |
+| | `pt-parent-exit-leader` | When the spawning process is killed with `TerminateProcess` (as a crash would end Veydr), does its direct child (the leader) keep running? | W1 |
+| | `pt-parent-exit-descendant` | When the spawning process is killed that way, does a grandchild started by its leader keep running? Together with `-leader`, this decides whether crash recovery on Windows must find survivors, as on Linux (`process-supervision` crash scenarios). | W1 |
 | | `pt-job-race` | Is a grandchild created between spawn and job assignment still contained by the job? `data` also records whether a suspended start (from the helper) closes the gap. | W1, G-4 |
 | | `pt-ctrl-break-direct` | From the console-less parent, does `GenerateConsoleCtrlEvent(CTRL_BREAK)` reach a child started in a new process group? (Expected not to, since they share no console; a `PASS` would change D5.) | W1 graceful stop |
-| | `pt-ctrl-break-attach` | For children started the way W1 would start them (`windowsHide: true`, not `detached`, so each has a hidden console of its own): does a helper make `node`, `npm run`, and `cmd /c` children exit gracefully, while the driver keeps running? The helper first ignores console events itself (`SetConsoleCtrlHandler(NULL, TRUE)`), then calls `FreeConsole`, `AttachConsole(childPid)`, and `GenerateConsoleCtrlEvent(CTRL_BREAK, 0)`. Event 0 reaches every process on that console, so the helper must not react to it. *Also as a standard user.* | W1 graceful stop, G-4 |
+| | `pt-ctrl-break-attach-<child>` | For a child started the way W1 would start it (`windowsHide: true`, not `detached`, so it has a hidden console of its own): does a helper stop it gracefully, while the driver keeps running? One check per child: `node` running a script, `npm run` of a package script (through `npm.cmd`), and `cmd /c` running the script. Graceful means the script's SIGBREAK handler writes its marker and the child's whole tree exits within 5 s. The helper first ignores console events itself (`SetConsoleCtrlHandler(NULL, TRUE)`), then calls `FreeConsole`, `AttachConsole(childPid)`, and `GenerateConsoleCtrlEvent(CTRL_BREAK, 0)`. Event 0 reaches every process on that console, so the helper must not react to it. *Also as a standard user.* | W1 graceful stop, G-4 |
 | | `pt-ctrl-break-detached` | Can the helper reach a child started with `detached: true` (no console of its own)? Predicted no: such a child cannot be stopped gracefully, so W1 must not start commands detached. | W1 |
 | | `pt-ctrl-c` | Is Ctrl+C ignored in a new process group, as documented? | W1 graceful stop |
 | | `pt-console-window` | With `windowsHide: true`, does a console child of the console-less parent get a console without a visible window? `data` also records the case without `windowsHide`. Visibility needs a desktop session; it is `NOT-TESTABLE` if the runner has none. | W1, W2 |
@@ -124,22 +126,24 @@ Unless a row says otherwise, checks run from a console-less parent, as administr
 | | `pt-identity-reuse` | When a PID is reused, does the new process have a different creation time? Windows decides when a PID is reused, so the probe spawns and ends short-lived processes up to a fixed bound (1,000 or 60 s). If no PID recurs, the result is `NOT-TESTABLE`, and W1 relies on the documented guarantee, which it states as such. | W1 identity |
 | Helper | `helper-csc-build` | Does `csc.exe` from .NET Framework 4.8 compile a minimal C# helper, and does that helper, started from the console-less parent, create a Job Object, assign a child, and end it? *Also as a standard user.* | G-4 option C |
 | Commands | `cmd-direct-spawn` | Is spawning `x.cmd` without a shell refused with `EINVAL` (CVE-2024-27980 hardening)? | W2 |
-| | `cmd-route-<route>-<case>` | For each route, does each corpus case arrive unchanged in the Node program behind an `npm.cmd`-style shim, with no injected command run? The routes are Node's `shell: true`, and `cmd.exe /d /s /c` with verbatim arguments and the candidate quoting of `scripts/windows-probe/cmd-quote.mjs`. | W2 |
+| | `cmd-route-<route>-<case>` | For each route, does each corpus case arrive unchanged in the Node program behind an `npm.cmd`-style shim, with no injected command run? The routes are Node's `shell: true`, and `cmd.exe /d /v:off /s /c` with verbatim arguments and the candidate quoting of `scripts/windows-probe/cmd-quote.mjs`. For a case cmd.exe cannot carry unchanged (a line break, or a line beyond 8191 characters once escaped), the verbatim route's question is instead whether the candidate refuses it before spawning. | W2 |
 | | `cmd-pathext` | Is `npm` resolved to `npm.cmd` through `PATH` and `PATHEXT`? `data` records `PATHEXT` and its order. | W2 |
 | | `cmd-pathext-cwd` | When the working directory holds an `npm.cmd` decoy that is not on `PATH`, is the decoy left unused by `cmd.exe /d /s /c npm`? `data` records whether `NoDefaultCurrentDirectoryInExePath` is set. | W2 |
-| Environment | `env-registry` | For every variable defined both in the registry environment (user over machine, with `REG_EXPAND_SZ` expanded) and in the driver's inherited environment, are the values equal? `data` records the names, not the values, of variables found in only one of them or with different values. *Also as a standard user.* | W2 |
+| Environment | `env-registry` | For every variable defined both in the registry environment (user over machine, except `Path`, which is the machine value followed by the user value; `REG_EXPAND_SZ` expanded) and in the driver's inherited environment, are the values equal? `data` records the names, not the values, of variables found in only one of them or with different values. *Also as a standard user.* | W2 |
 | | `env-path-case` | When `child_process.spawn` gets an environment whose only path variable is spelled `PATH` (what the groundwork's case-insensitive merge produces from an inherited `Path`), does the child see exactly one path variable, with that value? `data` records the inherited spelling, and what the child sees when the environment holds both `Path` and `PATH` (what an exact merge would produce). The merge function itself is unit-tested on the Windows CI lane; this checks the OS and Node side. | W2 |
 | Encoding | `enc-codepages` | Is the console output code page of a console child of the console-less parent UTF-8 (65001) without any `chcp`? `data` records `GetACP`, `GetOEMCP`, and `GetConsoleOutputCP`, with and without `windowsHide`. | W2 |
 | | `enc-child-<tool>-<variant>` | Does `<tool>`'s output of a fixed non-ASCII test string arrive as valid UTF-8 that decodes to that exact string? Tools: `cmd` (`echo`), `node`, `python` (`NOT-TESTABLE` if not installed). Variants: `plain`, and `utf8` (`chcp 65001` first, or `PYTHONUTF8=1` for Python). `data` records the raw bytes as hex. | W2 |
-| Ports | `port-netstat` | Does `netstat -ano` list a known listener on `127.0.0.1`, `::1`, and `0.0.0.0` with its PID? | W3 |
+| Ports | `port-control` | Control: does at least one method list the helper's own listening sockets with its PID? *Also as a standard user.* A failure invalidates the area's results for that account. | all ports checks |
+| | `port-netstat` | Does `netstat -ano` list a known listener on `127.0.0.1`, `::1`, and `0.0.0.0` with its PID? | W3 |
 | | `port-ps` | Does `Get-NetTCPConnection` list each of those listeners with its PID? *Also as a standard user.* | W3 |
 | | `port-api` | Does `GetExtendedTcpTable` (P/Invoke) list each of those listeners with its PID? *Also as a standard user.* | W3, G-4 |
 | | `port-ps-latency`, `port-api-latency` | Is the median of 10 calls at most 300 ms, and the slowest at most 1 s? The Ports view refreshes every 3 s (`PORTS_POLL_INTERVAL_MS`), so 300 ms is a tenth of the interval. `data` records every call's duration. Measured as a standard user. | W3 |
 | | `port-owner-identity` | Can the probe read the owning process's name and creation time for every listener on the machine? `data` lists the owners it cannot open, e.g. PID 4 and services. *Also as a standard user*, the case Veydr's users are in. | W3 |
 | Electron | `electron-launch` | Does the built app start on the runner, and does `--smoke-test` print its `VEYDR_SMOKE_TEST` report? | W1–W4 CI |
-| | `electron-smoke-<check>` | Did the smoke test's check `<check>` pass? One line per check in the report (`process-sandbox`, `ui-loaded`, `preload-bridge`, …). `electron-smoke-platform` is predicted no: the Windows platform is unsupported, so the smoke test's overall `fail` is expected and is not evidence against Electron. | W1–W4 CI, W4 |
+| | `electron-smoke-<check>` | Did the smoke test's check `<check>` pass? One line per check the report can contain (`process-sandbox`, `ui-loaded`, `preload-bridge`, …), except `devtools-disabled`, which the smoke test runs only in packaged builds. `electron-smoke-platform` is predicted no: the Windows platform is unsupported, so the smoke test's overall `fail` is expected and is not evidence against Electron. | W1–W4 CI, W4 |
 | | `ctx-electron-no-console` | Does Electron's main process run without a console, confirming that the D9 launcher reproduces Veydr's parent? | all probes |
 | | `electron-playwright` | Does a minimal spec, `test/windows-probe/launch.spec.ts`, pass under Playwright on the runner? It uses only Playwright's Electron launcher. It checks that the window renders and shows `windows` with the unsupported-platform state. The existing e2e specs cannot run there: `shell.spec.ts` asserts `linux`, and the e2e harness builds on the `/proc` helpers of `test/support/proc.ts`. Making that harness portable is W1's work, informed by this result. | W1–W4 CI |
+| | `ffi-koffi-electron` | Does `koffi` load inside Electron's main process from an ASAR-packaged app on the runner? Run only with the approval of D6; otherwise `NOT-TESTABLE` (not approved). | G-4 option B |
 | Installer | `nsis-build` | Does `electron-builder --win nsis` build a per-user installer from command-line options, with `electron-builder.yml` unchanged? | W4 |
 | | `nsis-install` | Do a silent install (`/S`), a `--smoke-test` launch of the installed app, and a silent uninstall work, with the smoke report and the exit code readable from the GUI-subsystem executable? The installed app's smoke checks are recorded as `nsis-smoke-<check>`, with `nsis-smoke-platform` predicted no, as for `electron-smoke-<check>`. | W4 |
 
@@ -151,6 +155,8 @@ The injection corpus for `cmd-route-*` contains:
 - trailing backslashes;
 - spaces;
 - newline and carriage return;
+- `%` signs in different arguments, and batch parameter references (`%1`, `%*`, `%~dp0`);
+- a line beyond cmd.exe's 8191 characters once escaped;
 - non-ASCII text;
 - an empty argument.
 
@@ -160,10 +166,11 @@ How a case is judged:
 - **Batch files that expand `%1` themselves are out of scope.** Batch files that use their arguments directly are user scripts whose own quoting Veydr cannot control. W2 documents that.
 - **The quoting is a candidate, written down.** Veydr has no Windows quoting today. `scripts/windows-probe/cmd-quote.mjs` holds the candidate algorithm under test:
   1. each argument is quoted by the `CommandLineToArgvW` rules;
-  2. the whole line is wrapped for `cmd.exe /s /c "…"`;
-  3. cmd metacharacters are escaped with `^`.
+  2. cmd metacharacters, including the quotes, are escaped with `^` twice, since a shim's arguments are parsed by cmd.exe twice (the `/c` line, then the batch line `%*` is substituted into), and a `^` follows each `%`, so no `%…%` pair names a defined variable;
+  3. the whole line is wrapped for `cmd.exe /d /v:off /s /c "…"`;
+  4. an argument with a line break or NUL, or a line beyond 8191 characters, is refused before spawning.
 
-  If it passes the corpus, W2 adopts it unchanged.
+  If it passes the corpus (refusing the cases it cannot carry), W2 adopts it unchanged, with those inputs rejected.
 
 Checks the runner cannot run are limits: `checks.mjs` lists them with a fixed reason and no prediction, and the summary records each as `NOT-TESTABLE` with that reason, so they stay visible in every run:
 
@@ -193,8 +200,10 @@ GitHub can roll out a new image while a run is in progress, so jobs of one run m
 
 The `summary` job merges every probe's output into `summary.txt`:
 
-- one header line: commit SHA, workflow run ID, the Windows image version and build, the Node version, the hash of `checks.mjs` used for the run, and the date;
-- then one line per check: `<id> <status> <detail>`, sorted by ID, in the style of `smoke-linux-summary.txt`.
+- a header of lines starting with `# `: commit SHA, workflow run ID, the date, the hash of `checks.mjs` used for the run, the negative-control flag, one `image` line per distinct Windows identity (image version, build, Node version, and the areas measured on it), and one `invalid` line per area and account whose control did not pass;
+- then one line per check: `<id> <status> [revised] <detail>`, sorted by ID, in the style of `smoke-linux-summary.txt`; `[revised]` marks a check listed in `REVISIONS`.
+
+Results files are UTF-8, with or without a BOM; a UTF-16 file, which Windows PowerShell 5.1 writes by default, is rejected.
 
 The parsing and formatting code lives in `scripts/windows-probe/summary.mjs`, with a `.d.mts` declaration for typed tests, following the `release-version.d.mts` pattern.
 
@@ -209,7 +218,7 @@ The workflow never commits anything (D1).
 
 `test/unit/windows-evidence.test.ts` checks the evidence:
 
-- the summary has exactly one line per check ID listed in D3;
+- the summary has exactly one line per check ID in `checks.mjs`;
 - every line has a status from the allowed set, and a reason where one is required;
 - the header names a full commit SHA and an image version;
 - the context controls (`ctx-no-console`, `ctx-standard-user`) are `PASS`, or every check depending on them is `NOT-TESTABLE`, so no result is recorded from the wrong context;
@@ -233,15 +242,17 @@ To keep the decision from being fitted to the results afterwards, the rules are 
 Graceful stop:
 
 - If `pt-ctrl-break-direct` is `PASS`, W1 sends `CTRL_BREAK` directly before the forced stop. This is not expected (D9).
-- Otherwise, if `pt-ctrl-break-attach` and `pt-ctrl-break-attach-std` are `PASS` for `node` and `npm run`, W1 sends it through an attaching helper. Attaching must not happen in Electron's own process, since a GUI process that attaches to a child's console can receive that console's events itself. So a graceful stop requires option C's helper even if option B handles the Job Object.
+- Otherwise, if `pt-ctrl-break-attach-node`, `pt-ctrl-break-attach-npm`, and their `-std` variants are `PASS`, W1 sends it through an attaching helper. If only the `node` checks pass, W1 may still use the helper for commands it starts without a batch file in between (for example npm through its JavaScript entry point), and records the batch-file case as forced-only. Attaching must not happen in Electron's own process, since a GUI process that attaches to a child's console can receive that console's events itself. So a graceful stop requires option C's helper even if option B handles the Job Object.
 - Otherwise the Windows stop is forced-only, which the specs already allow (`graceful: 'unsupported'`).
 
 `pt-job-race` decides whether W1 must start commands suspended. That needs `CREATE_SUSPENDED`, which Node cannot request, so a `FAIL` there rules out option B unless a helper starts the process.
 
-`pt-parent-exit` decides W1's crash recovery:
+`pt-parent-exit-descendant` decides W1's crash recovery:
 
-- **`PASS`** (descendants survive Veydr's end): survivors are found from the run ledger, as on Linux.
-- **`FAIL`** (libuv's job ends them): Windows has no survivors after a crash, and W1 records that as a spec delta instead of porting the survivor search.
+- **`PASS`** (descendants survive Veydr's end, whatever happens to the leader): survivors are found from the run ledger, as on Linux, since a surviving process can still hold a port.
+- **`FAIL`** (nothing survives): Windows has no survivors after a crash, and W1 records that as a spec delta instead of porting the survivor search.
+
+`pt-parent-exit-leader` tells W1 whether the leader itself can be among the survivors.
 
 W1 must also keep Veydr's quit path working either way: an orderly quit still stops commands itself.
 
@@ -255,7 +266,7 @@ Port rules are judged on the `-std` results, since Veydr runs as a standard user
 
 `port-owner-identity-std` decides how W3 shows owners a standard user cannot open: as restricted, as the Linux view already does. It does not choose the route.
 
-**Shell mode (W2):** the first route whose corpus cases all pass. If none passes every case, W2 restricts the shell-mode input it accepts on Windows and the failing cases become W2 spec scenarios.
+**Shell mode (W2):** the first route whose corpus cases all pass (on the verbatim route, a case the candidate refuses passes by being refused, and W2 rejects that input). If none passes every case, W2 restricts the shell-mode input it accepts on Windows and the failing cases become W2 spec scenarios.
 
 ### D6. The koffi load check needs separate approval
 
@@ -325,7 +336,12 @@ So the ports, environment, and process-tree probes also run as a temporary stand
 - The job creates a local account without administrator membership (`New-LocalUser`). Its random password is generated in the job, masked with `::add-mask::`, and never written to a file or a result line.
   - The password satisfies Windows' default complexity rules, which Windows Server enforces for local accounts: 32 characters, generated with a cryptographic random generator, with at least one upper-case letter, lower-case letter, digit, and symbol, and no part of the account name.
   - A fixed account name, `veydr-probe`, is enough: every job runs on a fresh VM, so no earlier account can exist. The name stays within Windows' 20-character limit for local accounts.
-- The driver runs as that user through `Start-Process -Credential -LoadUserProfile`, with the same console-less launcher. Loading the profile creates the user's registry hive, so `HKCU\Environment` exists as it does for a real user who has logged on. Without it, `env-registry-std` would compare against nothing.
+- The driver runs as that user through the same console-less launcher, started by `CreateProcessWithLogonW` (P/Invoke from `standard-user.ps1`) with `LOGON_WITH_PROFILE` and a null environment block. Windows documents that it then builds the environment from that user's profile, as at logon (`env-registry-std` relies on this), and loading the profile creates the user's registry hive, so `HKCU\Environment` exists as it does for a real user who has logged on. Without it, `env-registry-std` would compare against nothing.
+  - `Start-Process -Credential` is not used: whether it passes the parent's environment is not documented precisely, and in Windows PowerShell 5.1 `-UseNewEnvironment` reads the user variables of the *calling* account, not of the target user.
+  - `CreateProcessWithLogonW` starts the launcher, not the driver. The launcher then starts the driver with `detached: true`, so the driver has no console whether or not the launcher has one (`CREATE_NO_WINDOW` is passed for the launcher). `ctx-no-console` checks the result. If it fails as the standard user, the fallback is to start the launcher from the `helper-csc-build` helper with `LogonUser` and `CreateProcessAsUser`.
+  - The API needs the Secondary Logon service (`seclogon`), which is trigger-started by default. The setup step runs `Start-Service seclogon` first, and any error (e.g. 1058, service disabled) is reported in `ctx-standard-user`'s detail.
+  - With a null `lpDesktop`, the process runs on a non-interactive window station. That suits console-less Node probes; this path must not be reused for anything that needs a desktop or shows a window.
+  - The driver's environment therefore has none of the job's additions: no `GITHUB_PATH` entries and no `GITHUB_*` or `RUNNER_*` variables. The launcher is started with an absolute `node.exe` path, and the probe reads anything it needs from the job through its command line, never its environment.
 - The probe files are copied to a directory the user can read and write (`C:\veydr-probe-std`, with access granted to that account only). The job's workspace may not be readable to other accounts. The Node runtime's own directory is checked to be readable before the run, and a failure is reported through `ctx-standard-user`.
 - The account is removed at the end of the job, whatever the outcome.
 
