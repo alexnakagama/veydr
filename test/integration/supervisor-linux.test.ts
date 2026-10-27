@@ -38,6 +38,7 @@ function harness(s: Scenario, cmd: Partial<CommandConfig>, output?: OutputSink) 
     plan: createPlanner({
       resolver: createLinuxCommandResolver(),
       environment: { base: () => Promise.resolve({ env: withoutRuntimeVariables(process.env), warnings: [] }) },
+      envNames: 'exact',
     }),
     log: quietLog(),
     ...(output === undefined ? {} : { output }),

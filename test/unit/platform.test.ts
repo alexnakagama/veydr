@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { selectPlatform, UnsupportedPlatformError, type Platform } from '../../src/main/platform'
-import { envNameKey } from '../../src/shared/config'
+import { duplicateEnvName, envNameKey } from '../../src/shared/config'
 import type { CommandSpec, SpawnPlan } from '../../src/main/platform/types'
 import { createWindowsPlatform } from '../../src/main/platform/windows'
 
@@ -55,6 +55,13 @@ describe('environment variable name keys', () => {
     expect(envNameKey('Path', 'case-insensitive')).toBe(envNameKey('PATH', 'case-insensitive'))
     expect(envNameKey('node_env', 'case-insensitive')).toBe(envNameKey('NODE_ENV', 'case-insensitive'))
     expect(envNameKey('PATH', 'case-insensitive')).not.toBe(envNameKey('PATHEXT', 'case-insensitive'))
+  })
+
+  it('finds the first name that repeats an earlier one under the rule', () => {
+    expect(duplicateEnvName([], 'case-insensitive')).toBeNull()
+    expect(duplicateEnvName(['PATH', 'Path', 'path'], 'exact')).toBeNull()
+    expect(duplicateEnvName(['PORT', 'PORT'], 'exact')).toBe('PORT')
+    expect(duplicateEnvName(['NODE_ENV', 'PORT', 'node_env', 'Port'], 'case-insensitive')).toBe('node_env')
   })
 })
 

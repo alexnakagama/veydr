@@ -126,7 +126,7 @@ function start(): void {
     processTree: platform.processTree,
     states: processStates,
     lookup: (commandId) => findCommand(config.current(), commandId),
-    plan: createPlanner({ resolver: platform.commandResolver, environment }),
+    plan: createPlanner({ resolver: platform.commandResolver, environment, envNames: platform.conventions.envNames }),
     output: logs,
     ledger,
     log,
@@ -165,6 +165,7 @@ function start(): void {
   const projects = createProjectService({
     store: config,
     activeCommands: () => new Set(supervisor.active().map((run) => run.commandId)),
+    envNames: platform.conventions.envNames,
   })
   const desktop = createDesktopActions({
     config: () => config.current(),
@@ -176,7 +177,19 @@ function start(): void {
   })
   registerOperations(
     registry,
-    createOperationHandlers({ info, config: () => config.current(), processStates, supervisor, recovery, projects, environment, desktop, logs, ports }),
+    createOperationHandlers({
+      info,
+      config: () => config.current(),
+      processStates,
+      supervisor,
+      recovery,
+      projects,
+      environment,
+      envNames: platform.conventions.envNames,
+      desktop,
+      logs,
+      ports,
+    }),
   )
 
   // Quitting stops every running command first (design D10); see `app/quit.ts`.

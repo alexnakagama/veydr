@@ -13,3 +13,17 @@ export type EnvNameRule = 'exact' | 'case-insensitive'
 export function envNameKey(name: string, rule: EnvNameRule): string {
   return rule === 'case-insensitive' ? name.toUpperCase() : name
 }
+
+/**
+ * The first name in `names` that refers to the same variable as an earlier one under `rule`, or
+ * `null` when every name is distinct.
+ */
+export function duplicateEnvName(names: readonly string[], rule: EnvNameRule): string | null {
+  const seen = new Set<string>()
+  for (const name of names) {
+    const key = envNameKey(name, rule)
+    if (seen.has(key)) return name
+    seen.add(key)
+  }
+  return null
+}

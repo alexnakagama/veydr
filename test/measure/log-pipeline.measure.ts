@@ -56,6 +56,7 @@ describe('log pipeline capacity (task 7.10)', () => {
         plan: createPlanner({
           resolver: createLinuxCommandResolver(),
           environment: { base: () => Promise.resolve({ env: withoutRuntimeVariables(process.env), warnings: [] }) },
+          envNames: 'exact',
         }),
         output: logs,
         log: quietLog(),

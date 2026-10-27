@@ -2,7 +2,17 @@ import { randomUUID } from 'node:crypto'
 import { realpath, stat } from 'node:fs/promises'
 import { isAbsolute, relative, resolve, sep } from 'node:path'
 import type { CommandInput, CommandView, ProjectView } from '../../shared/api'
-import { projectPathKey, type CommandConfig, type Config, type EnvEntry, type ProjectConfig, type Settings } from '../../shared/config'
+import {
+  duplicateEnvName,
+  envNameKey,
+  projectPathKey,
+  type CommandConfig,
+  type Config,
+  type EnvEntry,
+  type EnvNameRule,
+  type ProjectConfig,
+  type Settings,
+} from '../../shared/config'
 import { ConfigReadOnlyError, ConfigValidationError, type ConfigStore } from '../config'
 import { NotFoundError, UserError } from '../errors'
 import { findCommand } from './lookup'
@@ -12,6 +22,12 @@ export interface ProjectServiceDeps {
   readonly store: Pick<ConfigStore, 'current' | 'update'>
   /** IDs of commands whose processes may be alive (`Supervisor.active`). */
   readonly activeCommands: () => ReadonlySet<string>
+  /**
+   * How the platform compares environment variable names (`PlatformConventions.envNames`). The
+   * shared schemas reject only exact duplicates; overrides naming the same variable under this
+   * rule are rejected here (design D2).
+   */
+  readonly envNames: EnvNameRule
   readonly newId?: () => string
 }
 
@@ -85,7 +101,7 @@ async function checkWorkingDirectory(projectPath: string, cwd: string): Promise<
   if (root !== null && real !== null && !inside(root, real)) throw new UserError(`${outside} It resolves to ${real}.`)
 }
 
-export function createProjectService({ store, activeCommands, newId = randomUUID }: ProjectServiceDeps): ProjectService {
+export function createProjectService({ store, activeCommands, envNames, newId = randomUUID }: ProjectServiceDeps): ProjectService {
   const projectOf = (config: Config, projectId: string): ProjectConfig => {
     const project = config.projects.find((p) => p.id === projectId)
     if (project === undefined) throw new NotFoundError(`Project ${projectId} does not exist`)
@@ -184,6 +200,9 @@ export function createProjectService({ store, activeCommands, newId = randomUUID
         const found = findCommand(store.current(), input.id)
         if (found === null || found.project.id !== projectId) throw new NotFoundError(`Command ${input.id} does not exist in this project`)
       }
+      // Same message as the schemas' exact check (spec: overrides differing only in case rejected on Windows).
+      const duplicate = duplicateEnvName(input.env.map((entry) => entry.key), envNames)
+      if (duplicate !== null) throw new UserError(`Duplicate variable "${duplicate}"`)
       await checkWorkingDirectory(project.path, input.cwd)
       const id = input.id ?? newId()
       const saved: { command?: CommandConfig } = {}
@@ -194,8 +213,10 @@ export function createProjectService({ store, activeCommands, newId = randomUUID
         if (input.id !== null && previous === undefined) throw new NotFoundError(`Command ${input.id} does not exist in this project`)
         const env = input.env.map((entry): EnvEntry => {
           if (entry.value !== null) return { key: entry.key, value: entry.value, secret: entry.secret }
-          // `null` keeps the stored value of a secret the renderer never received.
-          const stored = previous?.env.find((e) => e.key === entry.key && e.secret)
+          // `null` keeps the stored value of a secret the renderer never received, also when only
+          // the case of its name changed under a case-insensitive rule (the same variable).
+          const key = envNameKey(entry.key, envNames)
+          const stored = previous?.env.find((e) => e.secret && envNameKey(e.key, envNames) === key)
           if (stored === undefined) throw new UserError(`Enter a value for the secret variable "${entry.key}".`)
           return { key: entry.key, value: stored.value, secret: true }
         })

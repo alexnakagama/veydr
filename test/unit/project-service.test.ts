@@ -7,6 +7,7 @@ import { createConfigStore } from '../../src/main/config'
 import { NotFoundError, UserError } from '../../src/main/errors'
 import { createProjectService } from '../../src/main/projects/service'
 import type { CommandInput } from '../../src/shared/api'
+import type { EnvNameRule } from '../../src/shared/config'
 
 const dirs: string[] = []
 afterEach(() => {
@@ -19,7 +20,7 @@ function tempDir(prefix: string): string {
   return dir
 }
 
-async function setup(options: { readOnly?: boolean } = {}) {
+async function setup(options: { readOnly?: boolean; envNames?: EnvNameRule } = {}) {
   const configDir = tempDir('veydr-projects-config-')
   if (options.readOnly === true) writeFileSync(join(configDir, 'config.json'), JSON.stringify({ schemaVersion: 99, projects: [] }))
   const store = createConfigStore({ dir: configDir, log: createDiagnosticLog(() => undefined) })
@@ -29,10 +30,11 @@ async function setup(options: { readOnly?: boolean } = {}) {
   const service = createProjectService({
     store,
     activeCommands: () => active,
+    envNames: options.envNames ?? 'exact',
     newId: () => `00000000-0000-4000-8000-${String(++ids).padStart(12, '0')}`,
   })
   const work = tempDir('veydr-projects-work-')
-  return { store, service, active, work }
+  return { store, service, active, work, configDir }
 }
 
 const command = (overrides: Partial<CommandInput> = {}): CommandInput => ({
@@ -198,6 +200,49 @@ describe('commands', () => {
     expect((await rejection(service.upsertCommand(view.id, command({ id: saved.id, env: [{ key: 'OTHER', secret: true, value: null }] })))).message).toBe(
       'Enter a value for the secret variable "OTHER".',
     )
+  })
+
+  it('[spec:project-registry/overrides-differing-only-in-case-rejected-on-windows] rejects overrides naming one variable under a case-insensitive rule, saving nothing', async () => {
+    const { service, store, work, configDir } = await setup({ envNames: 'case-insensitive' })
+    const view = await service.add({ path: work, name: 'shop' })
+    const saved = await service.upsertCommand(view.id, command({ env: [{ key: 'NODE_ENV', secret: false, value: 'production' }] }))
+    const before = store.current()
+    const env = [
+      { key: 'NODE_ENV', secret: false, value: 'development' },
+      { key: 'node_env', secret: false, value: 'test' },
+    ]
+    for (const input of [command({ env }), command({ id: saved.id, env })]) {
+      const error = await rejection(service.upsertCommand(view.id, input))
+      expect(error).toBeInstanceOf(UserError)
+      expect(error.message).toBe('Duplicate variable "node_env"')
+    }
+    expect(store.current()).toBe(before)
+    expect(JSON.parse(readFileSync(join(configDir, 'config.json'), 'utf8'))).toMatchObject({ projects: [{ commands: [{ env: [{ key: 'NODE_ENV', value: 'production' }] }] }] })
+  })
+
+  it('keeps a stored secret renamed only in case under a case-insensitive rule, and not under an exact rule', async () => {
+    for (const envNames of ['case-insensitive', 'exact'] as const) {
+      const { service, store, work } = await setup({ envNames })
+      const view = await service.add({ path: work, name: 'shop' })
+      const saved = await service.upsertCommand(view.id, command({ env: [{ key: 'token', secret: true, value: 'hunter2' }] }))
+      const renamed = service.upsertCommand(view.id, command({ id: saved.id, env: [{ key: 'TOKEN', secret: true, value: null }] }))
+      if (envNames === 'exact') {
+        expect((await rejection(renamed)).message).toBe('Enter a value for the secret variable "TOKEN".')
+        continue
+      }
+      await renamed
+      expect(store.current().projects[0]?.commands[0]?.env).toEqual([{ key: 'TOKEN', value: 'hunter2', secret: true }])
+    }
+  })
+
+  it('accepts overrides differing only in case under an exact rule', async () => {
+    const { service, work } = await setup({ envNames: 'exact' })
+    const view = await service.add({ path: work, name: 'shop' })
+    const env = [
+      { key: 'NODE_ENV', secret: false, value: 'development' },
+      { key: 'node_env', secret: false, value: 'test' },
+    ]
+    expect((await service.upsertCommand(view.id, command({ env }))).env.map((entry) => entry.key)).toEqual(['NODE_ENV', 'node_env'])
   })
 
   it('does not re-create a command removed while it was being saved', async () => {

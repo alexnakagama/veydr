@@ -1,5 +1,5 @@
 import type { EnvironmentEntry } from '../../shared/api'
-import type { CommandConfig, EnvEntry } from '../../shared/config'
+import { envNameKey, type CommandConfig, type EnvEntry, type EnvNameRule } from '../../shared/config'
 import type { Env, EnvProvider } from '../platform/types'
 
 export interface BaseEnvironment {
@@ -43,23 +43,40 @@ export function createEnvironmentService({ provider, onWarnings }: EnvironmentSe
   }
 }
 
-/** `base` with the command's overrides applied last (spec: override applied). */
-export function effectiveEnvironment(base: Env, overrides: readonly EnvEntry[]): Record<string, string> {
-  const env: Record<string, string> = { ...base }
-  for (const entry of overrides) env[entry.key] = entry.value
+/**
+ * The overrides by name key under `rule`; of overrides naming the same variable, the last wins.
+ * Saving rejects such overrides (`ProjectService.upsertCommand`), so normally each key has one.
+ */
+function overridesByKey(overrides: readonly EnvEntry[], rule: EnvNameRule): Map<string, EnvEntry> {
+  return new Map(overrides.map((entry) => [envNameKey(entry.key, rule), entry]))
+}
+
+/**
+ * `base` with the command's overrides applied last (spec: override applied). Names are compared
+ * under `rule`: an override replaces every base entry naming the same variable, and the
+ * override's spelling is kept (spec: override differing in case on Windows).
+ */
+export function effectiveEnvironment(base: Env, overrides: readonly EnvEntry[], rule: EnvNameRule): Record<string, string> {
+  const applied = overridesByKey(overrides, rule)
+  const env: Record<string, string> = {}
+  for (const [key, value] of Object.entries(base)) if (!applied.has(envNameKey(key, rule))) env[key] = value
+  for (const entry of applied.values()) env[entry.key] = entry.value
   return env
 }
 
 /**
  * The effective environment of `command` as the user may see it, sorted by name: secret
- * overrides are masked (`null`), and each entry says whether it comes from an override.
+ * overrides are masked (`null`), and each entry says whether it comes from an override. Names are
+ * merged under `rule` as in `effectiveEnvironment`.
  */
-export function previewEntries(base: Env, command: Pick<CommandConfig, 'env'>): EnvironmentEntry[] {
-  const overrides = new Map(command.env.map((entry) => [entry.key, entry]))
-  const keys = [...new Set([...Object.keys(base), ...overrides.keys()])].sort()
-  return keys.map((key): EnvironmentEntry => {
-    const override = overrides.get(key)
-    if (override === undefined) return { key, secret: false, value: base[key] ?? '', source: 'base' }
-    return override.secret ? { key, secret: true, value: null, source: 'override' } : { key, secret: false, value: override.value, source: 'override' }
-  })
+export function previewEntries(base: Env, command: Pick<CommandConfig, 'env'>, rule: EnvNameRule): EnvironmentEntry[] {
+  const applied = overridesByKey(command.env, rule)
+  const entries: EnvironmentEntry[] = []
+  for (const [key, value] of Object.entries(base)) {
+    if (!applied.has(envNameKey(key, rule))) entries.push({ key, secret: false, value, source: 'base' })
+  }
+  for (const { key, value, secret } of applied.values()) {
+    entries.push(secret ? { key, secret: true, value: null, source: 'override' } : { key, secret: false, value, source: 'override' })
+  }
+  return entries.sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0))
 }

@@ -33,6 +33,7 @@ describe('spawn planner', () => {
     const seen: { spec: CommandSpec; env: Env }[] = []
     const plan = createPlanner({
       environment: { base: () => Promise.resolve({ env: { PATH: '/usr/bin', PORT: '80' }, warnings: [] }) },
+      envNames: 'exact',
       resolver: {
         resolve: (spec, env): Promise<ResolveResult> => {
           seen.push({ spec, env })
@@ -45,9 +46,26 @@ describe('spawn planner', () => {
     expect(seen[0]?.env).toEqual({ PATH: '/usr/bin', PORT: '3000' })
   })
 
+  it('applies the overrides under the platform name rule', async () => {
+    const seen: Env[] = []
+    const plan = createPlanner({
+      environment: { base: () => Promise.resolve({ env: { Path: 'C:\\Windows', TEMP: 'C:\\Temp' }, warnings: [] }) },
+      envNames: 'case-insensitive',
+      resolver: {
+        resolve: (_spec, env): Promise<ResolveResult> => {
+          seen.push(env)
+          return Promise.resolve({ ok: false, diagnostics: ['unsupported'] })
+        },
+      },
+    })
+    await plan(target({ env: [{ key: 'PATH', value: 'C:\\Tools', secret: false }] }))
+    expect(seen).toEqual([{ PATH: 'C:\\Tools', TEMP: 'C:\\Temp' }])
+  })
+
   it('passes resolver diagnostics on as the reason a start fails', async () => {
     const plan = createPlanner({
       environment: { base: () => Promise.resolve({ env: {}, warnings: [] }) },
+      envNames: 'exact',
       resolver: { resolve: () => Promise.resolve({ ok: false, diagnostics: ['The project folder is missing: /home/dev/shop'] }) },
     })
     expect(await plan(target({}))).toEqual({ ok: false, reason: 'The project folder is missing: /home/dev/shop' })
