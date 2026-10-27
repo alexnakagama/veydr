@@ -1,0 +1,196 @@
+# Tasks
+
+Notes:
+
+- No product code changes in this change. The README and docs keep "Windows not yet supported" throughout.
+- Every group ends the way foundation design D15 requires:
+  1. run its verification commands;
+  2. hand off to the `reviewer2` session;
+  3. fix the findings, and have them re-reviewed;
+  4. record the outcome here.
+- Probe groups (3–7) are verified by a `windows-probe.yml` run on the change's branch (`--ref`), which is possible only after groups 1–2 are merged to `master` (design D1).
+- Every probe driver runs without a console, and the privilege-dependent ones also run as a standard user (design D9). A result recorded from the wrong context is a bug in the probe, not evidence.
+- Every `.ps1` probe script runs under Windows PowerShell 5.1 (`powershell.exe -NoProfile -ExecutionPolicy Bypass -File …`), never under PowerShell 7 (design D2).
+
+## 1. Shared probe infrastructure
+
+- [ ] 1.1 Add the data the check IDs are generated from:
+  - `scripts/windows-probe/cmd-corpus.mjs`: the injection corpus of design D3 as data. Each case has an ID, its intended argument, and a description.
+  - `scripts/windows-probe/cmd-quote.mjs`: the candidate quoting algorithm of design D3 (`CommandLineToArgvW` quoting per argument, wrapped for `cmd.exe /s /c`, with metacharacters escaped by `^`).
+  - The list of the smoke test's check names, taken from `src/main/app/smoke.ts`.
+
+  Add `test/unit/windows-probe-corpus.test.ts`. It checks that every corpus case has a unique ID and a non-empty description, and that `cmd-quote.mjs` produces the expected command lines for representative cases. It also checks that the smoke-check list equals the names `smoke.ts` can report, so it fails when a smoke check is added or renamed. Add `scripts/windows-probe/*.mjs` to the ESLint default-project list. Verify: `npm test`, `npm run lint`, and `npm run typecheck` pass.
+- [ ] 1.2 Add `scripts/windows-probe/checks.mjs` with every check ID from design D3, including:
+  - the context checks (`ctx-no-console`, `ctx-standard-user`, `ctx-electron-no-console`, `ctx-job`);
+  - `helper-csc-build`;
+  - the `-std` variants;
+  - the IDs generated from the corpus, the encoding tools and variants, and the smoke-check list.
+
+  Each entry records its yes/no question, its **predicted answer** (`yes` or `no`; there is no "unknown") with a one-line reason for the prediction, its area, what it feeds, its required context (`console: none`; `admin`, `standard`, or both), and the control it depends on. The runner's limits from design D3 (`env-desktop-launch`, `pt-logoff`, `ux-uac-prompt`, `l10n-console`, `av-third-party`, `smartscreen`) are entries of kind `limit`, with a fixed reason, a description of what would verify them, and no prediction. Add an empty `revisions` list for later prediction changes. Also generate the snapshot `test/windows-probe/predictions.json` from `checks.mjs` (design D3); it is never edited afterwards. Add a check to `test/unit/windows-probe-summary.test.ts`: every prediction in `checks.mjs` equals the snapshot, unless `revisions` lists the change, and every check missing from the snapshot has a `revisions` entry marking it as added later. The same test also checks that every entry other than a limit has a question ending in `?`, a prediction of `yes` or `no`, and a non-empty reason; that every limit has a reason and no prediction; and that the snapshot holds no limits. Verify: `npm test` and `npm run typecheck` pass, and changing one prediction without a `revisions` entry makes the test fail (checked once, then reverted). This task lands on `master` with group 2, before any probe runs, so the predictions are fixed before the evidence exists (design D3).
+- [ ] 1.3 Add `scripts/windows-probe/summary.mjs` with a `.d.mts` declaration (design D4). It:
+  - parses probe JSON lines (`id`, `answer`, `detail`, `data.context`);
+  - derives each status from the answer and the check's prediction: `yes` → `PASS`, `no` → `EXPECTED-FAIL` if predicted, otherwise `FAIL`, and `null` → `NOT-TESTABLE`;
+  - rejects unknown IDs, answers other than `yes`/`no`/`null`, a `no` or `null` without a reason, and a context that differs from the check's required context;
+  - marks an area invalid when its control failed;
+  - turns every check depending on a failed or missing context control into `NOT-TESTABLE`, naming the control;
+  - writes a `NOT-TESTABLE` line with the fixed reason for every limit, and rejects a probe line that answers a limit;
+  - treats a check that no probe answered as `NOT-TESTABLE` ("no result: probe did not report it"), so a crashed or skipped probe shows up as missing evidence and is not silently omitted;
+  - reads each job's identity line (`ImageOS`, `ImageVersion`, Windows build, Node version, negative-control flag) and never uses the summary job's own environment for it;
+  - lists every distinct Windows image version with the areas measured on it;
+  - prints a check with a `revisions` entry as revised;
+  - formats `summary.txt` with its header: commit SHA, run ID, the Windows image version and build, Node version, the hash of `checks.mjs`, the negative-control flag, and the date.
+
+  Add `test/unit/windows-probe-summary.test.ts` covering:
+  - parsing, status derivation for every prediction, and each rejection;
+  - the context mismatch and both control rules;
+  - identity lines with one and with several image versions;
+  - a revised prediction;
+  - sorting and the header.
+
+  Verify: `npm test` passes.
+
+## 2. Probe workflow and CI setup
+
+- [ ] 2.1 In `.github/actions/setup/action.yml`, add `runner.os == 'Linux'` to the `if:` of "Install Xvfb", "Enable unprivileged user namespaces", and "Disable core dumps" (design D8). Update the exact-condition assertions in `test/unit/workflow-policy.test.ts`. Extend `launchesElectron` there to also match a direct `--smoke-test` launch and `scripts/ensure-electron.cjs`, with a test case for each. Verify: `npm test` passes, and the Linux jobs of `ci.yml` stay green on the pull request.
+- [ ] 2.2 Add `test/windows-probe/results/*.jsonl text eol=lf` to `.gitattributes`, after the `*.jsonl binary` line (design D4). Verify: `git check-attr text binary -- test/windows-probe/results/x.jsonl` reports text and not binary, and `git check-attr binary -- test/fixtures/x.jsonl` still reports binary.
+- [ ] 2.3 Add `.github/workflows/windows-probe.yml` (design D1):
+  - triggered by `workflow_dispatch` only, with one boolean input, `negative-control` (default `false`, design D9), and `permissions: {}` at the top level;
+  - one job per probe area on `windows-2025`, each with `contents: read`, a timeout, pinned checkout with `persist-credentials: false`, an identity line as the first line of its results (design D4), and an upload of its result lines that runs even when the probe fails;
+  - a `summary` job on `ubuntu-24.04`, which runs whatever happened to the probe jobs, merges their results with `summary.mjs`, and uploads `summary.txt`.
+
+  At this stage each probe job runs a placeholder that reports its checks as `NOT-TESTABLE` ("probe not implemented yet"). Extend `workflow-policy.test.ts`: the workflow has only the manual trigger and no write permission, it is not in `ci-ok`'s needs, it never commits or pushes, and Electron-launching jobs run setup with `electron: "true"`. Verify: `npm test` passes, and the pinned actionlint reports no errors.
+- [ ] 2.4 Document the probe workflow in `docs/ci.md`:
+  - a pipeline table row and its purpose;
+  - how to start it (`gh workflow run windows-probe.yml --ref <branch>`), and the `negative-control` input, whose runs are never committed;
+  - that it is never required;
+  - that some jobs create and remove a temporary local standard user;
+  - how its artifact becomes committed evidence.
+
+  Also add `windows-probe.yml` to the "Used in" column of the pinned-actions table for `actions/checkout`, `actions/upload-artifact`, and `actions/download-artifact`; no test checks that table. Verify: `npm test` passes, including the docs tests, and the table names every workflow that uses each action (checked with `grep -l` over `.github/workflows`).
+- [ ] 2.5 Merge groups 1–2 to `master`. Then start the workflow on the change's branch. Verify: the run completes, and its `summary.txt` artifact lists every check ID with a valid line.
+
+## 3. Execution contexts
+
+- [ ] 3.1 Add `scripts/windows-probe/launch-detached.mjs` (design D9). It starts a probe driver with `detached: true` and `windowsHide: true`, sends the driver's result lines to a file, waits for the driver to exit within a timeout, and reports a driver that did not finish as a failed run. Add `scripts/windows-probe/context.ps1`, which provides `GetConsoleWindow`, `AttachConsole(ATTACH_PARENT_PROCESS)`, and the token's elevation and Administrators membership. `context.ps1` also provides the driver's Job Object membership (`IsProcessInJob` with no job handle) and, where readable, the job's limits. Make `ctx-no-console` and `ctx-job` the first checks of every driver started through the launcher. Verify:
+  - a normal probe run reports `ctx-no-console` `PASS` and `ctx-job` with the membership in `data`;
+  - a separate run with `negative-control: true` starts one driver straight from the job's shell. It reports `ctx-no-console` `FAIL`, the summary turns that area's checks into `NOT-TESTABLE` naming the control, and its header marks it as a negative-control run. That run is not committed.
+- [ ] 3.2 Add `scripts/windows-probe/standard-user.ps1`. It:
+  - creates the local account `veydr-probe` outside Administrators (`New-LocalUser`). Its password:
+    - is 32 characters from a cryptographic random generator, with at least one upper-case letter, lower-case letter, digit, and symbol, as Windows Server's default complexity rules require (design D9);
+    - is masked with `::add-mask::` before any other step uses it.
+
+    A creation failure is reported with Windows' error message, which never contains the password;
+  - copies the probe files to `C:\veydr-probe-std`, with access granted to that account only, and checks that the Node runtime's directory is readable to it;
+  - runs a given driver as that user through `Start-Process -Credential -LoadUserProfile` and the console-less launcher, so the user's registry hive (`HKCU`) exists;
+  - collects the result file;
+  - removes the account in a `finally` block.
+
+  `ctx-standard-user` runs first in such a driver. It confirms the token is unelevated and outside Administrators, that `HKCU\Environment` is readable, and that the probe directory is usable. If the account cannot be created or used, every `-std` check is `NOT-TESTABLE` with the error. Extend `workflow-policy.test.ts` so the password never appears in a workflow file, an `echo`, or an uploaded path. Verify: a probe run reports `ctx-standard-user` `PASS`, the job log shows the password only masked, and the account no longer exists at the end of the job (checked by a final step). Generate 1,000 passwords once and check that each satisfies the complexity rule; record that check in the task's review notes.
+
+## 4. Process-tree probes
+
+- [ ] 4.1 Implement `scripts/windows-probe/process-tree.ps1`: C# P/Invoke for Job Objects, `IsProcessInJob`, `GetProcessTimes`, and an attaching control-event helper (`FreeConsole`, `AttachConsole(childPid)`, `GenerateConsoleCtrlEvent`). Implement `scripts/windows-probe/process-tree.mjs`, started through the console-less launcher. It builds process trees with `child_process.spawn` (leader → child → grandchild, plus an orphaned grandchild) and runs:
+  - `pt-libuv-job`, `pt-libuv-breakaway`, `pt-kill-leader`, `pt-taskkill-tree`, `pt-taskkill-orphan`, `pt-job-terminate`, and `pt-identity`;
+  - `pt-parent-exit`: a separate parent process spawns a tree; the parent is then killed with `TerminateProcess`, as a crash would end it, and the probe records which descendants are still running;
+  - `pt-identity-reuse`: spawn and end short-lived processes until a PID recurs or the bound (1,000 processes or 60 s) is reached; `NOT-TESTABLE` if none recurs;
+  - a control check: a single plain child, which every stop method must end.
+
+  Verify: a probe run reports every one of these IDs, the controls pass, and each result line's `data` names the PIDs and creation times involved. Each answer is `yes`/`no` as the question in design D3 is phrased.
+- [ ] 4.2 Add `pt-job-race`: is a grandchild created between spawn and job assignment still contained by the job? Also record in `data` whether an assigned-while-suspended start, done from the PowerShell helper, closes that gap. Verify: the run reports the ID with both variants in `data`.
+- [ ] 4.3 Add the graceful-stop and console checks:
+  - `pt-ctrl-break-direct` and `pt-ctrl-break-attach` for `node`, `npm run`, and `cmd /c` children, started with `windowsHide: true` and not `detached`, as W1 would start them. The helper calls `SetConsoleCtrlHandler(NULL, TRUE)` before attaching. The attach check also verifies that the probe driver and the helper received no event and kept running;
+  - `pt-ctrl-break-detached`: the same helper against a child started with `detached: true`;
+  - `pt-ctrl-c`;
+  - `pt-console-window`, with and without `windowsHide`. It is `NOT-TESTABLE` with the reason if the session has no desktop.
+
+  Run `pt-job-terminate-std` and `pt-ctrl-break-attach-std` through the standard-user runner. Verify: a probe run reports every one of these IDs with its context in `data`, and the driver survived the attach checks.
+- [ ] 4.4 Implement `helper-csc-build` (design D2). It compiles `scripts/windows-probe/job-helper.cs` with `%WINDIR%\Microsoft.NET\Framework64\v4.0.30319\csc.exe` into the job's temporary directory; the binary is never committed. It then starts the helper from the console-less launcher. The helper creates a Job Object, starts a child with a grandchild inside it, and terminates the job; the probe checks that both are gone. Run `helper-csc-build-std` through the standard-user runner. Verify: a probe run reports both IDs, and `data` records the compiler version and the helper's exit code.
+
+## 5. Command, environment, and encoding probes
+
+- [ ] 5.1 Implement the command probes from the console-less launcher:
+  - `cmd-direct-spawn`;
+  - every `cmd-route-<route>-<case>`, for Node's `shell: true` and for `cmd.exe /d /s /c` with verbatim arguments and the quoting of `cmd-quote.mjs` (task 1.1). Each case calls `fwd.cmd` (only `@node "%~dp0record.mjs" %*`, like `npm.cmd`); `record.mjs` writes `process.argv` as JSON. The answer is `yes` only if the recorded arguments equal the case's intended ones and the case's sentinel file, which an injected command would create, does not exist;
+  - `cmd-pathext`, with `PATHEXT` and its order in `data`;
+  - `cmd-pathext-cwd`: an `npm.cmd` decoy in the working directory, not on `PATH`, that would create a sentinel file if run. The answer is `yes` if the sentinel does not exist after `cmd.exe /d /s /c npm --version`. `data` records whether `NoDefaultCurrentDirectoryInExePath` is set.
+
+  Verify: a probe run reports one line per route and case, and for each `no` the recorded arguments or the sentinel are in `data`.
+- [ ] 5.2 Implement the environment checks:
+  - `env-registry` and `env-registry-std`: read the user and machine environment from the registry (user over machine, `REG_EXPAND_SZ` expanded). The answer is `yes` if every variable defined in both it and the driver's `process.env` has equal values. `data` records the names, never the values, of variables found in only one of them or with different values.
+  - `env-path-case`: start a child, which reports its environment, with an environment whose only path variable is spelled `PATH` and set to a marker value. The answer is `yes` if the child sees exactly one path variable, with the marker value. `data` records the inherited spelling, and what a second child sees when given both `Path` and `PATH` with different markers. The probe does not import Veydr's merge function (TypeScript, already unit-tested on the Windows lane);
+
+  Verify: a probe run reports all three IDs, as administrator and as a standard user, and no variable value appears in any result file.
+- [ ] 5.3 Implement the encoding checks, all from the console-less launcher:
+  - `enc-codepages`: the answer is `yes` if a console child's output code page is 65001 without `chcp`. `data` records `GetACP`, `GetOEMCP`, and `GetConsoleOutputCP`, with and without `windowsHide`;
+  - `enc-child-<tool>-<variant>`, for the tools `cmd` (`echo`), `node`, and `python` (`NOT-TESTABLE` if not installed), each in the variants `plain` and `utf8` (`chcp 65001` first, or `PYTHONUTF8=1` for Python). Each prints one fixed non-ASCII test string. The answer is `yes` if the received bytes are valid UTF-8 and decode to exactly that string. `data` records the bytes as hex.
+
+  Verify: a probe run reports every encoding ID, with the console context in `data`.
+
+## 6. Port probes
+
+- [ ] 6.1 Implement `scripts/windows-probe/ports.mjs` with a helper that listens on known ports on `127.0.0.1`, `::1`, and `0.0.0.0`. Implement:
+  - `port-netstat`, `port-ps`, and `port-api` (P/Invoke `GetExtendedTcpTable` from the PowerShell helper). Each answers `yes` if it lists each of the helper's listeners with the helper's PID;
+  - `port-owner-identity`, which answers `yes` if the probe can read the name and creation time of every listener's owner. `data` lists the owners it cannot open.
+
+  The control check is that at least one method finds the helper's own sockets. Verify: a probe run reports every one of these IDs, and the control passes.
+- [ ] 6.2 Run `port-ps-std`, `port-api-std`, and `port-owner-identity-std` through the standard-user runner, against a helper started by the standard user. Run `port-ps-latency` and `port-api-latency` as that user too: 10 calls each, all durations in `data`, answering `yes` if the median is at most 300 ms and the slowest at most 1 s (design D3). Verify: a probe run reports the five IDs with `context: standard`, and the control passes as a standard user.
+
+## 7. Electron and installer probes
+
+- [ ] 7.1 Implement the `electron` job:
+  - setup with `electron: "true"`, `npm run build`, and `node scripts/ensure-electron.cjs`, since `npm run build` does not download Electron (design D8);
+  - `electron-launch` (`--smoke-test`, exit code and output recorded), and one `electron-smoke-<check>` line per check in the `VEYDR_SMOKE_TEST` report. `electron-smoke-platform` is predicted `no`;
+  - `ctx-electron-no-console`, which checks Electron's main process for a console through `context.ps1`;
+  - `electron-playwright`, which runs a new minimal spec, `test/windows-probe/launch.spec.ts`, with its own Playwright config. It uses only Playwright's Electron launcher, imports nothing from the e2e harness or `test/support/proc.ts`, and checks that the window renders and shows `windows` with the unsupported-platform state.
+
+  Verify: a probe run reports every one of these IDs. A `no` must carry the failing step's output in `detail`. The new spec does not run in the Linux e2e suite, and `test-platform-policy.test.ts` still passes.
+- [ ] 7.2 Implement the `nsis` job:
+  - `nsis-build` runs `electron-builder --win nsis --publish never` with command-line options for a per-user, one-click installer; `electron-builder.yml` stays unchanged;
+  - `nsis-install` performs a silent install (`/S`), a `--smoke-test` launch of the installed executable (exit code, and whether the `VEYDR_SMOKE_TEST` report is readable), and a silent uninstall, checking the install directory is gone. Each smoke check is recorded as `nsis-smoke-<check>`, with `nsis-smoke-platform` predicted `no`.
+
+  Verify: a probe run reports both IDs, and `git diff --exit-code electron-builder.yml` passes in the job.
+- [ ] 7.3 Only if the maintainer approves the koffi load check under gate G-4 (design D6): implement `ffi-koffi-electron` with an exact version, an integrity-checked tarball, and a probe-only `package.json` outside the lockfile. Without approval, record it as `NOT-TESTABLE` with the reason "not approved", and note the decision here. Verify: a probe run reports the ID, and the repository's `package.json` and `package-lock.json` are unchanged.
+
+## 8. Evidence and decisions
+
+- [ ] 8.1 Run the complete workflow on the branch and review the results:
+  - every control passes: the context controls, plus each area's own control;
+  - no line says "no result: probe did not report it";
+  - every `FAIL` (a prediction that did not hold) and every `EXPECTED-FAIL` is understood. A `FAIL` is never fixed by editing the prediction afterwards;
+  - wherever the admin and standard-user results of a check differ, the difference is explained.
+
+  The run must be on a single Windows image version; if the summary lists several, rerun. Rerun once more to check that the results are stable (record any check whose result differs between runs, and why). Commit the reviewed run's `test/windows-probe/summary.txt` and `test/windows-probe/results/*.jsonl`. Verify: the summary header names the run's commit, one Windows image version, and the `checks.mjs` hash, and it is not a negative-control run.
+- [ ] 8.2 Write `docs/windows-evidence.md` with three sections (design D7):
+  - the commit that added `test/windows-probe/predictions.json` (group 1's merge), and every `revisions` entry with its reason;
+  - verified on the runner, each conclusion stating whether it holds as a standard user, as administrator only, or both, and, for process trees, whether it was measured inside a Job Object (`ctx-job`);
+  - not verifiable on the runner, each with what would verify it;
+  - decisions, each citing check IDs.
+
+  Add `test/unit/windows-evidence.test.ts`, which checks:
+  - exactly one summary line per ID in `checks.mjs`;
+  - valid statuses, and reasons where required;
+  - the header format, with exactly one Windows image version and no negative-control flag;
+  - no "no result" line;
+  - the context controls passed, or every dependent check is `NOT-TESTABLE`;
+  - every `FAIL`, `EXPECTED-FAIL`, and `NOT-TESTABLE` ID is listed in the doc;
+  - every decision cites a recorded ID.
+
+  Link the "not verifiable" section from `docs/deferred-checks.md`. Verify: `npm test` passes, and a temporary edit of one summary status makes the test fail (checked once, then reverted).
+- [ ] 8.3 Apply the decision rules of design D5 to the recorded results. Record the outcome in a new "Outcome" section of this change's `design.md` and in the doc's decisions section:
+  - the process-tree route and the graceful-stop route, including whether an attaching helper is needed, and whether a .NET Framework helper is possible (`helper-csc-build`) (W1);
+  - crash recovery, from `pt-parent-exit`: whether Windows can have survivors after a crash (W1);
+  - the shell-mode route and any restricted cases (W2);
+  - the port route, judged on the standard-user results (W3);
+  - whether the Windows CI lane can run Electron e2e (W1–W4).
+
+  Verify: each outcome cites check IDs present in `summary.txt`.
+
+## 9. Integration check
+
+- [ ] 9.1 Run `npm run verify` on Linux, and check the `windows` CI job and `ci-ok` on the pull request. Verify: all pass, and spec coverage reports zero unmapped scenarios.
+- [ ] 9.2 Check that nothing claims Windows support: `grep -rn "Windows" README.md docs/` shows only "not yet supported" statements, CI notes, and the evidence document, and `supervisor.test.ts` › `start-on-windows` still passes. Verify: both checks hold, and are recorded in the pull request.
+
+## Workflow follow-up
+
+- Archive the change once its pull request is merged.
+- Start W1 `add-windows-process-supervision` from the outcome in design.md. W2 and W3 follow from the same outcome. W4 `add-windows-packaging` ships the installer labelled "Windows (preview): verified in CI on Windows Server 2025", with the "not verifiable" list from `docs/windows-evidence.md`.
