@@ -14,7 +14,7 @@ Note: `npm run spec-coverage` runs in required mode and also reads this change's
 
 ## 3. Project path keys
 
-- [ ] 3.1 Change `projectPathKey` (`src/shared/config/schema.ts`) per design D3: for a Windows path by syntax (drive letter or `\\` UNC), use `\` separators and lowercase; leave POSIX paths unchanged; keep the root handling. Update its doc comment. In `test/unit/config-schema.test.ts` or `test/unit/project-service.test.ts`, add tests tagged `[spec:project-registry/windows-path-differing-only-in-case]` (`C:\Work\Shop` vs `c:\work\shop`, and `C:/Work/Shop/` vs `c:\work\shop`, each rejected as a duplicate by the schema and by the service's duplicate lookup) and `[spec:project-registry/posix-path-differing-only-in-case]` (`/home/dev/Shop` and `/home/dev/shop` both accepted by the schema). Verify: `npm test` passes, and the existing `reject-duplicate` tests still pass.
+- [x] 3.1 Change `projectPathKey` (`src/shared/config/schema.ts`) per design D3: for a Windows path by syntax (drive letter or `\\` UNC), use `\` separators and lowercase; leave POSIX paths unchanged; keep the root handling. Update its doc comment. In `test/unit/config-schema.test.ts` or `test/unit/project-service.test.ts`, add tests tagged `[spec:project-registry/windows-path-differing-only-in-case]` (`C:\Work\Shop` vs `c:\work\shop`, and `C:/Work/Shop/` vs `c:\work\shop`, each rejected as a duplicate by the schema and by the service's duplicate lookup) and `[spec:project-registry/posix-path-differing-only-in-case]` (`/home/dev/Shop` and `/home/dev/shop` both accepted by the schema). Verify: `npm test` passes, and the existing `reject-duplicate` tests still pass.
 
 ## 4. Atomic writes
 

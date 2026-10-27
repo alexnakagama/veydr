@@ -1,7 +1,8 @@
+import type * as FsPromises from 'node:fs/promises'
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createDiagnosticLog } from '../../src/main/app/diagnostics'
 import { createConfigStore } from '../../src/main/config'
 import { NotFoundError, UserError } from '../../src/main/errors'
@@ -9,9 +10,26 @@ import { createProjectService } from '../../src/main/projects/service'
 import type { CommandInput } from '../../src/shared/api'
 import type { EnvNameRule } from '../../src/shared/config'
 
+/**
+ * Folders that exist only for the service's `realpath` and `stat`, so its duplicate lookup can be
+ * exercised with Windows paths, or with a case-sensitive filesystem, on any OS. They resolve to
+ * themselves as typed, so a match comes from `projectPathKey` rather than from `realpath`
+ * canonicalizing the case. Every other path goes to the real filesystem.
+ */
+const fakeFolders = vi.hoisted(() => new Set<string>())
+vi.mock('node:fs/promises', async (importOriginal) => {
+  const actual = await importOriginal<typeof FsPromises>()
+  return {
+    ...actual,
+    realpath: (path: string, ...rest: []) => (fakeFolders.has(path) ? Promise.resolve(path) : actual.realpath(path, ...rest)),
+    stat: (path: string, ...rest: []) => (fakeFolders.has(path) ? Promise.resolve({ isDirectory: () => true }) : actual.stat(path, ...rest)),
+  }
+})
+
 const dirs: string[] = []
 afterEach(() => {
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true })
+  fakeFolders.clear()
 })
 
 function tempDir(prefix: string): string {
@@ -90,6 +108,30 @@ describe('project registration', () => {
       expect(error.message, path).toBe(`This folder is already registered as project "shop" (${folder}).`)
     }
     expect(await service.list()).toHaveLength(1)
+  })
+
+  it('[spec:project-registry/windows-path-differing-only-in-case] rejects a Windows folder registered again in different case', async () => {
+    for (const [registered, again] of [
+      ['C:\\Work\\Shop', 'c:\\work\\shop'],
+      ['C:/Work/Shop/', 'c:\\work\\shop'],
+    ] as const) {
+      const { service, store } = await setup()
+      fakeFolders.add(registered).add(again)
+      await service.add({ path: registered, name: 'shop' })
+      const before = store.current()
+      const error = await rejection(service.add({ path: again, name: 'again' }))
+      expect(error).toBeInstanceOf(UserError)
+      expect(error.message, `${registered} / ${again}`).toBe(`This folder is already registered as project "shop" (${registered}).`)
+      expect(store.current()).toEqual(before)
+    }
+  })
+
+  it('[spec:project-registry/posix-path-differing-only-in-case] registers POSIX folders that differ only in case separately', async () => {
+    const { service } = await setup()
+    fakeFolders.add('/home/dev/Shop').add('/home/dev/shop')
+    await service.add({ path: '/home/dev/Shop', name: 'Shop' })
+    await service.add({ path: '/home/dev/shop', name: 'shop' })
+    expect((await service.list()).map((p) => p.path)).toEqual(['/home/dev/Shop', '/home/dev/shop'])
   })
 
   it('renames a project', async () => {
