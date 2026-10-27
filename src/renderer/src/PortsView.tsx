@@ -79,7 +79,7 @@ export function PortsContent({ state, projects, onRefresh }: { state: PortsState
                   <PortTable ports={ports} names={names} label="All listening ports" testId="ports-all-table" />
                 )}
                 <p className="muted ports-note">
-                  Restricted: the port belongs to another user or to the system, and Linux does not show its process to you. Veydr only reads this list; it never stops or signals
+                  Restricted: the port belongs to another user or to the system, and the operating system does not show its process to you. Veydr only reads this list; it never stops or signals
                   processes from here.
                 </p>
               </section>
@@ -127,7 +127,7 @@ function PortRow({ port, names }: { port: ListeningPort; names: ReadonlyMap<stri
             {owner.name} <span className="muted">PID {owner.pid}</span>
           </>
         ) : owner.kind === 'restricted' ? (
-          <span className="badge badge-restricted" title="Owned by another user or the system; Linux does not show its process to you.">
+          <span className="badge badge-restricted" title="Owned by another user or the system; the operating system does not show its process to you.">
             Restricted
           </span>
         ) : (

@@ -149,6 +149,8 @@ function start(): void {
     version: app.getVersion(),
     platform: platform.name,
     platformSupported: platform.supported,
+    defaultShell: platform.conventions.defaultShell,
+    envNames: platform.conventions.envNames,
     versions: {
       electron: process.versions.electron,
       chrome: process.versions.chrome,

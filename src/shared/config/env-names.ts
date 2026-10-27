@@ -3,7 +3,8 @@
  * to letter case on Windows. Chosen by the platform; shared because the renderer and the main
  * process both need to detect overrides that refer to the same variable.
  */
-export type EnvNameRule = 'exact' | 'case-insensitive'
+export const envNameRules = ['exact', 'case-insensitive'] as const
+export type EnvNameRule = (typeof envNameRules)[number]
 
 /**
  * Comparison key for an environment variable name: names with equal keys are the same variable.

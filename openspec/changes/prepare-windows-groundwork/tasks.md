@@ -29,8 +29,8 @@ Note: `npm run spec-coverage` runs in required mode and also reads this change's
 
 ## 5. App info and renderer
 
-- [ ] 5.1 Add `defaultShell: string | null` and `envNames` to `appInfoSchema` (`src/shared/api/app.ts`), filled from `platform.conventions` in `src/main/index.ts` (design D5). Update `test/unit/api-contract.test.ts` and any `AppInfo` fixtures in the renderer tests. Verify: `npm test` and `npm run typecheck` pass. The smoke test's bridge-group check in `test/unit/smoke.test.ts` is unchanged and passes.
-- [ ] 5.2 In `src/renderer/src/CommandEditor.tsx`:
+- [x] 5.1 Add `defaultShell: string | null` and `envNames` to `appInfoSchema` (`src/shared/api/app.ts`), filled from `platform.conventions` in `src/main/index.ts` (design D5). Update `test/unit/api-contract.test.ts` and any `AppInfo` fixtures in the renderer tests. Verify: `npm test` and `npm run typecheck` pass. The smoke test's bridge-group check in `test/unit/smoke.test.ts` is unchanged and passes.
+- [x] 5.2 In `src/renderer/src/CommandEditor.tsx`:
   - remove `DEFAULT_SHELL`; new shell commands start with `defaultShell` from app info, or an empty field when it is `null`;
   - validate the shell path with the shared `isAbsolutePath`; the message's example comes from `defaultShell` and is left out when it is `null`;
   - flag override names that collide under `envNames` with the same `Duplicate variable "<name>"` message as main.
@@ -42,7 +42,7 @@ Note: `npm run spec-coverage` runs in required mode and also reads this change's
   - `PATH` with `Path` is a duplicate under `case-insensitive` and allowed under `exact`.
 
   Verify: `npm test` passes, and `npm run test:e2e` passes on Linux (the command editor flows are unchanged with `/bin/sh` as the default).
-- [ ] 5.3 Change the restricted-owner explanation in `src/renderer/src/PortsView.tsx` (banner text and badge title) to say that the operating system does not show the process. Update any assertion in `test/unit/renderer-ports.test.ts` or `test/e2e/ports.spec.ts` that quotes the old text. Verify: `npm test` passes, and `npm run test:e2e -- ports` passes.
+- [x] 5.3 Change the restricted-owner explanation in `src/renderer/src/PortsView.tsx` (banner text and badge title) to say that the operating system does not show the process. Update any assertion in `test/unit/renderer-ports.test.ts` or `test/e2e/ports.spec.ts` that quotes the old text. Verify: `npm test` passes, and `npm run test:e2e -- ports` passes.
 
 ## 6. Tooling
 

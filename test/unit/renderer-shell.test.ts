@@ -14,6 +14,8 @@ const info = (overrides: Partial<AppInfo>): InfoState => ({
     version: '0.0.0',
     platform: 'linux',
     platformSupported: true,
+    defaultShell: '/bin/sh',
+    envNames: 'exact',
     versions: { electron: '44.9.3', chrome: '1', node: '24' },
     ...overrides,
   },

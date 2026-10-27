@@ -1,5 +1,6 @@
 import { describe, expect, expectTypeOf, it } from 'vitest'
 import {
+  appInfoSchema,
   channels,
   commandInputSchema,
   commandViewSchema,
@@ -86,6 +87,28 @@ describe('API payload schemas', () => {
     expect(logBatchSchema.safeParse(batch).success).toBe(true)
     expect(logBatchSchema.safeParse({ ...batch, extra: 1 }).success).toBe(false)
     expect(logBatchSchema.safeParse({ ...batch, skipped: { fromSeq: 4, toSeq: 3 } }).success).toBe(false)
+  })
+
+  it("carries the platform's default shell and environment-name rule in the app info", () => {
+    const info = {
+      name: 'Veydr',
+      version: '0.0.0',
+      platform: 'windows',
+      platformSupported: false,
+      defaultShell: null,
+      envNames: 'case-insensitive',
+      versions: { electron: '1', chrome: '1', node: '1' },
+    }
+    expect(appInfoSchema.safeParse(info).success).toBe(true)
+    expect(appInfoSchema.safeParse({ ...info, platform: 'linux', platformSupported: true, defaultShell: '/bin/sh', envNames: 'exact' }).success).toBe(true)
+    expect(appInfoSchema.safeParse({ ...info, platform: 'unsupported', envNames: 'exact' }).success).toBe(true)
+    expect(appInfoSchema.safeParse({ ...info, defaultShell: '' }).success).toBe(false)
+    expect(appInfoSchema.safeParse({ ...info, envNames: 'insensitive' }).success).toBe(false)
+    for (const field of ['defaultShell', 'envNames'] as const) {
+      const without: Partial<typeof info> = { ...info }
+      delete without[field]
+      expect(appInfoSchema.safeParse(without).success, field).toBe(false)
+    }
   })
 
   it('never lets a secret value into a command view', () => {
