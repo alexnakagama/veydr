@@ -53,15 +53,15 @@ Group 1 review (`reviewer2`, 2026-10-27): two rounds. The first round's 12 findi
 
 ## 2. Probe workflow and CI setup
 
-- [ ] 2.1 In `.github/actions/setup/action.yml`, add `runner.os == 'Linux'` to the `if:` of "Install Xvfb", "Enable unprivileged user namespaces", and "Disable core dumps" (design D8). Update the exact-condition assertions in `test/unit/workflow-policy.test.ts`. Extend `launchesElectron` there to also match a direct `--smoke-test` launch and `scripts/ensure-electron.cjs`, with a test case for each. Verify: `npm test` passes, and the Linux jobs of `ci.yml` stay green on the pull request.
-- [ ] 2.2 Add `test/windows-probe/results/*.jsonl text eol=lf` to `.gitattributes`, after the `*.jsonl binary` line (design D4). Verify: `git check-attr text binary -- test/windows-probe/results/x.jsonl` reports text and not binary, and `git check-attr binary -- test/fixtures/x.jsonl` still reports binary.
-- [ ] 2.3 Add `.github/workflows/windows-probe.yml` (design D1):
+- [x] 2.1 In `.github/actions/setup/action.yml`, add `runner.os == 'Linux'` to the `if:` of "Install Xvfb", "Enable unprivileged user namespaces", and "Disable core dumps" (design D8). Update the exact-condition assertions in `test/unit/workflow-policy.test.ts`. Extend `launchesElectron` there to also match a direct `--smoke-test` launch and `scripts/ensure-electron.cjs`, with a test case for each. Verify: `npm test` passes, and the Linux jobs of `ci.yml` stay green on the pull request.
+- [x] 2.2 Add `test/windows-probe/results/*.jsonl -binary text eol=lf diff merge` to `.gitattributes`, after the `*.jsonl binary` line (design D4). `binary` is a macro for `-diff -merge -text`, so `text eol=lf` alone would leave `binary` set; the line unsets it and sets `diff` and `merge` back. Verify: `git check-attr text binary -- test/windows-probe/results/x.jsonl` reports text and not binary, and `git check-attr binary -- test/fixtures/x.jsonl` still reports binary.
+- [x] 2.3 Add `.github/workflows/windows-probe.yml` (design D1):
   - triggered by `workflow_dispatch` only, with one boolean input, `negative-control` (default `false`, design D9), and `permissions: {}` at the top level;
   - one job per probe area on `windows-2025`, each with `contents: read`, a timeout, pinned checkout with `persist-credentials: false`, an identity line as the first line of its results (design D4), and an upload of its result lines that runs even when the probe fails;
   - a `summary` job on `ubuntu-24.04`, which runs whatever happened to the probe jobs, merges their results with `summary.mjs`, and uploads `summary.txt`.
 
   At this stage each probe job runs a placeholder that reports its checks as `NOT-TESTABLE` ("probe not implemented yet"). Extend `workflow-policy.test.ts`: the workflow has only the manual trigger and no write permission, it is not in `ci-ok`'s needs, it never commits or pushes, and Electron-launching jobs run setup with `electron: "true"`. Verify: `npm test` passes, and the pinned actionlint reports no errors.
-- [ ] 2.4 Document the probe workflow in `docs/ci.md`:
+- [x] 2.4 Document the probe workflow in `docs/ci.md`:
   - a pipeline table row and its purpose;
   - how to start it (`gh workflow run windows-probe.yml --ref <branch>`), and the `negative-control` input, whose runs are never committed;
   - that it is never required;
@@ -70,6 +70,8 @@ Group 1 review (`reviewer2`, 2026-10-27): two rounds. The first round's 12 findi
 
   Also add `windows-probe.yml` to the "Used in" column of the pinned-actions table for `actions/checkout`, `actions/upload-artifact`, and `actions/download-artifact`; no test checks that table. Verify: `npm test` passes, including the docs tests, and the table names every workflow that uses each action (checked with `grep -l` over `.github/workflows`).
 - [ ] 2.5 Merge groups 1–2 to `master`. Then start the workflow on the change's branch. Verify: the run completes, and its `summary.txt` artifact lists every check ID with a valid line.
+
+Group 2 review (`reviewer2`, 2026-10-29): two rounds. The first round found nothing blocking and raised 3 low findings, all fixed: the `docs/ci.md` standard-user bullet is marked as planned (tasks 3.2–6.2); `summary.mjs` reports a missing results directory as "no .jsonl results" instead of failing on ENOENT; and the policy test asserts every `windows-probe.yml` job's setup inputs (`electron: "true"` for `electron` and `nsis`, `dependencies: "false"` for the others). The second round confirmed all three, with no further findings. Notes: 2.2 uses `-binary text eol=lf diff merge`, because `binary` is a macro and `text` alone leaves it set (design D4 updated). The probe jobs start their results with `scripts/windows-probe/identity.mjs` and, until each area's probe exists, run `scripts/windows-probe/placeholder.mjs`. Verified: `npm test`, `npm run lint`, `npm run typecheck`, `npm run spec-coverage`, and the pinned actionlint. Not yet done: 2.5, and the check that `ci.yml`'s Linux jobs stay green on the pull request (2.1).
 
 ## 3. Execution contexts
 

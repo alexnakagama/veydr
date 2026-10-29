@@ -645,6 +645,11 @@ describe('command-line scripts', () => {
     expect(none.status).toBe(1)
     expect(none.stderr).toContain('no .jsonl results under')
     expect(existsSync(join(empty, 'summary.txt'))).toBe(false)
+    // No probe job uploaded anything, so download-artifact created no directory.
+    const absent = node('summary.mjs', [join(empty, 'absent'), join(empty, 'summary.txt')], env)
+    expect(absent.status).toBe(1)
+    expect(absent.stderr).toContain('no .jsonl results under')
+    expect(existsSync(join(empty, 'summary.txt'))).toBe(false)
 
     writeFileSync(join(empty, 'ports.jsonl'), file('ports', [{ id: 'port-zzz', answer: 'yes' }]))
     const rejected = node('summary.mjs', [empty, join(empty, 'summary.txt')], env)

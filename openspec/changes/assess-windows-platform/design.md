@@ -212,7 +212,7 @@ After the maintainer reviews a run, its artifact is committed:
 - `test/windows-probe/summary.txt`;
 - `test/windows-probe/results/<area>.jsonl`, the raw lines including `data`.
 
-`.gitattributes` marks `*.jsonl` as binary (groundwork change), which would hide these files in review diffs. A later, more specific line, `test/windows-probe/results/*.jsonl text eol=lf`, makes them reviewable text; later `.gitattributes` patterns take precedence.
+`.gitattributes` marks `*.jsonl` as binary (groundwork change), which would hide these files in review diffs. A later, more specific line, `test/windows-probe/results/*.jsonl -binary text eol=lf diff merge`, makes them reviewable text; later `.gitattributes` patterns take precedence. `binary` is a macro (`-diff -merge -text`), so the line unsets it and sets its parts back; `text` alone would leave `binary` set.
 
 The workflow never commits anything (D1).
 

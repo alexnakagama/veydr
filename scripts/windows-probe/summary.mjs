@@ -18,7 +18,7 @@
 // not get that context makes its area's checks NOT-TESTABLE instead of being rejected. A probe only
 // answers (`yes`, `no`, or `null` for no answer); the status comes from the prediction in checks.mjs.
 import { createHash } from 'node:crypto'
-import { readdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
 import { join, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { CHECKS, CONTEXT_AREA, PROBE_AREAS, REVISIONS } from './checks.mjs'
@@ -300,6 +300,8 @@ export function formatSummary(summary) {
 // ---------------------------------------------------------------------------------------------
 
 function jsonlFiles(dir) {
+  // download-artifact creates no directory when no probe job uploaded anything: that is "no results", not a crash.
+  if (!existsSync(dir)) return []
   return readdirSync(dir, { recursive: true, withFileTypes: true })
     .filter((entry) => entry.isFile() && entry.name.endsWith('.jsonl'))
     .map((entry) => join(entry.parentPath, entry.name))

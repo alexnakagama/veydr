@@ -4,6 +4,7 @@ import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSyn
 import { tmpdir } from 'node:os'
 import { join, relative, resolve } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
+import { PROBE_AREAS } from '../../scripts/windows-probe/checks.mjs'
 
 // Design D11: the security rules for everything under .github/ (docs/ci.md#workflow-security-rules),
 // checked on the files as text with line-level patterns, so no YAML parser is needed. The style is
@@ -303,8 +304,12 @@ function persistedCredentials(source: Source, lines: Line[]): string[] {
   return out
 }
 
-/** What starts Electron in a job: a virtual display, an npm script that launches the app, or Playwright. */
-const launchesElectron = /\b(?:xvfb-run|Xvfb)\b|npm run test:(?:integration|e2e|perf|packaging)\b|\bplaywright\b/
+/**
+ * What starts Electron in a job: a virtual display, an npm script that launches the app, Playwright,
+ * a direct launch of the built app for its smoke test, or the script that downloads Electron so the
+ * built app can be launched directly (assess-windows-platform design D8).
+ */
+const launchesElectron = /\b(?:xvfb-run|Xvfb)\b|npm run test:(?:integration|e2e|perf|packaging)\b|\bplaywright\b|--smoke-test\b|\bensure-electron\.cjs\b/
 
 /** A job that launches Electron first runs the setup action with `electron: "true"`, which enables user namespaces. */
 function electronWithoutNamespaces(source: Source, lines: Line[]): string[] {
@@ -382,6 +387,7 @@ describe('workflow policy (design D11)', () => {
         '.github/workflows/nightly.yml',
         '.github/workflows/build.yml',
         '.github/workflows/release.yml',
+        '.github/workflows/windows-probe.yml',
         '.github/dependabot.yml',
         '.github/CODEOWNERS',
         '.github/pull_request_template.md',
@@ -491,7 +497,20 @@ describe('workflow policy (design D11)', () => {
     expect(violations(edit('          electron: "true"\n', '          electron: "false"\n'))).toEqual([expect.stringContaining('launches Electron before')])
     // Any way of launching Electron counts, not only xvfb-run.
     const unprepared = valid.replace('      - uses: ./.github/actions/setup\n        with:\n          electron: "true"\n', '')
-    for (const launch of ['Xvfb :99 &', 'npm run test:e2e', 'npm run test:integration', 'npm run test:perf', 'npm run test:packaging', 'npx playwright test']) {
+    const launches = [
+      'Xvfb :99 &',
+      'npm run test:e2e',
+      'npm run test:integration',
+      'npm run test:perf',
+      'npm run test:packaging',
+      'npx playwright test',
+      // A direct launch of the built app, as the Windows probe's smoke launch does (design D8).
+      'node_modules/electron/dist/electron.exe . --smoke-test',
+      '& "$env:LOCALAPPDATA/Programs/veydr/Veydr.exe" --smoke-test',
+      // Downloading Electron is only ever done to launch it.
+      'node scripts/ensure-electron.cjs',
+    ]
+    for (const launch of launches) {
       const text = unprepared.replace('xvfb-run npm run test:e2e', launch)
       expect(text, launch).toContain(launch)
       expect(violations(fixture(text)), launch).toEqual([expect.stringContaining('launches Electron before')])
@@ -501,14 +520,25 @@ describe('workflow policy (design D11)', () => {
       expect.stringContaining('launches Electron before'),
     ])
 
-    // The setup action enables user namespaces whenever electron is "true", and fails clearly if they stay unavailable.
+    // On Linux, the setup action installs Xvfb and enables user namespaces whenever electron is "true",
+    // and fails clearly if they stay unavailable. These steps are Linux-only; on Windows electron: "true"
+    // installs only the dependencies (assess-windows-platform design D8). Exact conditions: changing
+    // one must update this test deliberately.
+    const linuxElectron = "inputs.electron == 'true' && runner.os == 'Linux'"
     const action = files.find((f) => f.path === '.github/actions/setup/action.yml')
     expect(action).toBeDefined()
     const lines = parse(action?.text ?? '')
-    const named = lines.findIndex((l) => l.kind === 'node' && l.key === 'name' && l.value === 'Enable unprivileged user namespaces')
-    expect(named).toBeGreaterThan(0)
-    const step = within(lines, stepAround(lines, named))
-    expect(step).toContainEqual(expect.objectContaining({ key: 'if', value: "inputs.electron == 'true'" }))
+    const stepNamed = (name: string): { index: number; step: Line[] } => {
+      const index = lines.findIndex((l) => l.kind === 'node' && l.key === 'name' && l.value === name)
+      expect(index, name).toBeGreaterThan(0)
+      return { index, step: within(lines, stepAround(lines, index)) }
+    }
+    const condition = (step: Line[]): (string | undefined)[] => step.filter((l) => l.kind === 'node' && l.key === 'if').map((l) => l.value)
+    const xvfb = stepNamed('Install Xvfb')
+    expect(condition(xvfb.step)).toEqual([linuxElectron])
+    const { index: named, step } = stepNamed('Enable unprivileged user namespaces')
+    expect(named).toBeGreaterThan(xvfb.index)
+    expect(condition(step)).toEqual([linuxElectron])
     const script = step.filter((l) => l.kind === 'scalar').map((l) => l.body)
     expect(script).toContain('sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0')
     // Exact lines: a reformat of the script must update these assertions deliberately.
@@ -521,10 +551,12 @@ describe('workflow policy (design D11)', () => {
     expect(script.filter((l) => l === 'exit 1')).toHaveLength(2)
 
     // Core dumps are off for Electron jobs, so a crashed renderer is reported at once (docs/ci.md).
-    const dumps = lines.findIndex((l) => l.kind === 'node' && l.key === 'name' && l.value === 'Disable core dumps')
+    const { index: dumps, step: dumpStep } = stepNamed('Disable core dumps')
     expect(dumps).toBeGreaterThan(named)
-    const dumpStep = within(lines, stepAround(lines, dumps))
-    expect(dumpStep).toContainEqual(expect.objectContaining({ key: 'if', value: "inputs.electron == 'true'" }))
+    expect(condition(dumpStep)).toEqual([linuxElectron])
+    // Every other step of the action runs on both systems, so Windows jobs get Node, npm and the dependencies.
+    const linuxOnly = lines.filter((l) => l.kind === 'node' && l.key === 'if' && /runner\.os == 'Linux'/.test(l.value ?? ''))
+    expect(linuxOnly.map((l) => l.n)).toEqual([xvfb.step, step, dumpStep].map((s) => s.find((l) => l.key === 'if')?.n))
     expect(dumpStep.filter((l) => l.kind === 'scalar').map((l) => l.body)).toEqual(["sudo sysctl -w fs.suid_dumpable=0 'kernel.core_pattern=|/bin/false'"])
   })
 
@@ -1226,6 +1258,116 @@ describe('build.yml', () => {
     expect(w.withValue(step, 'name')).toBe('smoke-linux')
     expect(w.withValue(step, 'path')).toBe('test-results/smoke-linux/')
     expect(w.withValue(step, 'retention-days')).toBe('14')
+  })
+})
+
+// windows-probe.yml (assess-windows-platform design D1): manual Windows probes, one job per area, merged by a summary job.
+
+describe('windows-probe.yml (assess-windows-platform design D1)', () => {
+  const w = loadWorkflow('.github/workflows/windows-probe.yml')
+  const resultsFile = (area: string): string => `test-results/windows-probe/results/${area}.jsonl`
+  /** The `env:` of a step, as `key: value` pairs. */
+  const envOf = (step: Range): Record<string, string> => {
+    const env = stepField(w.lines, step)('env')
+    if (env === undefined) return {}
+    return Object.fromEntries(childrenOf(w.lines, w.lines.indexOf(env)).map((i) => [(w.lines[i] as Line).key ?? '', (w.lines[i] as Line).value ?? '']))
+  }
+  const named = (job: string, name: string): Range => {
+    const found = w.steps(job).find((s) => w.field(s, 'name') === name)
+    expect(found, `step "${name}" in job ${job}`).toBeDefined()
+    return found ?? { start: 0, end: 0 }
+  }
+
+  it('exists, with one Windows job per probe area and a summary job', () => {
+    expect(w.source.text).not.toBe('')
+    expect(w.jobs.map((j) => j.name)).toEqual([...PROBE_AREAS, 'summary'])
+    for (const area of PROBE_AREAS) {
+      expect(w.jobField(area, 'runs-on')?.value, area).toBe('windows-2025')
+      expect(w.jobField(area, 'timeout-minutes'), area).toBeDefined()
+    }
+    expect(w.jobField('summary', 'runs-on')?.value).toBe('ubuntu-24.04')
+    // No step may fail without failing its job.
+    expect(w.lines.filter((l) => l.kind === 'node' && l.key === 'continue-on-error')).toEqual([])
+  })
+
+  it('starts only by hand, with the negative-control input, and is never a required check', () => {
+    expect(w.triggers()).toEqual(['workflow_dispatch'])
+    expect(Object.keys(w.dispatchInputs())).toEqual(['negative-control'])
+    expect(w.dispatchInputs()['negative-control']).toMatchObject({ type: 'boolean', required: 'false', default: 'false' })
+    // Not part of the quality gate: ci.yml neither needs its jobs in ci-ok nor refers to it.
+    const ci = loadWorkflow('.github/workflows/ci.yml')
+    const ciOkNeeds = childNames(ci.lines, childAt(ci.lines, ci.job('ci-ok').start, 'needs'))
+    expect(ciOkNeeds.length).toBeGreaterThan(0)
+    for (const name of w.jobs.map((j) => j.name)) expect(ci.jobs.map((j) => j.name), name).not.toContain(name)
+    expect(ci.source.text).not.toContain('windows-probe')
+  })
+
+  it('reads the repository only, and never commits or pushes', () => {
+    for (const job of w.jobs.map((j) => j.name)) expect(w.permissions(job), job).toEqual({ contents: 'read' })
+    expect(linesContaining(w.source, ['git push', 'git commit', 'git tag', 'git config', 'gh pr', 'gh release', 'gh api', 'secrets.'])).toEqual([])
+    for (const job of w.jobs.map((j) => j.name)) {
+      const checkout = w.stepsUsing(job, 'actions/checkout')
+      expect(checkout, job).toHaveLength(1)
+      expect(w.withValue(checkout[0] as Range, 'persist-credentials'), job).toBe('false')
+      // The commit the run was started on: nothing checks out another ref.
+      expect(w.withValue(checkout[0] as Range, 'ref'), job).toBeUndefined()
+    }
+  })
+
+  it('writes the identity line first in every probe job, and uploads the results whatever happened', () => {
+    for (const area of PROBE_AREAS) {
+      const runs = w.steps(area).filter((s) => w.field(s, 'run') !== undefined)
+      // The identity line is the first line of the results file (design D4), with the run's negative-control flag.
+      expect(w.field(runs[0] as Range, 'name'), area).toBe('Write the identity line')
+      expect(w.field(runs[0] as Range, 'run'), area).toBe(`node scripts/windows-probe/identity.mjs ${area} ${resultsFile(area)}`)
+      expect(envOf(runs[0] as Range), area).toEqual({ NEGATIVE_CONTROL: '${{ inputs.negative-control }}' })
+      // Every later step appends to the same file, under its own timeout.
+      const probe = named(area, 'Probe')
+      expect(w.field(probe, 'run'), area).toBe(`node scripts/windows-probe/placeholder.mjs ${area} ${resultsFile(area)}`)
+      expect(w.field(probe, 'timeout-minutes'), area).toMatch(/^\d+$/)
+      expect(Number(w.field(probe, 'timeout-minutes')), area).toBeLessThan(Number(w.jobField(area, 'timeout-minutes')?.value))
+      const upload = w.stepsUsing(area, 'actions/upload-artifact')
+      expect(upload, area).toHaveLength(1)
+      const step = upload[0] as Range
+      // always(), not !cancelled(): a probe that hits the job's timeout still uploads its partial results.
+      expect(w.field(step, 'if'), area).toBe('always()')
+      expect(w.withValue(step, 'name'), area).toBe(`windows-probe-results-${area}`)
+      expect(w.withValue(step, 'path'), area).toBe(resultsFile(area))
+      expect(w.steps(area).at(-1), area).toEqual(step)
+      // Only the upload is conditional, so no probe step is skipped while its job still succeeds.
+      expect(w.steps(area).map((s) => w.field(s, 'if')).filter((c) => c !== undefined), area).toEqual(['always()'])
+    }
+  })
+
+  it('prepares the Electron-launching jobs with electron: "true" (design D8), and the others with Node and npm only', () => {
+    const electronJobs = ['electron', 'nsis']
+    for (const job of w.jobs.map((j) => j.name)) {
+      const setup = w.steps(job).filter((s) => w.field(s, 'uses') === './.github/actions/setup')
+      expect(setup, job).toHaveLength(1)
+      const step = setup[0] as Range
+      // electron: "true" needs the dependencies; the setup action rejects it with dependencies: "false".
+      const expected = electronJobs.includes(job) ? { electron: '"true"', dependencies: undefined } : { electron: undefined, dependencies: '"false"' }
+      expect({ electron: w.withValue(step, 'electron'), dependencies: w.withValue(step, 'dependencies') }, job).toEqual(expected)
+    }
+  })
+
+  it('merges every area into summary.txt with summary.mjs, whatever happened to the probe jobs', () => {
+    expect(w.jobField('summary', 'if')?.value).toBe('always()')
+    expect(childNames(w.lines, childAt(w.lines, w.job('summary').start, 'needs'))).toEqual([...PROBE_AREAS])
+    const download = w.stepsUsing('summary', 'actions/download-artifact')
+    expect(download).toHaveLength(1)
+    expect(w.withValue(download[0] as Range, 'pattern')).toBe('windows-probe-results-*')
+    expect(w.withValue(download[0] as Range, 'path')).toBe('test-results/windows-probe/results')
+    expect(w.withValue(download[0] as Range, 'merge-multiple')).toBe('true')
+    expect(w.scripts('summary')).toEqual([
+      'node scripts/windows-probe/summary.mjs test-results/windows-probe/results test-results/windows-probe/summary.txt',
+    ])
+    const upload = w.stepsUsing('summary', 'actions/upload-artifact')
+    expect(upload).toHaveLength(1)
+    const step = upload[0] as Range
+    expect(w.field(step, 'if')).toBe('always()')
+    expect(w.withValue(step, 'name')).toBe('windows-probe-summary')
+    expect(w.withValue(step, 'path')).toBe('test-results/windows-probe/')
   })
 })
 

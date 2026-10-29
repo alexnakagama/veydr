@@ -1,0 +1,308 @@
+# Windows probes (docs/ci.md#windows-probes; design D1 of the OpenSpec change assess-windows-platform):
+# experiments on the windows-2025 runner that record how Windows behaves, as evidence for the
+# Windows platform work. Started by hand only, never a required check, and it commits and pushes
+# nothing. Each probe area has its own job, so a stuck or leaky probe cannot affect another. A job
+# writes its identity line, then the probe's result lines, to
+# test-results/windows-probe/results/<area>.jsonl and uploads that file whatever happened; the summary
+# job merges every area's file into summary.txt with scripts/windows-probe/summary.mjs.
+name: Windows probe
+
+on:
+  workflow_dispatch:
+    inputs:
+      negative-control:
+        description: Negative control (design D9) - start one driver from the job's shell, so the console control must fail; never committed as evidence
+        required: false
+        type: boolean
+        default: false
+
+permissions: {}
+
+jobs:
+  process-tree:
+    name: process-tree
+    runs-on: windows-2025
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+        with:
+          dependencies: "false"
+      - name: Write the identity line
+        env:
+          NEGATIVE_CONTROL: ${{ inputs.negative-control }}
+        run: node scripts/windows-probe/identity.mjs process-tree test-results/windows-probe/results/process-tree.jsonl
+      # Placeholder until the probe is implemented: reports the area's checks as NOT-TESTABLE.
+      - name: Probe
+        timeout-minutes: 5
+        run: node scripts/windows-probe/placeholder.mjs process-tree test-results/windows-probe/results/process-tree.jsonl
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: windows-probe-results-process-tree
+          path: test-results/windows-probe/results/process-tree.jsonl
+          retention-days: 14
+          if-no-files-found: error
+
+  helper:
+    name: helper
+    runs-on: windows-2025
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+        with:
+          dependencies: "false"
+      - name: Write the identity line
+        env:
+          NEGATIVE_CONTROL: ${{ inputs.negative-control }}
+        run: node scripts/windows-probe/identity.mjs helper test-results/windows-probe/results/helper.jsonl
+      # Placeholder until the probe is implemented: reports the area's checks as NOT-TESTABLE.
+      - name: Probe
+        timeout-minutes: 5
+        run: node scripts/windows-probe/placeholder.mjs helper test-results/windows-probe/results/helper.jsonl
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: windows-probe-results-helper
+          path: test-results/windows-probe/results/helper.jsonl
+          retention-days: 14
+          if-no-files-found: error
+
+  commands:
+    name: commands
+    runs-on: windows-2025
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+        with:
+          dependencies: "false"
+      - name: Write the identity line
+        env:
+          NEGATIVE_CONTROL: ${{ inputs.negative-control }}
+        run: node scripts/windows-probe/identity.mjs commands test-results/windows-probe/results/commands.jsonl
+      # Placeholder until the probe is implemented: reports the area's checks as NOT-TESTABLE.
+      - name: Probe
+        timeout-minutes: 5
+        run: node scripts/windows-probe/placeholder.mjs commands test-results/windows-probe/results/commands.jsonl
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: windows-probe-results-commands
+          path: test-results/windows-probe/results/commands.jsonl
+          retention-days: 14
+          if-no-files-found: error
+
+  environment:
+    name: environment
+    runs-on: windows-2025
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+        with:
+          dependencies: "false"
+      - name: Write the identity line
+        env:
+          NEGATIVE_CONTROL: ${{ inputs.negative-control }}
+        run: node scripts/windows-probe/identity.mjs environment test-results/windows-probe/results/environment.jsonl
+      # Placeholder until the probe is implemented: reports the area's checks as NOT-TESTABLE.
+      - name: Probe
+        timeout-minutes: 5
+        run: node scripts/windows-probe/placeholder.mjs environment test-results/windows-probe/results/environment.jsonl
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: windows-probe-results-environment
+          path: test-results/windows-probe/results/environment.jsonl
+          retention-days: 14
+          if-no-files-found: error
+
+  encoding:
+    name: encoding
+    runs-on: windows-2025
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+        with:
+          dependencies: "false"
+      - name: Write the identity line
+        env:
+          NEGATIVE_CONTROL: ${{ inputs.negative-control }}
+        run: node scripts/windows-probe/identity.mjs encoding test-results/windows-probe/results/encoding.jsonl
+      # Placeholder until the probe is implemented: reports the area's checks as NOT-TESTABLE.
+      - name: Probe
+        timeout-minutes: 5
+        run: node scripts/windows-probe/placeholder.mjs encoding test-results/windows-probe/results/encoding.jsonl
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: windows-probe-results-encoding
+          path: test-results/windows-probe/results/encoding.jsonl
+          retention-days: 14
+          if-no-files-found: error
+
+  ports:
+    name: ports
+    runs-on: windows-2025
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+        with:
+          dependencies: "false"
+      - name: Write the identity line
+        env:
+          NEGATIVE_CONTROL: ${{ inputs.negative-control }}
+        run: node scripts/windows-probe/identity.mjs ports test-results/windows-probe/results/ports.jsonl
+      # Placeholder until the probe is implemented: reports the area's checks as NOT-TESTABLE.
+      - name: Probe
+        timeout-minutes: 5
+        run: node scripts/windows-probe/placeholder.mjs ports test-results/windows-probe/results/ports.jsonl
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: windows-probe-results-ports
+          path: test-results/windows-probe/results/ports.jsonl
+          retention-days: 14
+          if-no-files-found: error
+
+  electron:
+    name: electron
+    runs-on: windows-2025
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # The probe launches the built app (design D8): on Windows electron: "true" installs only the
+      # dependencies, and the workflow policy requires it before any Electron launch.
+      - uses: ./.github/actions/setup
+        with:
+          electron: "true"
+      - name: Write the identity line
+        env:
+          NEGATIVE_CONTROL: ${{ inputs.negative-control }}
+        run: node scripts/windows-probe/identity.mjs electron test-results/windows-probe/results/electron.jsonl
+      # Placeholder until the probe is implemented: reports the area's checks as NOT-TESTABLE.
+      - name: Probe
+        timeout-minutes: 5
+        run: node scripts/windows-probe/placeholder.mjs electron test-results/windows-probe/results/electron.jsonl
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: windows-probe-results-electron
+          path: test-results/windows-probe/results/electron.jsonl
+          retention-days: 14
+          if-no-files-found: error
+
+  nsis:
+    name: nsis
+    runs-on: windows-2025
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # The probe launches the built app (design D8): on Windows electron: "true" installs only the
+      # dependencies, and the workflow policy requires it before any Electron launch.
+      - uses: ./.github/actions/setup
+        with:
+          electron: "true"
+      - name: Write the identity line
+        env:
+          NEGATIVE_CONTROL: ${{ inputs.negative-control }}
+        run: node scripts/windows-probe/identity.mjs nsis test-results/windows-probe/results/nsis.jsonl
+      # Placeholder until the probe is implemented: reports the area's checks as NOT-TESTABLE.
+      - name: Probe
+        timeout-minutes: 5
+        run: node scripts/windows-probe/placeholder.mjs nsis test-results/windows-probe/results/nsis.jsonl
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: windows-probe-results-nsis
+          path: test-results/windows-probe/results/nsis.jsonl
+          retention-days: 14
+          if-no-files-found: error
+
+  # Runs on Ubuntu whatever happened to the probe jobs: an area without results shows up in the
+  # summary as missing evidence instead of hiding the others. The Windows identity comes only from
+  # the probe jobs' identity lines (design D4).
+  summary:
+    name: summary
+    needs:
+      - process-tree
+      - helper
+      - commands
+      - environment
+      - encoding
+      - ports
+      - electron
+      - nsis
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+        with:
+          dependencies: "false"
+      - name: Download the probe results
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: windows-probe-results-*
+          path: test-results/windows-probe/results
+          merge-multiple: true
+      - name: Summarize
+        run: node scripts/windows-probe/summary.mjs test-results/windows-probe/results test-results/windows-probe/summary.txt
+      # summary.txt and results/<area>.jsonl, laid out as they are committed under test/windows-probe/.
+      - name: Upload the summary
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: windows-probe-summary
+          path: test-results/windows-probe/
+          retention-days: 14
+          if-no-files-found: error
