@@ -8,6 +8,7 @@
   "include": [
     "test/**/*.ts",
     "scripts/*.d.mts",
+    "scripts/windows-probe/*.d.mts",
     "src/main/env.d.ts",
     "src/renderer/src/env.d.ts",
     "electron.vite.config.ts",

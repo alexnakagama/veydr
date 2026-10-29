@@ -1,6 +1,6 @@
 # CI and releases
 
-Veydr's checks run on GitHub Actions, on GitHub-hosted `ubuntu-24.04` runners; one job, `windows`, runs on `windows-2025`. The workflows call the same npm scripts you run locally (`npm run verify`, `npm run test:e2e`, `npm run test:packaging`, and so on) and never re-implement them, so a failure in CI can be reproduced with the same command. The requirements are in `openspec/specs/quality-gates` and `openspec/specs/release-automation`, and the decisions in the `design.md` of the archived OpenSpec change `openspec/changes/archive/2026-10-26-add-github-actions`.
+Veydr's checks run on GitHub Actions, on GitHub-hosted `ubuntu-24.04` runners; one job, `windows`, runs on `windows-2025`, as do the manual [Windows probes](#windows-probes). The workflows call the same npm scripts you run locally (`npm run verify`, `npm run test:e2e`, `npm run test:packaging`, and so on) and never re-implement them, so a failure in CI can be reproduced with the same command. The requirements are in `openspec/specs/quality-gates` and `openspec/specs/release-automation`, and the decisions in the `design.md` of the archived OpenSpec change `openspec/changes/archive/2026-10-26-add-github-actions`.
 
 ## Pipeline overview
 
@@ -11,12 +11,13 @@ Veydr's checks run on GitHub Actions, on GitHub-hosted `ubuntu-24.04` runners; o
 | `nightly.yml` | Daily schedule, manual run with a `ref` | Performance scenarios P1–P4, `scripts/smoke-linux.sh`, `scripts/acceptance-linux.sh` | Nothing; failures are reported in one tracking issue |
 | `build.yml` | Manual run with a `ref` and a `smoke` option | Packages any ref into downloadable `.deb` and AppImage artifacts with `SHA256SUMS` | Nothing |
 | `release.yml` | Manual run with a `version` | Validates the version, runs the full gate on the bumped tree, then pushes the bump commit and tag and creates a draft release | n/a |
+| `windows-probe.yml` | Manual run with a `negative-control` option | Probes how Windows behaves on the `windows-2025` runner and records the answers as evidence for the Windows platform work; Windows stays unsupported | Nothing; never a required check |
 
 Every job prepares the runner with the local composite action `.github/actions/setup`. It sets up Node from `.nvmrc`, installs npm 11.19.0 (the version [dependencies.md](dependencies.md) was verified with; the step fails if `npm --version` reports anything else), runs `npm ci`, and restores the npm, Electron and electron-builder caches, keyed on `package-lock.json`. On Windows the Electron and electron-builder cache is left out: no Windows job downloads Electron. Its inputs:
 
 | Input | Default | Effect |
 |---|---|---|
-| `electron` | `"false"` | `"true"` installs Xvfb and enables unprivileged user namespaces (see below), for jobs that launch Electron |
+| `electron` | `"false"` | `"true"` installs Xvfb, enables unprivileged user namespaces and turns off core dumps (see below), for jobs that launch Electron. These steps run on Linux only: on Windows, `"true"` installs just the dependencies, and a job that launches the built app downloads Electron with `node scripts/ensure-electron.cjs` |
 | `cache` | `"true"` | `"false"` turns off every cache, so the release installs everything fresh from lock-verified sources |
 | `dependencies` | `"true"` | `"false"` skips `npm ci` (and the Electron cache), for a job that needs only Node and npm. The release's `validate` and `publish` jobs use it; `publish` holds a write token, and no dependency's install script should run next to it. It cannot be combined with `electron: "true"` |
 
@@ -180,6 +181,53 @@ cd veydr-build && sha256sum -c SHA256SUMS
 
 Manual builds are for testing a branch on a real machine. They are not releases: they have no provenance attestation and are deleted after 14 days.
 
+## Windows probes
+
+`.github/workflows/windows-probe.yml` runs experiments on the `windows-2025` runner that answer how Windows behaves: stopping process trees, starting `.cmd` files, the registry environment, output encodings, listening ports, Electron, and an NSIS installer. The answers are the evidence the Windows platform work builds on (OpenSpec change `assess-windows-platform`, design D1–D9). Each check is a yes/no question whose predicted answer is fixed in `scripts/windows-probe/checks.mjs` before any probe runs; `summary.mjs` derives each status (`PASS`, `FAIL`, `EXPECTED-FAIL`, `NOT-TESTABLE`) from the answer and the prediction. Windows stays "not yet supported" whatever a run shows.
+
+It is never a required check and never blocks anything: it has no pull request, push or schedule trigger, `ci.yml` does not refer to it, and `ci-ok` does not need its jobs. Every job has `contents: read` and nothing else, checks out without stored credentials, and the workflow contains no commit, tag or push step, so a run changes nothing in the repository. The policy test checks all of this. Windows runner minutes cost more than Linux ones, so start it only when a probe changed or the runner image did.
+
+Start it from **Actions → Windows probe → Run workflow**, or from the command line. GitHub offers a manual workflow only once its file is on the default branch, but the run itself uses the version on the branch it is started on:
+
+```bash
+gh workflow run windows-probe.yml --ref <branch>
+```
+
+| Input | Default | Meaning |
+|---|---|---|
+| `negative-control` | `false` | `true` starts one probe driver straight from the job's shell, which has a console, to show that the console control (`ctx-no-console`) can fail. The summary header then says `negative-control true`. Such a run is never committed as evidence, and the evidence test rejects its summary |
+
+```bash
+gh workflow run windows-probe.yml --ref <branch> -f negative-control=true
+```
+
+| Job | What it runs | Artifacts (kept 14 days) | Timeout |
+|---|---|---|---|
+| `process-tree`, `helper`, `commands`, `environment`, `encoding`, `ports` | On `windows-2025`: one probe area each (`scripts/windows-probe/`) | `windows-probe-results-<area>`: `<area>.jsonl`, whether the probe passes or fails | 20–30 min |
+| `electron`, `nsis` | On `windows-2025`: the built app and the NSIS installer. They run the setup action with `electron: "true"`, as every job that launches Electron must | `windows-probe-results-electron`, `windows-probe-results-nsis` | 45 min, 60 min |
+| `summary` | On `ubuntu-24.04`, whatever happened to the probe jobs: downloads every area's results and runs `node scripts/windows-probe/summary.mjs` | `windows-probe-summary`: `summary.txt` and `results/<area>.jsonl` | 10 min |
+
+How a probe job works:
+
+- **Identity first.** Each job starts its results file with an identity line written by `scripts/windows-probe/identity.mjs`: the runner's `ImageOS` and `ImageVersion`, the Windows build, the Node version, and the negative-control flag. The summary runs on Ubuntu, so it takes the Windows identity only from these lines, and lists every distinct image version with the areas measured on it.
+- **Answers, not statuses.** The probe appends one JSON line per check it answered (`yes`, `no`, or `null` with a reason). A check no probe reported is listed as `NOT-TESTABLE` with "no result: probe did not report it", so a crashed probe shows up as missing evidence. If no job uploaded any results at all, there is nothing to summarize: the `summary` job fails with "no .jsonl results" and writes no `summary.txt`.
+- **Results are kept whatever happened.** The upload step runs with `if: always()`, so a probe that fails or reaches its timeout still uploads the lines it wrote.
+- **Not implemented yet.** Until an area's probe exists, its job runs `scripts/windows-probe/placeholder.mjs`, which answers every check of the area with `null` and the reason "probe not implemented yet".
+- **A temporary standard user (planned, tasks 3.2–6.2; no job does this yet).** The runner account is an administrator, so the probes whose results depend on privileges (process tree, helper, environment, ports) will also run as a local standard user, `veydr-probe`, that the job creates with a random, masked password and removes at the end, whatever the outcome. The probe files will be copied to `C:\veydr-probe-std` for it. The checks run that way are the ones whose ID ends in `-std`. Every job runs on a fresh VM, so nothing outlives the job.
+
+### From a run to committed evidence
+
+A run's results become evidence only after review (design D4, tasks 8.1):
+
+1. Download the summary artifact:
+
+   ```bash
+   gh run download <run-id> --name windows-probe-summary --dir windows-probe-run
+   ```
+
+2. Check `summary.txt`: its header names the run's commit, exactly one Windows image version, and `negative-control false`; every control passed; no line says "no result: probe did not report it"; and every `FAIL` and `EXPECTED-FAIL` is understood. A `FAIL` is a prediction that did not hold, a finding, and is never fixed by editing the prediction afterwards. If the header lists several image versions, rerun the workflow.
+3. Copy `summary.txt` to `test/windows-probe/summary.txt` and `results/*.jsonl` to `test/windows-probe/results/`, and commit them in the change's pull request. `.gitattributes` marks those `.jsonl` files as text, so they show in the review diff.
+
 ## Releasing
 
 `.github/workflows/release.yml` turns `master` into a release. It is the only workflow that writes to the repository, and it does so only after the full gate passed on the exact tree it is about to push (design D6).
@@ -309,11 +357,11 @@ Every third-party action is pinned to a commit SHA, with its version as a commen
 
 | Action or image | Version | Used in |
 |---|---|---|
-| `actions/checkout` | v7.0.1 | Every workflow |
+| `actions/checkout` | v7.0.1 | Every workflow: `ci.yml`, `security.yml`, `nightly.yml`, `build.yml`, `release.yml`, `windows-probe.yml` |
 | `actions/setup-node` | v7.1.0 | `.github/actions/setup` |
 | `actions/cache` | v6.1.0 | `.github/actions/setup` |
-| `actions/upload-artifact` | v7.0.2 | `ci.yml`, `nightly.yml`, `build.yml`, `release.yml` |
-| `actions/download-artifact` | v8.0.2 | `build.yml`, `release.yml` |
+| `actions/upload-artifact` | v7.0.2 | `ci.yml`, `nightly.yml`, `build.yml`, `release.yml`, `windows-probe.yml` |
+| `actions/download-artifact` | v8.0.2 | `build.yml`, `release.yml`, `windows-probe.yml` |
 | `actions/attest-build-provenance` | v4.2.2 | `release.yml` |
 | `actions/dependency-review-action` | v5.0.0 | `security.yml` |
 | `github/codeql-action` (`init`, `analyze`) | v4.39.0 | `security.yml` |
@@ -336,6 +384,7 @@ Workflow runs that verify this pipeline on GitHub. They need the workflows on Gi
 | The draft's downloads verify (task 6.2) | The four files above, downloaded from the draft | `sha256sum -c SHA256SUMS`: both packages OK. The acceptance record has 16 steps, all `ok`; it names the SHA-256 of the attached `.deb` and the packaged app reported version `0.1.0-rc.1`. Provenance, checked without the GitHub CLI: GitHub's attestation API returns one SLSA provenance attestation for both package digests, naming `.github/workflows/release.yml` at `refs/heads/master`, source commit `a3c4eb1` (the tagged commit's parent) and run 40270392953; its DSSE signature verifies against its signing certificate (`openssl dgst -verify`), which was issued by sigstore-intermediate during the `publish` job, for the same workflow, commit and run. **Not verified:** the certificate chain to Sigstore's trusted root and the transparency-log entry, which `gh attestation verify` checks; it was not run |
 | The same version is refused once released (task 6.3): `0.1.0-rc.1` again, on `master` at `f689b5f` | [Release run 40272171521](https://github.com/alexnakagama/veydr/actions/runs/40272171521) | `validate` failed at "Check the version": `release-version: tag v0.1.0-rc.1 already exists; the version must be greater than the latest version 0.1.0-rc.1 (package.json)`. Every other job was skipped; `master` and the tag were unchanged |
 | A release started from another branch is refused before building (task 6.3): `0.1.0-rc.2` from a temporary branch `rehearsal/release-from-branch` at `f689b5f` | [Release run 40272489403](https://github.com/alexnakagama/veydr/actions/runs/40272489403) | `validate` failed at "Require master": "Release refused: a release runs only on master, not on refs/heads/rehearsal/release-from-branch". Every other job was skipped. Afterwards there was no `v0.1.0-rc.2` tag, `master` was unchanged and the Releases page still showed only the `0.1.0-rc.1` draft. The branch was then deleted |
+| Manual `windows-probe.yml` dispatch on the `assess-windows-platform` branch completes, and its `summary.txt` lists every check ID (assess-windows-platform task 2.5) | Not yet run | — |
 
 ## Repository settings
 
@@ -363,7 +412,7 @@ These answers were confirmed with the maintainer on 2026-10-25 (task 1.1 of the 
   - `ELECTRON_DISABLE_SANDBOX` and `chromiumSandbox: false`;
   - `VEYDR_ALLOW_SKIP_OFFLINE`.
 
-  A job that launches Electron must first run the setup action with `electron: "true"`. Launching means running `xvfb-run` or `Xvfb`, Playwright, or `npm run test:integration`, `test:e2e`, `test:perf` or `test:packaging`.
+  A job that launches Electron must first run the setup action with `electron: "true"`, on Linux and on Windows alike. Launching means running `xvfb-run` or `Xvfb`, Playwright, `npm run test:integration`, `test:e2e`, `test:perf` or `test:packaging`, the built app directly with `--smoke-test`, or `scripts/ensure-electron.cjs`, which downloads Electron only so it can be launched.
 - **No stored credentials.** Every `actions/checkout` sets `persist-credentials: false`, except in the release workflow's `publish` job, which pushes the release commit.
 
 The forbidden strings are matched as plain text in every file under `.github/`, comments and Markdown included, so even a note that names them fails the test.
@@ -374,7 +423,7 @@ The test reads the files as text with line-level patterns, so no YAML parser is 
 
 Chromium's sandbox needs unprivileged user namespaces, and `test/e2e/offline.spec.ts` needs a user and network namespace (`unshare --user --map-root-user --net`) to prove Veydr works offline. GitHub's `ubuntu-24.04` image sets `kernel.apparmor_restrict_unprivileged_userns=1`, which blocks both.
 
-With `electron: "true"`, the setup action runs `sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0` before any test. This puts the runner in the state the app was verified in (Debian 13, namespaces allowed), so the sandbox and the offline test run for real. The step then checks `unshare --user true` and `unshare --user --map-root-user --net true`, and fails with a clear error if either does not work, rather than letting the sandbox fail later inside Playwright.
+With `electron: "true"` on a Linux runner, the setup action runs `sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0` before any test. This puts the runner in the state the app was verified in (Debian 13, namespaces allowed), so the sandbox and the offline test run for real. The step then checks `unshare --user true` and `unshare --user --map-root-user --net true`, and fails with a clear error if either does not work, rather than letting the sandbox fail later inside Playwright.
 
 The alternatives were rejected: setting `VEYDR_ALLOW_SKIP_OFFLINE` would hide exactly what the offline test exists for, and installing Veydr's AppArmor profile on the runner covers only the packaged binary, not `node_modules/electron`. The packaged app under Ubuntu 24.04's restriction remains a manual check (see the README's platform notes); CI does not claim to cover it.
 
@@ -382,4 +431,4 @@ The alternatives were rejected: setting `VEYDR_ALLOW_SKIP_OFFLINE` would hide ex
 
 The runner image pipes core dumps to `systemd-coredump` (`kernel.core_pattern=|/usr/lib/systemd/systemd-coredump …`) and sets `fs.suid_dumpable=2`, so even Chromium's sandboxed processes, which mark themselves non-dumpable, are dumped. A crashing process stays in the kernel's exit path until its core has been written, and Electron learns that the process is gone only then. On a runner that took more than 30 seconds for a renderer, so `failure.spec.ts`'s crashed-renderer test hung: the renderer had crashed, but Veydr had not been told yet.
 
-With `electron: "true"`, the setup action therefore runs `sudo sysctl -w fs.suid_dumpable=0 'kernel.core_pattern=|/bin/false'`: no process on the runner writes a core dump. Nothing collected the dumps anyway; a crash still shows in the test output, as it does on a developer machine with dumps disabled (`ulimit -c 0`).
+With `electron: "true"` on a Linux runner, the setup action therefore runs `sudo sysctl -w fs.suid_dumpable=0 'kernel.core_pattern=|/bin/false'`: no process on the runner writes a core dump. Nothing collected the dumps anyway; a crash still shows in the test output, as it does on a developer machine with dumps disabled (`ulimit -c 0`).

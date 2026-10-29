@@ -6,3 +6,8 @@
 *.png binary
 *.ico binary
 *.jsonl binary
+
+# The committed Windows probe results are reviewed as text (assess-windows-platform design D4). Later
+# patterns win, so this must stay after the *.jsonl line above. `binary` is a macro (-diff -merge -text):
+# `text` alone would leave it set, so it is unset and its parts are set back explicitly.
+test/windows-probe/results/*.jsonl -binary text eol=lf diff merge

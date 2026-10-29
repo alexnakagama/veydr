@@ -4,7 +4,7 @@ description: Node from .nvmrc, the pinned npm, npm ci, caches, and optionally wh
 
 inputs:
   electron:
-    description: "'true' adds Xvfb and enables unprivileged user namespaces for Chromium's sandbox (design D3)."
+    description: "'true' adds Xvfb and enables unprivileged user namespaces for Chromium's sandbox (design D3), on Linux only; on Windows it installs only the dependencies."
     required: false
     default: "false"
   cache:
@@ -76,8 +76,11 @@ runs:
       shell: bash
       run: npm ci
 
+    # The Electron steps below prepare a Linux runner only. On Windows, electron: 'true' installs
+    # just the dependencies; a job that launches the built app downloads Electron itself with
+    # scripts/ensure-electron.cjs (assess-windows-platform design D8).
     - name: Install Xvfb
-      if: inputs.electron == 'true'
+      if: inputs.electron == 'true' && runner.os == 'Linux'
       shell: bash
       run: |
         sudo apt-get -o Acquire::Retries=3 update
@@ -86,7 +89,7 @@ runs:
     # Ubuntu 24.04 restricts unprivileged user namespaces through AppArmor, which breaks Chromium's
     # sandbox and the offline test. Lift the restriction instead of weakening either (design D3).
     - name: Enable unprivileged user namespaces
-      if: inputs.electron == 'true'
+      if: inputs.electron == 'true' && runner.os == 'Linux'
       shell: bash
       run: |
         if [ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
@@ -105,7 +108,7 @@ runs:
     # processes. A crashing process stays in exit until its core is written, so Electron learns of a
     # crashed renderer only much later. Nothing collects dumps on a runner; turn them off.
     - name: Disable core dumps
-      if: inputs.electron == 'true'
+      if: inputs.electron == 'true' && runner.os == 'Linux'
       shell: bash
       run: |
         sudo sysctl -w fs.suid_dumpable=0 'kernel.core_pattern=|/bin/false'
