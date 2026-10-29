@@ -18,9 +18,10 @@
 #
 # Writes one JSON object to <file>, as UTF-8 without a BOM. A section that could not be measured is
 # { "error": … }; if the script fails as a whole, the file holds { "error": … } and it exits with 1.
-# The result goes to a file, not stdout: the first windows-probe runs showed that Windows PowerShell
-# 5.1 started detached (without a console) writes nothing a pipe receives, so stdout and stderr are
-# only diagnostics here.
+# The result goes to a file, not stdout, so a run that prints nothing can still be told from one that
+# did not run. On the windows-2025 runner, Windows PowerShell 5.1 started detached (without a
+# console) does not run the script at all: it exits with 0 having written nothing (runs 40969180838
+# and 40971167924). driver.mjs then falls back to an attached run, which cannot read the job's limits.
 # Exit codes: 0 written, 1 failure.
 param(
   [Parameter(Mandatory = $true)] [int] $TargetPid,

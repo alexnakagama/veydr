@@ -214,6 +214,19 @@ describe('command-line scripts', () => {
     expect(node('identity.mjs', ['ports', out, 'extra'], env).status).toBe(2)
   })
 
+  // Task 3.2: the standard user's passwords meet Windows Server's default complexity rules. The script
+  // checks each generated password character by character, separately from the generator's own
+  // check, and prints only counts. Needs no administrator, so the Windows CI lane runs it.
+  it.skipIf(process.platform !== 'win32')('[windows-only: Windows PowerShell 5.1] standard-user.ps1 generates 1,000 distinct passwords that meet the complexity rules', { timeout: 300_000 }, () => {
+    const powershell = join(process.env['SystemRoot'] ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
+    const script = join(root, 'scripts/windows-probe/standard-user.ps1')
+    const run = spawnSync(powershell, ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', script, '-CheckPasswords', '1000'], { encoding: 'utf8', windowsHide: true })
+    expect(run.status, `${run.stdout}${run.stderr}`).toBe(0)
+    expect(run.stdout).toContain(
+      '1000 passwords, each 32 characters with an upper-case letter, a lower-case letter, a digit and a symbol, none containing the account name, all distinct',
+    )
+  })
+
   // With --unavailable the driver measures nothing, so this runs the same everywhere; the measured
   // path is covered above with context.ps1's output as data, and in the windows-probe workflow.
   it('placeholder.mjs writes its result lines to stdout, context checks first', () => {
