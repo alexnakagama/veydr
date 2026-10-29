@@ -77,19 +77,35 @@ Group 2 review (`reviewer2`, 2026-10-29): two rounds. The first round found noth
 
 - [ ] 3.1 Add `scripts/windows-probe/launch-detached.mjs` (design D9). It starts a probe driver with `detached: true` and `windowsHide: true`, sends the driver's result lines to a file, waits for the driver to exit within a timeout, and reports a driver that did not finish as a failed run. Add `scripts/windows-probe/context.ps1`, which provides `GetConsoleWindow`, `AttachConsole(ATTACH_PARENT_PROCESS)`, and the token's elevation and Administrators membership. `context.ps1` also provides the driver's Job Object membership (`IsProcessInJob` with no job handle) and, where readable, the job's limits. Make `ctx-no-console` and `ctx-job` the first checks of every driver started through the launcher. Verify:
   - a normal probe run reports `ctx-no-console` `PASS` and `ctx-job` with the membership in `data`;
-  - a separate run with `negative-control: true` starts one driver straight from the job's shell. It reports `ctx-no-console` `FAIL`, the summary turns that area's checks into `NOT-TESTABLE` naming the control, and its header marks it as a negative-control run. That run is not committed.
+  - a separate run with `negative-control: true` starts one driver on the job shell's console, as if straight from the shell (design D9: the launcher starts the `process-tree` administrator driver attached). It reports `ctx-no-console` `FAIL`, the summary turns that area's checks into `NOT-TESTABLE` naming the control, and its header marks it as a negative-control run. That run is not committed.
 - [ ] 3.2 Add `scripts/windows-probe/standard-user.ps1`. It:
   - creates the local account `veydr-probe` outside Administrators (`New-LocalUser`). Its password:
     - is 32 characters from a cryptographic random generator, with at least one upper-case letter, lower-case letter, digit, and symbol, as Windows Server's default complexity rules require (design D9);
     - is masked with `::add-mask::` before any other step uses it.
 
     A creation failure is reported with Windows' error message, which never contains the password;
-  - copies the probe files to `C:\veydr-probe-std`, with access granted to that account only, and checks that the Node runtime's directory is readable to it;
+  - copies the probe files to `C:\veydr-probe-std`, with access granted to that account only among non-administrators (Administrators and SYSTEM keep access, design D9), and checks that the Node runtime's directory is readable to it;
   - runs `Start-Service seclogon`, then runs a given driver as that user through the console-less launcher, started with an absolute `node.exe` path by `CreateProcessWithLogonW` (P/Invoke, `LOGON_WITH_PROFILE`, `CREATE_NO_WINDOW`, null environment block and desktop; design D9), so the user's registry hive (`HKCU`) exists and the environment is built from the user's profile. A failure of either step is reported in `ctx-standard-user`'s detail;
   - collects the result file;
   - removes the account in a `finally` block.
 
   `ctx-standard-user` runs first in such a driver. It confirms the token is unelevated and outside Administrators, that `HKCU\Environment` is readable, and that the probe directory is usable. If the account cannot be created or used, every `-std` check is `NOT-TESTABLE` with the error. Extend `workflow-policy.test.ts` so the password never appears in a workflow file, an `echo`, or an uploaded path. Verify: a probe run reports `ctx-standard-user` `PASS`, the job log shows the password only masked, and the account no longer exists at the end of the job (checked by a final step). Generate 1,000 passwords once and check that each satisfies the complexity rule; record that check in the task's review notes.
+
+Group 3 review (`reviewer2`, 2026-10-29): two rounds, both by reading; tasks 3.1 and 3.2 stay open until their Windows run. The first round found no blockers and raised 12 findings, all fixed:
+- `ctx-standard-user` checks that the user's hive is loaded (`HKCU\Software`), and records `HKCU\Environment` only as data, since a new profile may lack it.
+- `standard-user.ps1 -Cleanup` replaces `-CheckRemoved`. The job's last step before the upload removes an account a killed step left, and fails. The script's waits fit within its step's timeout. It removes the profile and `C:\veydr-probe-std` too.
+- The P/Invoke helper compiles inside the error handling, so a compile error gives the `--unavailable` fallback.
+- The standard-user step runs with `!cancelled()`.
+- Smaller fixes: an exit-code hint for 0xC0000142; the standard user's log is echoed with a prefix, so it cannot issue workflow commands; `context.ps1` runs fit the launcher's timeout; the context checks are ordered `ctx-no-console`, `ctx-job`, `ctx-standard-user`; a driver that writes no result line fails its run; the entry-point check ignores case on Windows; `docs/ci.md` explains `data.context`; and the script header covers a mid-run launcher failure.
+
+The three deviations were settled in design D9 and in tasks 3.1–3.2:
+- The negative control starts its driver attached, from the launcher, because the workflow policy allows no conditional probe step.
+- Administrators and SYSTEM keep access to the probe directory.
+- The `ctx-standard-user` reason in `checks.mjs` names `LOGON_WITH_PROFILE`; its prediction and question are unchanged.
+
+The second round confirmed all of them and left four nits. Two are fixed: the unavailable path stops the launcher's whole tree on timeout, and the header says `-Cleanup` deletes the directory whoever created it. One is accepted: `-Cleanup` leaves the directory if the account cannot be removed, and fails. The fourth is to be checked on the first Windows run: that `[VeydrProbeLogon]::Run` resolves after `Initialize-Logon`.
+
+Verified on Linux: `npm test`, `npm run lint`, `npm run typecheck`, `npm run spec-coverage`, and the pinned actionlint. Still to verify on the runner: a normal run and a negative-control run (3.1); `ctx-standard-user` `PASS`, a masked password, and no account left at the end of the job (3.2); and `standard-user.ps1 -CheckPasswords 1000`, the one-time check of 1,000 passwords, to be recorded here. The first run also shows whether `CreateProcessWithLogonW` gets a desktop, whether a fresh profile has `HKCU\Software`, and whether the job shell has a console.
 
 ## 4. Process-tree probes
 

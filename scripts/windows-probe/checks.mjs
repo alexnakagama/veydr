@@ -85,7 +85,7 @@ const contextChecks = [
     STANDARD_USER,
     CONTEXT_AREA,
     'Control: is the `-std` driver\'s token unelevated and outside Administrators, with `HKCU\\Environment` readable and the probe directory usable?',
-    ['yes', 'an account created by `New-LocalUser` belongs to Users only, and `-LoadUserProfile` loads its registry hive'],
+    ['yes', 'an account created by `New-LocalUser` belongs to Users only, and CreateProcessWithLogonW with LOGON_WITH_PROFILE loads its registry hive'],
     ['all -std checks'],
     { context: STANDARD, controls: [], control: true },
   ),

@@ -1,63 +1,75 @@
 #!/usr/bin/env node
-// Stands in for a probe area not implemented yet (tasks 2.3; groups 3–7 replace it area by area).
-// It answers nothing: every check the area's drivers will report gets an answer of null, so the
-// summary lists each as NOT-TESTABLE with the reason instead of as missing evidence.
+// The driver of a probe area not implemented yet (tasks 2.3; groups 4–7 replace it area by area).
+// It runs like every driver (driver.mjs): started by launch-detached.mjs without a console, it
+// reports the context checks first, measured for real, and then answers each of the area's checks
+// for its account with null and the reason, so the summary lists them as NOT-TESTABLE instead of as
+// missing evidence.
 //
-//   node scripts/windows-probe/placeholder.mjs <area> <results-file>
+//   node scripts/windows-probe/placeholder.mjs <area> --user admin|standard [--unavailable <reason>]
 //
-// appends the lines to <results-file>, which identity.mjs must have started. Exit codes: 0 written,
-// 1 failure, 2 usage error.
-import { appendFileSync, existsSync, realpathSync } from 'node:fs'
+// writes the result lines to stdout. Exit codes: 0 written, 1 failure, 2 usage error.
+import { realpathSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { CHECKS, CONTEXT_AREA, PROBE_AREAS } from './checks.mjs'
+import { DriverUsageError, parseDriverArgs, runDriver } from './driver.mjs'
 
 export const NOT_IMPLEMENTED = 'probe not implemented yet'
 
+/** The checks of `area`, other than the context checks, that a driver started for `user` answers. */
+export function placeholderIds(area, user, checks = CHECKS) {
+  if (!PROBE_AREAS.includes(area)) throw new DriverUsageError(`area must be one of ${PROBE_AREAS.join(', ')}, not ${JSON.stringify(area)}`)
+  return checks
+    .filter((c) => c.kind === 'check' && c.area === area && c.area !== CONTEXT_AREA && (c.context.user === 'both' || c.context.user === user))
+    .map((c) => c.id)
+}
+
+/** The accounts `area` has checks for, so its job knows which drivers to start. */
+export function placeholderUsers(area, checks = CHECKS) {
+  return ['admin', 'standard'].filter((user) => placeholderIds(area, user, checks).length > 0)
+}
+
+/** Runs the placeholder driver for a parsed command line; `options` are passed on to runDriver (tests). */
+export async function runPlaceholder(args, options = {}) {
+  const { user, unavailable, positional } = parseDriverArgs(args)
+  const [area, ...rest] = positional
+  if (area === undefined || rest.length > 0) throw new DriverUsageError(`expected one area, got ${JSON.stringify(positional)}`)
+  const ids = placeholderIds(area, user)
+  await runDriver({
+    ...options,
+    area,
+    user,
+    ids,
+    unavailable,
+    probe: (report) => {
+      for (const id of ids) report(id, null, NOT_IMPLEMENTED, { placeholder: true })
+    },
+  })
+}
+
 /**
- * The result lines of a placeholder for `area`, without line breaks: one per check of the area, in
- * the account it runs as, and one per context check for each account the area's drivers run as.
+ * True when Node runs this file as the entry point. Node resolves symlinks for `import.meta.url`, so
+ * argv[1] is too. Windows paths compare without case (a drive letter may differ), since a launcher or
+ * driver that wrongly thinks it was imported would exit 0 having done nothing.
  */
-export function placeholderLines(area, checks = CHECKS) {
-  if (!PROBE_AREAS.includes(area)) throw new Error(`area must be one of ${PROBE_AREAS.join(', ')}, not ${JSON.stringify(area)}`)
-  const own = checks.filter((c) => c.kind === 'check' && c.area === area)
-  const accounts = (c) => (c.context.user === 'both' ? ['admin', 'standard'] : [c.context.user])
-  const users = ['admin', 'standard'].filter((user) => own.some((c) => accounts(c).includes(user)))
-  const line = (id, user) => JSON.stringify({ id, answer: null, detail: NOT_IMPLEMENTED, data: { context: { user, console: 'none' }, placeholder: true } })
-  const context = checks.filter((c) => c.kind === 'check' && c.area === CONTEXT_AREA)
-  return [
-    ...users.flatMap((user) => context.filter((c) => accounts(c).includes(user)).map((c) => line(c.id, user))),
-    ...own.flatMap((c) => accounts(c).filter((user) => users.includes(user)).map((user) => line(c.id, user))),
-  ]
-}
-
-function main(args) {
-  const [area, out, ...rest] = args
-  if (area === undefined || out === undefined || rest.length > 0) {
-    console.error(`usage: placeholder.mjs <area> <results-file> (got: ${args.join(' ')})`)
-    return 2
-  }
-  if (!existsSync(out)) throw new Error(`${out} does not exist; identity.mjs writes its first line`)
-  const lines = placeholderLines(area)
-  appendFileSync(out, lines.map((l) => `${l}\n`).join(''))
-  console.log(`${area}: ${lines.length} checks reported as not implemented yet`)
-  return 0
-}
-
-/** True when Node runs this file as the entry point. Node resolves symlinks for `import.meta.url`, so argv[1] is too. */
 function isEntryPoint() {
   if (process.argv[1] === undefined) return false
   try {
-    return realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)
+    const [argv, self] = [realpathSync(process.argv[1]), fileURLToPath(import.meta.url)]
+    return process.platform === 'win32' ? argv.toLowerCase() === self.toLowerCase() : argv === self
   } catch {
     return false
   }
 }
 
 if (isEntryPoint()) {
-  try {
-    process.exitCode = main(process.argv.slice(2))
-  } catch (error) {
-    console.error(`placeholder.mjs: ${error instanceof Error ? error.message : String(error)}`)
-    process.exitCode = 1
-  }
+  runPlaceholder(process.argv.slice(2)).then(
+    () => {
+      process.exitCode = 0
+    },
+    (error) => {
+      const usage = error instanceof DriverUsageError
+      console.error(`${usage ? 'usage: placeholder.mjs <area> --user admin|standard [--unavailable <reason>]: ' : 'placeholder.mjs: '}${error instanceof Error ? error.message : String(error)}`)
+      process.exitCode = usage ? 2 : 1
+    },
+  )
 }

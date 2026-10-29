@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import { join, relative, resolve } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { PROBE_AREAS } from '../../scripts/windows-probe/checks.mjs'
+import { placeholderUsers } from '../../scripts/windows-probe/placeholder.mjs'
 
 // Design D11: the security rules for everything under .github/ (docs/ci.md#workflow-security-rules),
 // checked on the files as text with line-level patterns, so no YAML parser is needed. The style is
@@ -1321,10 +1322,16 @@ describe('windows-probe.yml (assess-windows-platform design D1)', () => {
       expect(w.field(runs[0] as Range, 'name'), area).toBe('Write the identity line')
       expect(w.field(runs[0] as Range, 'run'), area).toBe(`node scripts/windows-probe/identity.mjs ${area} ${resultsFile(area)}`)
       expect(envOf(runs[0] as Range), area).toEqual({ NEGATIVE_CONTROL: '${{ inputs.negative-control }}' })
-      // Every later step appends to the same file, under its own timeout.
+      // Every later step appends to the same file, under its own timeout. The driver is started without
+      // a console by the launcher (design D9), whose own timeout ends it, and reports the step failed,
+      // well before the step's.
       const probe = named(area, 'Probe')
-      expect(w.field(probe, 'run'), area).toBe(`node scripts/windows-probe/placeholder.mjs ${area} ${resultsFile(area)}`)
+      const launched = new RegExp(
+        `^node scripts/windows-probe/launch-detached\\.mjs --timeout (\\d+) --out ${resultsFile(area)} -- scripts/windows-probe/placeholder\\.mjs ${area} --user admin$`,
+      ).exec(w.field(probe, 'run') ?? '')
+      expect(launched, area).not.toBeNull()
       expect(w.field(probe, 'timeout-minutes'), area).toMatch(/^\d+$/)
+      expect(Number(launched?.[1]) + 60, area).toBeLessThanOrEqual(Number(w.field(probe, 'timeout-minutes')) * 60)
       expect(Number(w.field(probe, 'timeout-minutes')), area).toBeLessThan(Number(w.jobField(area, 'timeout-minutes')?.value))
       const upload = w.stepsUsing(area, 'actions/upload-artifact')
       expect(upload, area).toHaveLength(1)
@@ -1334,9 +1341,77 @@ describe('windows-probe.yml (assess-windows-platform design D1)', () => {
       expect(w.withValue(step, 'name'), area).toBe(`windows-probe-results-${area}`)
       expect(w.withValue(step, 'path'), area).toBe(resultsFile(area))
       expect(w.steps(area).at(-1), area).toEqual(step)
-      // Only the upload is conditional, so no probe step is skipped while its job still succeeds.
-      expect(w.steps(area).map((s) => w.field(s, 'if')).filter((c) => c !== undefined), area).toEqual(['always()'])
+      expect(w.field(step, 'name'), area).toBe('Upload results')
+      // Only these steps are conditional, and each runs more often than by default, never less: no
+      // probe step is skipped while its job still succeeds. The standard user's probe runs even if
+      // the administrator's failed; the cleanup and the upload run whatever happened.
+      const conditional = w.steps(area).filter((s) => w.field(s, 'if') !== undefined)
+      expect(conditional.map((s) => [w.field(s, 'name') ?? w.field(s, 'uses'), w.field(s, 'if')]), area).toEqual([
+        ...(placeholderUsers(area).includes('standard')
+          ? [
+              ['Probe as a standard user', '${{ !cancelled() }}'],
+              ['Remove the standard user if it is left', 'always()'],
+            ]
+          : []),
+        ['Upload results', 'always()'],
+      ])
     }
+  })
+
+  it('starts exactly one driver on the shell\'s console in a negative-control run: the process-tree driver (design D9)', () => {
+    const withFlag = w.jobs.flatMap((job) => w.steps(job.name).filter((s) => envOf(s)['NEGATIVE_CONTROL'] !== undefined).map((s) => `${job.name}: ${w.field(s, 'name') ?? ''}`))
+    expect(withFlag).toEqual(PROBE_AREAS.flatMap((area) => [`${area}: Write the identity line`, ...(area === 'process-tree' ? ['process-tree: Probe'] : [])]))
+    expect(envOf(named('process-tree', 'Probe'))).toEqual({ NEGATIVE_CONTROL: '${{ inputs.negative-control }}' })
+  })
+
+  it('runs the areas with -std checks again as a temporary standard user, and removes the account if it is left (design D9)', () => {
+    const script = 'powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/windows-probe/standard-user.ps1'
+    for (const area of PROBE_AREAS) {
+      const names = w.steps(area).map((s) => w.field(s, 'name'))
+      const std = w.steps(area).filter((s) => (w.field(s, 'run') ?? '').includes('standard-user.ps1'))
+      if (!placeholderUsers(area).includes('standard')) {
+        expect(std, area).toEqual([])
+        continue
+      }
+      expect(std.map((s) => w.field(s, 'name')), area).toEqual(['Probe as a standard user', 'Remove the standard user if it is left'])
+      const [run, check] = std as [Range, Range]
+      const launched = new RegExp(`^${script.replace(/\./g, '\\.')} -Results ${resultsFile(area)} -Timeout (\\d+) -Driver placeholder\\.mjs ${area}$`).exec(w.field(run, 'run') ?? '')
+      expect(launched, area).not.toBeNull()
+      // The script's waits (a minute for the runtime check, the launcher's timeout and a minute more)
+      // leave room for the account's setup and cleanup within the step's timeout, so its own cleanup runs.
+      expect(60 + Number(launched?.[1]) + 60 + 180, area).toBeLessThanOrEqual(Number(w.field(run, 'timeout-minutes')) * 60)
+      expect(envOf(run), area).toEqual({})
+      // Right after the Probe step, and the check is the last step before the upload.
+      expect(names.indexOf('Probe as a standard user'), area).toBe(names.indexOf('Probe') + 1)
+      expect(w.field(check, 'run'), area).toBe(`${script} -Cleanup`)
+      expect(names.indexOf('Remove the standard user if it is left'), area).toBe(names.length - 2)
+    }
+  })
+
+  it('never lets the standard user\'s password reach a workflow file, a log line in clear, or an uploaded file', () => {
+    // No password is passed in or out: the script generates it.
+    expect(w.source.text).not.toMatch(/password/i)
+    for (const job of w.jobs.map((j) => j.name)) {
+      for (const step of w.stepsUsing(job, 'actions/upload-artifact')) expect(w.withValue(step, 'path'), job).toMatch(/^test-results\/windows-probe\//)
+    }
+    // In standard-user.ps1, the clear-text password is used exactly three times, in this order:
+    // generated, masked, turned into a SecureString; then it is dropped. Every later use goes
+    // through the SecureString, which is passed to New-LocalUser and CreateProcessWithLogonW only.
+    const text = readFileSync(join(root, 'scripts/windows-probe/standard-user.ps1'), 'utf8')
+    const uses = text.split('\n').map((l) => l.trim()).filter((l) => /\$password\b/i.test(l))
+    expect(uses).toEqual([
+      '$password = New-ProbePassword',
+      '[Console]::Out.WriteLine("::add-mask::$password")',
+      '$securePassword = ConvertTo-SecureString -String $password -AsPlainText -Force',
+      '$password = $null',
+    ])
+    const secure = text.split('\n').map((l) => l.trim()).filter((l) => /\$securePassword\b/.test(l) && !l.startsWith('$securePassword ='))
+    expect(secure.length).toBeGreaterThan(0)
+    for (const line of secure) expect(line, line).toMatch(/^(?:\$account = New-LocalUser -Name \$AccountName -Password \$securePassword |\$code = \[VeydrProbeLogon\]::Run\(\$AccountName, \$securePassword, )/)
+    // No symbol the runner would unescape in an ::add-mask:: value.
+    expect(/^\$Symbols = '([^']*)'$/m.exec(text)?.[1]).not.toMatch(/%/)
+    // Nothing echoes or writes it: no output command names the variable outside the mask line.
+    expect(text).not.toMatch(/(?:echo|Write-(?:Host|Output|Verbose|Debug|Warning|Error|Information)|Out-File|Set-Content|Add-Content|Tee-Object)\b[^\n]*\$(?:secure)?password\b/i)
   })
 
   it('prepares the Electron-launching jobs with electron: "true" (design D8), and the others with Node and npm only', () => {

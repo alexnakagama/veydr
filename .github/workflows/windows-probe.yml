@@ -4,7 +4,9 @@
 # nothing. Each probe area has its own job, so a stuck or leaky probe cannot affect another. A job
 # writes its identity line, then the probe's result lines, to
 # test-results/windows-probe/results/<area>.jsonl and uploads that file whatever happened; the summary
-# job merges every area's file into summary.txt with scripts/windows-probe/summary.mjs.
+# job merges every area's file into summary.txt with scripts/windows-probe/summary.mjs. Every driver
+# is started by launch-detached.mjs without a console, and the areas with -std checks run it again as
+# a temporary standard user through standard-user.ps1 (design D9).
 name: Windows probe
 
 on:
@@ -36,10 +38,25 @@ jobs:
         env:
           NEGATIVE_CONTROL: ${{ inputs.negative-control }}
         run: node scripts/windows-probe/identity.mjs process-tree test-results/windows-probe/results/process-tree.jsonl
-      # Placeholder until the probe is implemented: reports the area's checks as NOT-TESTABLE.
+      # The driver runs without a console, like Veydr's main process (design D9). Placeholder until the
+      # probe is implemented: it answers the context checks and reports the area's other checks as NOT-TESTABLE.
+      # With negative-control true, the launcher starts this one driver on the job shell's console instead.
       - name: Probe
         timeout-minutes: 5
-        run: node scripts/windows-probe/placeholder.mjs process-tree test-results/windows-probe/results/process-tree.jsonl
+        env:
+          NEGATIVE_CONTROL: ${{ inputs.negative-control }}
+        run: node scripts/windows-probe/launch-detached.mjs --timeout 240 --out test-results/windows-probe/results/process-tree.jsonl -- scripts/windows-probe/placeholder.mjs process-tree --user admin
+      # The same driver as a temporary standard user, created and removed by the script (design D9).
+      # It runs even if the administrator's driver failed, so one failure does not cost both accounts' evidence.
+      - name: Probe as a standard user
+        if: ${{ !cancelled() }}
+        timeout-minutes: 10
+        run: powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/windows-probe/standard-user.ps1 -Results test-results/windows-probe/results/process-tree.jsonl -Timeout 240 -Driver placeholder.mjs process-tree
+      # Removes the account if the step above was killed before its own cleanup, and then fails.
+      - name: Remove the standard user if it is left
+        if: always()
+        timeout-minutes: 5
+        run: powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/windows-probe/standard-user.ps1 -Cleanup
       - name: Upload results
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -66,10 +83,22 @@ jobs:
         env:
           NEGATIVE_CONTROL: ${{ inputs.negative-control }}
         run: node scripts/windows-probe/identity.mjs helper test-results/windows-probe/results/helper.jsonl
-      # Placeholder until the probe is implemented: reports the area's checks as NOT-TESTABLE.
+      # The driver runs without a console, like Veydr's main process (design D9). Placeholder until the
+      # probe is implemented: it answers the context checks and reports the area's other checks as NOT-TESTABLE.
       - name: Probe
         timeout-minutes: 5
-        run: node scripts/windows-probe/placeholder.mjs helper test-results/windows-probe/results/helper.jsonl
+        run: node scripts/windows-probe/launch-detached.mjs --timeout 240 --out test-results/windows-probe/results/helper.jsonl -- scripts/windows-probe/placeholder.mjs helper --user admin
+      # The same driver as a temporary standard user, created and removed by the script (design D9).
+      # It runs even if the administrator's driver failed, so one failure does not cost both accounts' evidence.
+      - name: Probe as a standard user
+        if: ${{ !cancelled() }}
+        timeout-minutes: 10
+        run: powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/windows-probe/standard-user.ps1 -Results test-results/windows-probe/results/helper.jsonl -Timeout 240 -Driver placeholder.mjs helper
+      # Removes the account if the step above was killed before its own cleanup, and then fails.
+      - name: Remove the standard user if it is left
+        if: always()
+        timeout-minutes: 5
+        run: powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/windows-probe/standard-user.ps1 -Cleanup
       - name: Upload results
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -96,10 +125,11 @@ jobs:
         env:
           NEGATIVE_CONTROL: ${{ inputs.negative-control }}
         run: node scripts/windows-probe/identity.mjs commands test-results/windows-probe/results/commands.jsonl
-      # Placeholder until the probe is implemented: reports the area's checks as NOT-TESTABLE.
+      # The driver runs without a console, like Veydr's main process (design D9). Placeholder until the
+      # probe is implemented: it answers the context checks and reports the area's other checks as NOT-TESTABLE.
       - name: Probe
         timeout-minutes: 5
-        run: node scripts/windows-probe/placeholder.mjs commands test-results/windows-probe/results/commands.jsonl
+        run: node scripts/windows-probe/launch-detached.mjs --timeout 240 --out test-results/windows-probe/results/commands.jsonl -- scripts/windows-probe/placeholder.mjs commands --user admin
       - name: Upload results
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -126,10 +156,22 @@ jobs:
         env:
           NEGATIVE_CONTROL: ${{ inputs.negative-control }}
         run: node scripts/windows-probe/identity.mjs environment test-results/windows-probe/results/environment.jsonl
-      # Placeholder until the probe is implemented: reports the area's checks as NOT-TESTABLE.
+      # The driver runs without a console, like Veydr's main process (design D9). Placeholder until the
+      # probe is implemented: it answers the context checks and reports the area's other checks as NOT-TESTABLE.
       - name: Probe
         timeout-minutes: 5
-        run: node scripts/windows-probe/placeholder.mjs environment test-results/windows-probe/results/environment.jsonl
+        run: node scripts/windows-probe/launch-detached.mjs --timeout 240 --out test-results/windows-probe/results/environment.jsonl -- scripts/windows-probe/placeholder.mjs environment --user admin
+      # The same driver as a temporary standard user, created and removed by the script (design D9).
+      # It runs even if the administrator's driver failed, so one failure does not cost both accounts' evidence.
+      - name: Probe as a standard user
+        if: ${{ !cancelled() }}
+        timeout-minutes: 10
+        run: powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/windows-probe/standard-user.ps1 -Results test-results/windows-probe/results/environment.jsonl -Timeout 240 -Driver placeholder.mjs environment
+      # Removes the account if the step above was killed before its own cleanup, and then fails.
+      - name: Remove the standard user if it is left
+        if: always()
+        timeout-minutes: 5
+        run: powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/windows-probe/standard-user.ps1 -Cleanup
       - name: Upload results
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -156,10 +198,11 @@ jobs:
         env:
           NEGATIVE_CONTROL: ${{ inputs.negative-control }}
         run: node scripts/windows-probe/identity.mjs encoding test-results/windows-probe/results/encoding.jsonl
-      # Placeholder until the probe is implemented: reports the area's checks as NOT-TESTABLE.
+      # The driver runs without a console, like Veydr's main process (design D9). Placeholder until the
+      # probe is implemented: it answers the context checks and reports the area's other checks as NOT-TESTABLE.
       - name: Probe
         timeout-minutes: 5
-        run: node scripts/windows-probe/placeholder.mjs encoding test-results/windows-probe/results/encoding.jsonl
+        run: node scripts/windows-probe/launch-detached.mjs --timeout 240 --out test-results/windows-probe/results/encoding.jsonl -- scripts/windows-probe/placeholder.mjs encoding --user admin
       - name: Upload results
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -186,10 +229,22 @@ jobs:
         env:
           NEGATIVE_CONTROL: ${{ inputs.negative-control }}
         run: node scripts/windows-probe/identity.mjs ports test-results/windows-probe/results/ports.jsonl
-      # Placeholder until the probe is implemented: reports the area's checks as NOT-TESTABLE.
+      # The driver runs without a console, like Veydr's main process (design D9). Placeholder until the
+      # probe is implemented: it answers the context checks and reports the area's other checks as NOT-TESTABLE.
       - name: Probe
         timeout-minutes: 5
-        run: node scripts/windows-probe/placeholder.mjs ports test-results/windows-probe/results/ports.jsonl
+        run: node scripts/windows-probe/launch-detached.mjs --timeout 240 --out test-results/windows-probe/results/ports.jsonl -- scripts/windows-probe/placeholder.mjs ports --user admin
+      # The same driver as a temporary standard user, created and removed by the script (design D9).
+      # It runs even if the administrator's driver failed, so one failure does not cost both accounts' evidence.
+      - name: Probe as a standard user
+        if: ${{ !cancelled() }}
+        timeout-minutes: 10
+        run: powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/windows-probe/standard-user.ps1 -Results test-results/windows-probe/results/ports.jsonl -Timeout 240 -Driver placeholder.mjs ports
+      # Removes the account if the step above was killed before its own cleanup, and then fails.
+      - name: Remove the standard user if it is left
+        if: always()
+        timeout-minutes: 5
+        run: powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/windows-probe/standard-user.ps1 -Cleanup
       - name: Upload results
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -218,10 +273,11 @@ jobs:
         env:
           NEGATIVE_CONTROL: ${{ inputs.negative-control }}
         run: node scripts/windows-probe/identity.mjs electron test-results/windows-probe/results/electron.jsonl
-      # Placeholder until the probe is implemented: reports the area's checks as NOT-TESTABLE.
+      # The driver runs without a console, like Veydr's main process (design D9). Placeholder until the
+      # probe is implemented: it answers the context checks and reports the area's other checks as NOT-TESTABLE.
       - name: Probe
         timeout-minutes: 5
-        run: node scripts/windows-probe/placeholder.mjs electron test-results/windows-probe/results/electron.jsonl
+        run: node scripts/windows-probe/launch-detached.mjs --timeout 240 --out test-results/windows-probe/results/electron.jsonl -- scripts/windows-probe/placeholder.mjs electron --user admin
       - name: Upload results
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -250,10 +306,11 @@ jobs:
         env:
           NEGATIVE_CONTROL: ${{ inputs.negative-control }}
         run: node scripts/windows-probe/identity.mjs nsis test-results/windows-probe/results/nsis.jsonl
-      # Placeholder until the probe is implemented: reports the area's checks as NOT-TESTABLE.
+      # The driver runs without a console, like Veydr's main process (design D9). Placeholder until the
+      # probe is implemented: it answers the context checks and reports the area's other checks as NOT-TESTABLE.
       - name: Probe
         timeout-minutes: 5
-        run: node scripts/windows-probe/placeholder.mjs nsis test-results/windows-probe/results/nsis.jsonl
+        run: node scripts/windows-probe/launch-detached.mjs --timeout 240 --out test-results/windows-probe/results/nsis.jsonl -- scripts/windows-probe/placeholder.mjs nsis --user admin
       - name: Upload results
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
