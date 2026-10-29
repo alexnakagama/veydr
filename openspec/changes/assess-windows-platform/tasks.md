@@ -78,7 +78,7 @@ Group 2 review (`reviewer2`, 2026-10-29): two rounds. The first round found noth
 - [x] 3.1 Add `scripts/windows-probe/launch-detached.mjs` (design D9). It starts a probe driver with `detached: true` and `windowsHide: true`, sends the driver's result lines to a file, waits for the driver to exit within a timeout, and reports a driver that did not finish as a failed run. Add `scripts/windows-probe/context.ps1`, which provides `GetConsoleWindow`, `AttachConsole(ATTACH_PARENT_PROCESS)`, and the token's elevation and Administrators membership. `context.ps1` also provides the driver's Job Object membership (`IsProcessInJob` with no job handle) and, where readable, the job's limits. Make `ctx-no-console` and `ctx-job` the first checks of every driver started through the launcher. Verify:
   - a normal probe run reports `ctx-no-console` `PASS` and `ctx-job` with the membership in `data`;
   - a separate run with `negative-control: true` starts one driver on the job shell's console, as if straight from the shell (design D9: the launcher starts the `process-tree` administrator driver attached). It reports `ctx-no-console` `FAIL`, the summary turns that area's checks into `NOT-TESTABLE` naming the control, and its header marks it as a negative-control run. That run is not committed.
-- [ ] 3.2 Add `scripts/windows-probe/standard-user.ps1`. It:
+- [x] 3.2 Add `scripts/windows-probe/standard-user.ps1`. It:
   - creates the local account `veydr-probe` outside Administrators (`New-LocalUser`). Its password:
     - is 32 characters from a cryptographic random generator, with at least one upper-case letter, lower-case letter, digit, and symbol, as Windows Server's default complexity rules require (design D9);
     - is masked with `::add-mask::` before any other step uses it.
@@ -91,7 +91,7 @@ Group 2 review (`reviewer2`, 2026-10-29): two rounds. The first round found noth
 
   `ctx-standard-user` runs first in such a driver. It confirms the token is unelevated and outside Administrators, that `HKCU\Environment` is readable, and that the probe directory is usable. If the account cannot be created or used, every `-std` check is `NOT-TESTABLE` with the error. Extend `workflow-policy.test.ts` so the password never appears in a workflow file, an `echo`, or an uploaded path. Verify: a probe run reports `ctx-standard-user` `PASS`, the job log shows the password only masked, and the account no longer exists at the end of the job (checked by a final step). Generate 1,000 passwords once and check that each satisfies the complexity rule; record that check in the task's review notes.
 
-Group 3 review (`reviewer2`, 2026-10-29): two rounds, both by reading, then Windows runs on `group3/tasks`. Task 3.2 stays open until its last two checks. The first round found no blockers and raised 12 findings, all fixed:
+Group 3 review (`reviewer2`, 2026-10-29): two rounds, both by reading, then Windows runs on `group3/tasks`. Both tasks are verified; the runs are below. The first round found no blockers and raised 12 findings, all fixed:
 - `ctx-standard-user` checks that the user's hive is loaded (`HKCU\Software`), and records `HKCU\Environment` only as data, since a new profile may lack it.
 - `standard-user.ps1 -Cleanup` replaces `-CheckRemoved`. The job's last step before the upload removes an account a killed step left, and fails. The script's waits fit within its step's timeout. It removes the profile and `C:\veydr-probe-std` too.
 - The P/Invoke helper compiles inside the error handling, so a compile error gives the `--unavailable` fallback.
@@ -111,7 +111,7 @@ Verified on Linux: `npm test`, `npm run lint`, `npm run typecheck`, `npm run spe
 
 Finding: the job's limits cannot be read on this runner. Windows PowerShell 5.1 started detached (without a console) does not run `context.ps1` at all: it exits with 0 having written nothing (`contextHelperDetachedError`, run 40971167924). Every measurement comes from the attached fallback, which is inside libuv's job. Task 3.1 asks for the limits only where readable; a compiled helper (task 4.4) could read them, and `pt-libuv-breakaway` records job limits in group 4.
 
-Still to verify for 3.2: every job of run 40971167924 succeeded, including the four steps that remove the standard user; its job log shows the password only masked; and the check of 1,000 passwords passes. That check runs `standard-user.ps1 -CheckPasswords 1000` as a Windows-only unit test in `windows-probe-jobs.test.ts`, so the `windows` CI job runs it on every pull request; its first pass is to be recorded here.
+Verified for 3.2, as reported by the maintainer on 2026-10-29: every job of run 40971167924 succeeded, including the four steps that remove the standard user (`-Cleanup` fails if the account is left). In that run's "Probe as a standard user" logs, a search finds neither `add-mask` nor `***`, and no password shows in clear. The check of 1,000 passwords passed in the `windows` CI job at `dba4e20`. It runs `standard-user.ps1 -CheckPasswords 1000` as a Windows-only unit test in `windows-probe-jobs.test.ts`, so it runs again on every pull request.
 
 ## 4. Process-tree probes
 
