@@ -75,21 +75,43 @@ Group 2 review (`reviewer2`, 2026-10-29): two rounds. The first round found noth
 
 ## 3. Execution contexts
 
-- [ ] 3.1 Add `scripts/windows-probe/launch-detached.mjs` (design D9). It starts a probe driver with `detached: true` and `windowsHide: true`, sends the driver's result lines to a file, waits for the driver to exit within a timeout, and reports a driver that did not finish as a failed run. Add `scripts/windows-probe/context.ps1`, which provides `GetConsoleWindow`, `AttachConsole(ATTACH_PARENT_PROCESS)`, and the token's elevation and Administrators membership. `context.ps1` also provides the driver's Job Object membership (`IsProcessInJob` with no job handle) and, where readable, the job's limits. Make `ctx-no-console` and `ctx-job` the first checks of every driver started through the launcher. Verify:
+- [x] 3.1 Add `scripts/windows-probe/launch-detached.mjs` (design D9). It starts a probe driver with `detached: true` and `windowsHide: true`, sends the driver's result lines to a file, waits for the driver to exit within a timeout, and reports a driver that did not finish as a failed run. Add `scripts/windows-probe/context.ps1`, which provides `GetConsoleWindow`, `AttachConsole(ATTACH_PARENT_PROCESS)`, and the token's elevation and Administrators membership. `context.ps1` also provides the driver's Job Object membership (`IsProcessInJob` with no job handle) and, where readable, the job's limits. Make `ctx-no-console` and `ctx-job` the first checks of every driver started through the launcher. Verify:
   - a normal probe run reports `ctx-no-console` `PASS` and `ctx-job` with the membership in `data`;
-  - a separate run with `negative-control: true` starts one driver straight from the job's shell. It reports `ctx-no-console` `FAIL`, the summary turns that area's checks into `NOT-TESTABLE` naming the control, and its header marks it as a negative-control run. That run is not committed.
+  - a separate run with `negative-control: true` starts one driver on the job shell's console, as if straight from the shell (design D9: the launcher starts the `process-tree` administrator driver attached). It reports `ctx-no-console` `FAIL`, the summary turns that area's checks into `NOT-TESTABLE` naming the control, and its header marks it as a negative-control run. That run is not committed.
 - [ ] 3.2 Add `scripts/windows-probe/standard-user.ps1`. It:
   - creates the local account `veydr-probe` outside Administrators (`New-LocalUser`). Its password:
     - is 32 characters from a cryptographic random generator, with at least one upper-case letter, lower-case letter, digit, and symbol, as Windows Server's default complexity rules require (design D9);
     - is masked with `::add-mask::` before any other step uses it.
 
     A creation failure is reported with Windows' error message, which never contains the password;
-  - copies the probe files to `C:\veydr-probe-std`, with access granted to that account only, and checks that the Node runtime's directory is readable to it;
+  - copies the probe files to `C:\veydr-probe-std`, with access granted to that account only among non-administrators (Administrators and SYSTEM keep access, design D9), and checks that the Node runtime's directory is readable to it;
   - runs `Start-Service seclogon`, then runs a given driver as that user through the console-less launcher, started with an absolute `node.exe` path by `CreateProcessWithLogonW` (P/Invoke, `LOGON_WITH_PROFILE`, `CREATE_NO_WINDOW`, null environment block and desktop; design D9), so the user's registry hive (`HKCU`) exists and the environment is built from the user's profile. A failure of either step is reported in `ctx-standard-user`'s detail;
   - collects the result file;
   - removes the account in a `finally` block.
 
   `ctx-standard-user` runs first in such a driver. It confirms the token is unelevated and outside Administrators, that `HKCU\Environment` is readable, and that the probe directory is usable. If the account cannot be created or used, every `-std` check is `NOT-TESTABLE` with the error. Extend `workflow-policy.test.ts` so the password never appears in a workflow file, an `echo`, or an uploaded path. Verify: a probe run reports `ctx-standard-user` `PASS`, the job log shows the password only masked, and the account no longer exists at the end of the job (checked by a final step). Generate 1,000 passwords once and check that each satisfies the complexity rule; record that check in the task's review notes.
+
+Group 3 review (`reviewer2`, 2026-10-29): two rounds, both by reading, then Windows runs on `group3/tasks`. Task 3.2 stays open until its last two checks. The first round found no blockers and raised 12 findings, all fixed:
+- `ctx-standard-user` checks that the user's hive is loaded (`HKCU\Software`), and records `HKCU\Environment` only as data, since a new profile may lack it.
+- `standard-user.ps1 -Cleanup` replaces `-CheckRemoved`. The job's last step before the upload removes an account a killed step left, and fails. The script's waits fit within its step's timeout. It removes the profile and `C:\veydr-probe-std` too.
+- The P/Invoke helper compiles inside the error handling, so a compile error gives the `--unavailable` fallback.
+- The standard-user step runs with `!cancelled()`.
+- Smaller fixes: an exit-code hint for 0xC0000142; the standard user's log is echoed with a prefix, so it cannot issue workflow commands; `context.ps1` runs fit the launcher's timeout; the context checks are ordered `ctx-no-console`, `ctx-job`, `ctx-standard-user`; a driver that writes no result line fails its run; the entry-point check ignores case on Windows; `docs/ci.md` explains `data.context`; and the script header covers a mid-run launcher failure.
+
+The three deviations were settled in design D9 and in tasks 3.1–3.2:
+- The negative control starts its driver attached, from the launcher, because the workflow policy allows no conditional probe step.
+- Administrators and SYSTEM keep access to the probe directory.
+- The `ctx-standard-user` reason in `checks.mjs` names `LOGON_WITH_PROFILE`; its prediction and question are unchanged.
+
+The second round confirmed all of them and left four nits. Two are fixed: the unavailable path stops the launcher's whole tree on timeout, and the header says `-Cleanup` deletes the directory whoever created it. One is accepted: `-Cleanup` leaves the directory if the account cannot be removed, and fails. The fourth is to be checked on the first Windows run: that `[VeydrProbeLogon]::Run` resolves after `Initialize-Logon`.
+
+Verified on Linux: `npm test`, `npm run lint`, `npm run typecheck`, `npm run spec-coverage`, and the pinned actionlint. Verified on the runner, all on image `win25-vs2026` 20261021.278.1 (build 10.0.26100.33650, Node v24.22.1), with no "no result" line:
+- [Windows probe run 40969180838](https://github.com/alexnakagama/veydr/actions/runs/40969180838) (`7a82c5c`) and [run 40971167924](https://github.com/alexnakagama/veydr/actions/runs/40971167924) (`ee5f1cd`), both normal runs. `ctx-no-console` is `PASS` for all 12 drivers (8 as administrator, 4 as the standard user). `ctx-job` is `EXPECTED-FAIL` for all of them, with `inJob: true` in `data`. `ctx-standard-user` is `PASS` in all four areas: unelevated, Administrators absent, hive loaded (`HKCU\Environment` present, 3 values), probe directory usable. So `CreateProcessWithLogonW` worked without a desktop, and a fresh profile has `HKCU\Software`.
+- [Run 40969529732](https://github.com/alexnakagama/veydr/actions/runs/40969529732) (`7a82c5c`), with `negative-control: true`. `ctx-no-console` is `FAIL` for `process-tree/admin` only: the job shell has a console without a window (`AttachConsole` succeeded, window `0x0`). That area's checks are `NOT-TESTABLE` naming the control, and the header says `negative-control true`. Not committed.
+
+Finding: the job's limits cannot be read on this runner. Windows PowerShell 5.1 started detached (without a console) does not run `context.ps1` at all: it exits with 0 having written nothing (`contextHelperDetachedError`, run 40971167924). Every measurement comes from the attached fallback, which is inside libuv's job. Task 3.1 asks for the limits only where readable; a compiled helper (task 4.4) could read them, and `pt-libuv-breakaway` records job limits in group 4.
+
+Still to verify for 3.2: every job of run 40971167924 succeeded, including the four steps that remove the standard user; its job log shows the password only masked; and the check of 1,000 passwords passes. That check runs `standard-user.ps1 -CheckPasswords 1000` as a Windows-only unit test in `windows-probe-jobs.test.ts`, so the `windows` CI job runs it on every pull request; its first pass is to be recorded here.
 
 ## 4. Process-tree probes
 
