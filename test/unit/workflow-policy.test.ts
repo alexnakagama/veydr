@@ -1273,6 +1273,15 @@ describe('windows-probe.yml (assess-windows-platform design D1)', () => {
     if (env === undefined) return {}
     return Object.fromEntries(childrenOf(w.lines, w.lines.indexOf(env)).map((i) => [(w.lines[i] as Line).key ?? '', (w.lines[i] as Line).value ?? '']))
   }
+  /**
+   * The timeout in a command that must read exactly `before`, a whole number of seconds, then
+   * `after`; undefined if it does not. Compared as text, so no pattern is built from the expected command.
+   */
+  const timeoutIn = (command: string | undefined, before: string, after: string): string | undefined => {
+    if (command === undefined || !command.startsWith(before) || !command.endsWith(after)) return undefined
+    const middle = command.slice(before.length, command.length - after.length)
+    return /^\d+$/.test(middle) ? middle : undefined
+  }
   const named = (job: string, name: string): Range => {
     const found = w.steps(job).find((s) => w.field(s, 'name') === name)
     expect(found, `step "${name}" in job ${job}`).toBeDefined()
@@ -1326,12 +1335,14 @@ describe('windows-probe.yml (assess-windows-platform design D1)', () => {
       // a console by the launcher (design D9), whose own timeout ends it, and reports the step failed,
       // well before the step's.
       const probe = named(area, 'Probe')
-      const launched = new RegExp(
-        `^node scripts/windows-probe/launch-detached\\.mjs --timeout (\\d+) --out ${resultsFile(area)} -- scripts/windows-probe/placeholder\\.mjs ${area} --user admin$`,
-      ).exec(w.field(probe, 'run') ?? '')
-      expect(launched, area).not.toBeNull()
+      const timeout = timeoutIn(
+        w.field(probe, 'run'),
+        'node scripts/windows-probe/launch-detached.mjs --timeout ',
+        ` --out ${resultsFile(area)} -- scripts/windows-probe/placeholder.mjs ${area} --user admin`,
+      )
+      expect(timeout, area).toBeDefined()
       expect(w.field(probe, 'timeout-minutes'), area).toMatch(/^\d+$/)
-      expect(Number(launched?.[1]) + 60, area).toBeLessThanOrEqual(Number(w.field(probe, 'timeout-minutes')) * 60)
+      expect(Number(timeout) + 60, area).toBeLessThanOrEqual(Number(w.field(probe, 'timeout-minutes')) * 60)
       expect(Number(w.field(probe, 'timeout-minutes')), area).toBeLessThan(Number(w.jobField(area, 'timeout-minutes')?.value))
       const upload = w.stepsUsing(area, 'actions/upload-artifact')
       expect(upload, area).toHaveLength(1)
@@ -1375,11 +1386,11 @@ describe('windows-probe.yml (assess-windows-platform design D1)', () => {
       }
       expect(std.map((s) => w.field(s, 'name')), area).toEqual(['Probe as a standard user', 'Remove the standard user if it is left'])
       const [run, check] = std as [Range, Range]
-      const launched = new RegExp(`^${script.replace(/\./g, '\\.')} -Results ${resultsFile(area)} -Timeout (\\d+) -Driver placeholder\\.mjs ${area}$`).exec(w.field(run, 'run') ?? '')
-      expect(launched, area).not.toBeNull()
+      const timeout = timeoutIn(w.field(run, 'run'), `${script} -Results ${resultsFile(area)} -Timeout `, ` -Driver placeholder.mjs ${area}`)
+      expect(timeout, area).toBeDefined()
       // The script's waits (a minute for the runtime check, the launcher's timeout and a minute more)
       // leave room for the account's setup and cleanup within the step's timeout, so its own cleanup runs.
-      expect(60 + Number(launched?.[1]) + 60 + 180, area).toBeLessThanOrEqual(Number(w.field(run, 'timeout-minutes')) * 60)
+      expect(60 + Number(timeout) + 60 + 180, area).toBeLessThanOrEqual(Number(w.field(run, 'timeout-minutes')) * 60)
       expect(envOf(run), area).toEqual({})
       // Right after the Probe step, and the check is the last step before the upload.
       expect(names.indexOf('Probe as a standard user'), area).toBe(names.indexOf('Probe') + 1)
