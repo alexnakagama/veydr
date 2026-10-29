@@ -104,9 +104,15 @@ describe('command-line scripts', () => {
     dirs.push(dir)
     return dir
   }
+  /**
+   * Runs a script with `extra` replacing the test's variables of the same name; an `undefined` entry
+   * removes the variable. Names are matched without case, as Windows does: the runner may hold
+   * `ImageOS` under another spelling, which an exact `delete` would leave in place.
+   */
   const node = (script: string, args: string[], extra: Record<string, string | undefined> = {}) => {
-    const childEnv: NodeJS.ProcessEnv = { ...process.env, ...extra }
-    for (const [name, value] of Object.entries(extra)) if (value === undefined) delete childEnv[name]
+    const replaced = new Set(Object.keys(extra).map((name) => name.toUpperCase()))
+    const childEnv: NodeJS.ProcessEnv = Object.fromEntries(Object.entries(process.env).filter(([name]) => !replaced.has(name.toUpperCase())))
+    for (const [name, value] of Object.entries(extra)) if (value !== undefined) childEnv[name] = value
     return spawnSync(process.execPath, [join(root, 'scripts/windows-probe', script), ...args], { encoding: 'utf8', env: childEnv })
   }
 
