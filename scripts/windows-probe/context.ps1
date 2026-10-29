@@ -2,7 +2,7 @@
 # own child and turns the measurement into the ctx-no-console, ctx-job and ctx-standard-user answers.
 # Runs under Windows PowerShell 5.1 (design D2):
 #
-#   powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File context.ps1 -TargetPid <driver PID> [-ReadJobLimits]
+#   powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File context.ps1 -TargetPid <driver PID> -OutFile <file> [-ReadJobLimits]
 #
 # Node cannot call these APIs itself, so they are measured from here:
 # - console: after FreeConsole, AttachConsole(ATTACH_PARENT_PROCESS) attaches to the console of this
@@ -16,20 +16,38 @@
 # - hkcu: whether the user's registry hive is loaded (HKCU\Software opens), and whether
 #   HKCU\Environment exists and opens; an access error on either is the section's error.
 #
-# Prints one JSON object to stdout, as UTF-8. A section that could not be measured is { "error": … }.
-# Exit codes: 0 printed, 1 failure.
+# Writes one JSON object to <file>, as UTF-8 without a BOM. A section that could not be measured is
+# { "error": … }; if the script fails as a whole, the file holds { "error": … } and it exits with 1.
+# The result goes to a file, not stdout: the first windows-probe runs showed that Windows PowerShell
+# 5.1 started detached (without a console) writes nothing a pipe receives, so stdout and stderr are
+# only diagnostics here.
+# Exit codes: 0 written, 1 failure.
 param(
   [Parameter(Mandatory = $true)] [int] $TargetPid,
+  [Parameter(Mandatory = $true)] [string] $OutFile,
   [switch] $ReadJobLimits
 )
 
 Set-StrictMode -Version 3.0
 $ErrorActionPreference = 'Stop'
 
-# Taken before any console call: FreeConsole and AttachConsole must not change where the result goes.
-$stdout = [Console]::OpenStandardOutput()
+$utf8 = New-Object System.Text.UTF8Encoding $false
+
+# The innermost exception's message: PowerShell wraps .NET exceptions in MethodInvocationException.
+function Get-ErrorText([System.Management.Automation.ErrorRecord] $Record) {
+  $exception = $Record.Exception
+  while ($null -ne $exception.InnerException) { $exception = $exception.InnerException }
+  return $exception.Message
+}
+
+# Reports a failure on stderr and in the result file, which the driver reads even when stderr is lost.
+function Write-Failure([string] $Message) {
+  [Console]::Error.WriteLine($Message)
+  try { [System.IO.File]::WriteAllText($OutFile, (ConvertTo-Json -InputObject @{ error = $Message } -Compress), $utf8) } catch { }
+}
 
 # C# 5: Add-Type in Windows PowerShell 5.1 compiles with the .NET Framework compiler.
+try {
 Add-Type -TypeDefinition @'
 using System;
 using System.ComponentModel;
@@ -267,13 +285,11 @@ public static class VeydrProbeContext
     }
 }
 '@
-
-# The innermost exception's message: PowerShell wraps .NET exceptions in MethodInvocationException.
-function Get-ErrorText([System.Management.Automation.ErrorRecord] $Record) {
-  $exception = $Record.Exception
-  while ($null -ne $exception.InnerException) { $exception = $exception.InnerException }
-  return $exception.Message
+} catch {
+  Write-Failure "context.ps1: cannot compile its P/Invoke helper: $(Get-ErrorText $_)"
+  exit 1
 }
+
 
 try {
   $result = [ordered]@{ targetPid = $TargetPid; parentPid = [VeydrProbeContext]::ParentPid() }
@@ -319,11 +335,9 @@ try {
     $result.hkcu = @{ error = (Get-ErrorText $_) }
   }
 
-  $bytes = [System.Text.UTF8Encoding]::new($false).GetBytes((ConvertTo-Json -InputObject $result -Compress -Depth 4))
-  $stdout.Write($bytes, 0, $bytes.Length)
-  $stdout.Flush()
+  [System.IO.File]::WriteAllText($OutFile, (ConvertTo-Json -InputObject $result -Compress -Depth 4), $utf8)
   exit 0
 } catch {
-  [Console]::Error.WriteLine("context.ps1: $(Get-ErrorText $_)")
+  Write-Failure "context.ps1: $(Get-ErrorText $_)"
   exit 1
 }

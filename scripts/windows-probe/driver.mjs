@@ -11,7 +11,8 @@
 // could not be created or used: the driver then runs nothing and answers each of its checks with
 // null and the reason, so they are NOT-TESTABLE with the error instead of missing.
 import { spawn } from 'node:child_process'
-import { readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { CHECKS, CONTEXT_AREA, PROBE_AREAS } from './checks.mjs'
@@ -192,14 +193,47 @@ export function contextAnswers({ user, measurement, driverPid, probeDir = { usab
   })
 }
 
-/** Runs context.ps1 under Windows PowerShell 5.1 (design D2) and parses its one JSON line. */
+/**
+ * The measurement from one run of context.ps1, or `{ error }` saying why there is none.
+ * `fileText` is its result file's content, or undefined if it wrote none; `code` and `signal` are how
+ * it exited, `stdout` and `stderr` what it printed (diagnostics only, see context.ps1).
+ */
+export function contextResult({ code, signal, fileText, stdout = '', stderr = '' }) {
+  const exit = signal === null ? `exited with ${String(code)}` : signal === 'SIGTERM' ? `was stopped after ${CONTEXT_TIMEOUT_MS / 1000} s` : `ended by ${signal}`
+  const printed = [stdout, stderr].map((text) => text.replace(/\s+/g, ' ').trim())
+  const diagnostics = `${exit}; stdout ${printed[0] === '' ? 'empty' : JSON.stringify(printed[0])}; stderr ${printed[1] === '' ? 'empty' : JSON.stringify(printed[1])}`
+  if (fileText === undefined) return { error: `context.ps1 wrote no result file (${diagnostics})` }
+  let value
+  try {
+    value = JSON.parse(fileText.replace(/^\uFEFF/, ''))
+  } catch {
+    return { error: `context.ps1's result file is not JSON (${diagnostics})` }
+  }
+  if (!isPlainObject(value)) return { error: `context.ps1's result file holds no JSON object (${diagnostics})` }
+  if ('error' in value) return { error: `${String(value.error)} (${diagnostics})` }
+  if (code !== 0) return { error: `context.ps1 wrote a result but ${exit}` }
+  return value
+}
+
+/** Runs context.ps1 under Windows PowerShell 5.1 (design D2), which writes its measurement to a file. */
 function runContextScript(driverPid, { detached }) {
   const powershell = join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
   const script = fileURLToPath(new URL('./context.ps1', import.meta.url))
-  const args = ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', script, '-TargetPid', String(driverPid)]
+  let dir
+  try {
+    dir = mkdtempSync(join(tmpdir(), 'veydr-probe-context-'))
+  } catch (error) {
+    return Promise.resolve({ error: `cannot create a directory for context.ps1's result: ${error instanceof Error ? error.message : String(error)}` })
+  }
+  const outFile = join(dir, 'context.json')
+  const args = ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', script, '-TargetPid', String(driverPid), '-OutFile', outFile]
   // Only a detached helper is outside libuv's job, so its own job is the driver's innermost job.
   if (detached) args.push('-ReadJobLimits')
   return new Promise((resolve) => {
+    const done = (result) => {
+      rmSync(dir, { recursive: true, force: true })
+      resolve(result)
+    }
     const child = spawn(powershell, args, { detached, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] })
     const stdout = []
     const stderr = []
@@ -208,28 +242,24 @@ function runContextScript(driverPid, { detached }) {
     const timer = setTimeout(() => child.kill(), CONTEXT_TIMEOUT_MS)
     child.on('error', (error) => {
       clearTimeout(timer)
-      resolve({ error: `cannot start Windows PowerShell: ${error.message}` })
+      done({ error: `cannot start Windows PowerShell: ${error.message}` })
     })
     child.on('close', (code, signal) => {
       clearTimeout(timer)
-      const err = Buffer.concat(stderr).toString('utf8').replace(/\s+/g, ' ').trim()
-      if (code !== 0) {
-        resolve({ error: `context.ps1 exited with ${signal ?? code}${signal === 'SIGTERM' ? ` after ${CONTEXT_TIMEOUT_MS / 1000} s` : ''}${err === '' ? '' : `: ${err}`}` })
-        return
-      }
+      let fileText
       try {
-        resolve(JSON.parse(Buffer.concat(stdout).toString('utf8')))
+        fileText = readFileSync(outFile, 'utf8')
       } catch {
-        resolve({ error: `context.ps1 printed no JSON object${err === '' ? '' : `: ${err}`}` })
+        fileText = undefined
       }
+      done(contextResult({ code, signal, fileText, stdout: Buffer.concat(stdout).toString('utf8'), stderr: Buffer.concat(stderr).toString('utf8') }))
     })
   })
 }
 
 /**
  * context.ps1's measurement of this driver, with `helper` saying how it ran. It runs detached first,
- * so it is in the driver's own job and can read that job's limits. If that fails (Windows PowerShell
- * without any console), it runs again attached to a hidden console of its own, which still measures
+ * so it is in the driver's own job and can read that job's limits. If that fails, it runs again attached to a hidden console of its own, which still measures
  * the driver's console, job membership and token, but not the job's limits.
  */
 export async function measureContext(driverPid = process.pid) {

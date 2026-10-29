@@ -10,6 +10,7 @@ import {
   DriverUsageError,
   checkProbeDirectory,
   contextAnswers,
+  contextResult,
   contextIds,
   jobLimitNames,
   parseDriverArgs,
@@ -130,9 +131,29 @@ describe('context checks (driver.mjs)', () => {
     }
   })
 
+  it('takes the measurement from context.ps1\'s result file, and says why there is none', () => {
+    const json = JSON.stringify(measured())
+    expect(contextResult({ code: 0, signal: null, fileText: json })).toEqual(measured())
+    expect(contextResult({ code: 0, signal: null, fileText: `﻿${json}` })).toEqual(measured())
+    const cases: [Parameters<typeof contextResult>[0], string][] = [
+      // What the first windows-probe runs saw through stdout: a detached run that left no trace.
+      [{ code: 0, signal: null, fileText: undefined }, 'context.ps1 wrote no result file (exited with 0; stdout empty; stderr empty)'],
+      [{ code: 1, signal: null, fileText: undefined, stderr: 'Add-Type:\r\n  error' }, 'context.ps1 wrote no result file (exited with 1; stdout empty; stderr "Add-Type: error")'],
+      [{ code: null, signal: 'SIGTERM', fileText: undefined }, 'context.ps1 wrote no result file (was stopped after 60 s; stdout empty; stderr empty)'],
+      [{ code: 1, signal: null, fileText: '{"error":"context.ps1: cannot compile its P/Invoke helper: CS0246"}' }, 'context.ps1: cannot compile its P/Invoke helper: CS0246 (exited with 1; stdout empty; stderr empty)'],
+      [{ code: 0, signal: null, fileText: '{"targ' }, "context.ps1's result file is not JSON"],
+      [{ code: 0, signal: null, fileText: '[]' }, "context.ps1's result file holds no JSON object"],
+      [{ code: 1, signal: null, fileText: json }, 'context.ps1 wrote a result but exited with 1'],
+    ]
+    for (const [run, error] of cases) {
+      const result = contextResult(run)
+      expect('error' in result ? result.error : result, error).toContain(error)
+    }
+  })
+
   it('records an attached fallback and why the detached run failed', () => {
-    const line = answers('admin', measured({ helper: 'attached', detachedError: 'context.ps1 exited with 1' }))['ctx-no-console']
-    expect(line?.data).toMatchObject({ contextHelper: 'attached', contextHelperDetachedError: 'context.ps1 exited with 1' })
+    const line = answers('admin', measured({ helper: 'attached', detachedError: 'context.ps1 wrote no result file (exited with 0; stdout empty; stderr empty)' }))['ctx-no-console']
+    expect(line?.data).toMatchObject({ contextHelper: 'attached', contextHelperDetachedError: 'context.ps1 wrote no result file (exited with 0; stdout empty; stderr empty)' })
   })
 })
 

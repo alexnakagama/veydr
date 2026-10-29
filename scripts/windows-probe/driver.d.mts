@@ -42,6 +42,15 @@ export interface ContextAnswer {
 
 export function contextAnswers(input: { user: User; measurement: ContextMeasurement; driverPid: number; probeDir?: ProbeDirectory }): ContextAnswer[]
 
+export function contextResult(run: {
+  code: number | null
+  signal: string | null
+  /** The result file's content, or undefined if context.ps1 wrote none. */
+  fileText: string | undefined
+  stdout?: string
+  stderr?: string
+}): ContextMeasurement
+
 export function measureContext(driverPid?: number): Promise<ContextMeasurement>
 
 export function checkProbeDirectory(dir?: string): ProbeDirectory
