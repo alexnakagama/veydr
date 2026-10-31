@@ -51,11 +51,13 @@ describe('process-tree answers', () => {
   })
 
   it('tells libuv\'s job from the runner\'s by the processes in it', () => {
-    const input = { childInJob: true, driverPid: 1, childPid: 2 }
-    expect(libuvJobAnswer({ ...input, ownJob: { Pids: [2, 3] } }).answer).toBe('yes')
+    const input = { childInJob: true, childPid: 2 }
+    // As measured on the runner: libuv adds the spawning process to its job too.
+    expect(libuvJobAnswer({ ...input, ownJob: { Pids: [1, 2, 3], LimitFlags: 0x3c00 } }).answer).toBe('yes')
     expect(libuvJobAnswer({ ...input, childInJob: false, ownJob: {} }).answer).toBe('no')
-    expect(libuvJobAnswer({ ...input, ownJob: { Pids: [3] } }).answer).toBe('no')
-    expect(libuvJobAnswer({ ...input, ownJob: { Pids: [1, 2] } }).answer).toBe('no')
+    expect(libuvJobAnswer({ ...input, ownJob: { Pids: [3], LimitFlags: 0x3c00 } }).answer).toBe('no')
+    expect(libuvJobAnswer({ ...input, ownJob: { Pids: [1, 2], LimitFlags: 0x800 } }).answer).toBe('no')
+    expect(libuvJobAnswer({ ...input, ownJob: { Pids: [2], LimitFlags: null, LimitsError: 'denied' } }).answer).toBeNull()
     expect(libuvJobAnswer({ ...input, ownJob: { Pids: null, PidsError: 'denied' } })).toMatchObject({ answer: null, detail: expect.stringContaining('denied') as string })
   })
 
@@ -65,6 +67,7 @@ describe('process-tree answers', () => {
     expect(gracefulAnswer({ ...good, marker: false }).detail).toContain('no marker')
     expect(gracefulAnswer({ ...good, left: [member('cmd', 1)] }).detail).toContain('still running after 5 s: cmd')
     expect(gracefulAnswer({ ...good, helperAlive: false }).detail).toContain('helper did not survive')
+    expect(gracefulAnswer({ ...good, send: null, helperAlive: false }).detail).toContain('the helper ended while sending the event')
     expect(gracefulAnswer({ ...good, driverEvents: 1 }).detail).toContain('the driver received 1 console events')
     // An unreadable process may still run, so it is never counted as ended; a seen failure still says no.
     expect(gracefulAnswer({ ...good, unknown: [member('cmd', 1)] })).toEqual({ answer: null, detail: 'could not tell whether these ended: cmd' })
@@ -268,7 +271,9 @@ describe('on Windows', () => {
     const { job } = (await helper.request('create-job')) as { job: number }
     expect(job).toBeGreaterThan(0)
     expect(await helper.request('window-station')).toHaveProperty('Name')
-    await helper.request('ignore-console-events')
+    const log = join(mkdtempSync(join(tmpdir(), 'veydr-probe-events-')), 'events.log')
+    await helper.request('ignore-console-events', { logFile: log })
+    await helper.request('allow-ctrl-c')
     await expect(helper.request('in-job', { pid: 0, job: 99 })).rejects.toThrow()
     await helper.close()
   })

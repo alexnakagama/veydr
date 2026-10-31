@@ -15,8 +15,13 @@
 #
 # Only a process that handles console events itself may attach: `ignore-console-events` makes it safe.
 # SetConsoleCtrlHandler(NULL, TRUE) (design D3) covers only Ctrl+C, and PowerShell's own handler would
-# act on Ctrl+Break, so a handler of ours that swallows every event runs first. The NULL setting is
-# inherited by child processes, so a process that sends events must not be the one that starts them.
+# act on Ctrl+Break, so a handler of ours that swallows every event runs first and logs its type to a
+# file, which outlives this process. `send-ctrl` registers that handler again once attached: run
+# 41171471857 lost a helper to Ctrl+Break with exit code 0xC000013A, what the default handler
+# exits with, though the handler was registered before attaching. The NULL setting is inherited by
+# child processes, so a process that sends events must not be the one that starts them.
+# `allow-ctrl-c` clears that setting, which this process inherits from a driver started detached
+# (a new process group), so that a child it starts can receive Ctrl+C.
 #
 # Exit codes: 0 stdin closed, 1 failure. C# 5: Add-Type in Windows PowerShell 5.1 compiles with the
 # .NET Framework compiler.
@@ -42,9 +47,9 @@ Add-Type -TypeDefinition @'
 using System;
 using System.Collections.Generic;
 using System.ComponentModel;
+using System.IO;
 using System.Runtime.InteropServices;
 using System.Text;
-using System.Threading;
 
 public static class VeydrProbeTree
 {
@@ -153,7 +158,6 @@ public static class VeydrProbeTree
     static int nextJob = 1;
     /** Held here so the garbage collector leaves it alone while Windows can still call it. */
     static ConsoleHandler swallow;
-    static int eventsSwallowed;
 
     public sealed class ProcessState
     {
@@ -238,21 +242,21 @@ public static class VeydrProbeTree
         FreeConsole();
     }
 
-    public static void IgnoreConsoleEvents()
+    public static void IgnoreConsoleEvents(string logFile)
     {
         if (!SetConsoleCtrlHandler(null, true)) throw LastError();
         swallow = delegate(uint ctrlType)
         {
-            Interlocked.Increment(ref eventsSwallowed);
+            try { File.AppendAllText(logFile, ctrlType + "\n"); }
+            catch (IOException) { }
             return true;
         };
         if (!SetConsoleCtrlHandler(swallow, true)) throw LastError();
     }
 
-    /** How many console events reached this process's own handler. */
-    public static int EventsSwallowed()
+    public static void AllowCtrlC()
     {
-        return Thread.VolatileRead(ref eventsSwallowed);
+        if (!SetConsoleCtrlHandler(null, false)) throw LastError();
     }
 
     /** Whether each process runs, and when it was created; a process that ended is not found. */
@@ -480,13 +484,13 @@ public static class VeydrProbeTree
         }
         try
         {
+            if (swallow != null && !SetConsoleCtrlHandler(swallow, true)) throw LastError();
             result.Sent = GenerateConsoleCtrlEvent(ctrlEvent, 0);
             if (!result.Sent) result.SendError = Marshal.GetLastWin32Error();
-            // The event is delivered asynchronously, also to this process.
-            Thread.Sleep(250);
         }
         finally
         {
+            // At once, not after the event arrived: this process has no use for it. The handler stays.
             FreeConsole();
         }
         return result;
@@ -618,8 +622,8 @@ while ($null -ne ($line = $reader.ReadLine())) {
     # Each case assigns: output from a switch would be unrolled into the pipeline.
     switch ($request.op) {
       'ping' { $result = @{ pid = $PID } }
-      'ignore-console-events' { [VeydrProbeTree]::IgnoreConsoleEvents() }
-      'events-swallowed' { $result = @{ count = [VeydrProbeTree]::EventsSwallowed() } }
+      'ignore-console-events' { [VeydrProbeTree]::IgnoreConsoleEvents([string]$request.logFile) }
+      'allow-ctrl-c' { [VeydrProbeTree]::AllowCtrlC() }
       'inspect' { $result = [VeydrProbeTree]::Inspect([int[]]$request.pids) }
       'snapshot' { $result = [VeydrProbeTree]::Snapshot() }
       'create-job' { $result = @{ job = [VeydrProbeTree]::CreateJob() } }

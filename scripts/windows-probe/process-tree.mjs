@@ -13,7 +13,8 @@
 // What a tree of Node processes does, which the results must be read with: libuv puts a child in a
 // job with JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE held by its parent, so a Node process that ends takes its
 // non-detached children with it. That is why the orphan is started `detached`, and why
-// pt-parent-exit-* also measures a leader that is cmd.exe, which holds no such job.
+// pt-parent-exit-* also measures a leader that is cmd.exe, which holds no such job. libuv also adds the
+// spawning process itself to that job (run 41171471857), so the driver is a member of it.
 import { spawn } from 'node:child_process'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -42,6 +43,8 @@ const POLL_MS = 50
 const CTRL_C_EVENT = 0
 const CTRL_BREAK_EVENT = 1
 const ERROR_ACCESS_DENIED = 5
+/** The limits libuv sets on its job: BREAKAWAY_OK, SILENT_BREAKAWAY_OK, DIE_ON_UNHANDLED_EXCEPTION, KILL_ON_JOB_CLOSE. */
+const LIBUV_JOB_LIMITS = 0x3c00
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 const message = (error) => (error instanceof Error ? error.message : String(error))
@@ -86,21 +89,27 @@ export function allEndedAnswer(members, left, action) {
   return left.length === 0 ? { answer: 'yes', detail: '' } : { answer: 'no', detail: `still running after ${action}: ${names(left)}` }
 }
 
-/** pt-libuv-job: `ownJob` is the helper's own job, which is libuv's, since the driver started it attached. */
-export function libuvJobAnswer({ childInJob, driverPid, childPid, ownJob }) {
+/**
+ * pt-libuv-job: `ownJob` is the job the helper is directly in, a sibling of the child. It is libuv's if
+ * it holds the child and has libuv's limits, which tell it from a job of the runner's.
+ */
+export function libuvJobAnswer({ childInJob, childPid, ownJob }) {
   if (!childInJob) return { answer: 'no', detail: 'IsProcessInJob reports the child in no job' }
   if (ownJob.Pids === null || ownJob.Pids === undefined) {
     return { answer: null, detail: `the child is in a job, but the job's processes could not be listed to tell it from the runner's job: ${String(ownJob.PidsError ?? 'the helper is in no job')}` }
   }
   if (!ownJob.Pids.includes(childPid)) return { answer: 'no', detail: 'the child is in a job, but not in the job of the driver\'s other children' }
-  if (ownJob.Pids.includes(driverPid)) return { answer: 'no', detail: 'the driver is in the same job, so it is not a job of the children alone' }
+  if (ownJob.LimitFlags === null || ownJob.LimitFlags === undefined) return { answer: null, detail: `the job's limits could not be read to tell it from the runner's: ${String(ownJob.LimitsError)}` }
+  if ((ownJob.LimitFlags & LIBUV_JOB_LIMITS) !== LIBUV_JOB_LIMITS) return { answer: 'no', detail: `the child's job does not have libuv's limits (0x${ownJob.LimitFlags.toString(16)})` }
   return { answer: 'yes', detail: '' }
 }
 
 /** pt-ctrl-break-attach-*: the marker written, the tree gone in time, and the helper alive. */
 export function gracefulAnswer({ send, marker, left, helperAlive, driverEvents, unknown = [] }) {
   const problems = []
-  if (!send.Attached) problems.push(`AttachConsole failed with error ${send.AttachError}`)
+  // No send: the helper ended during the call, so whether it attached is not known.
+  if (send === null) problems.push('the helper ended while sending the event')
+  else if (!send.Attached) problems.push(`AttachConsole failed with error ${send.AttachError}`)
   else if (!send.Sent) problems.push(`GenerateConsoleCtrlEvent failed with error ${send.SendError}`)
   if (!marker) problems.push('the SIGBREAK handler wrote no marker')
   if (left.length > 0) problems.push(`still running after ${GRACEFUL_MS / 1000} s: ${names(left)}`)
@@ -282,18 +291,27 @@ class Probe {
   tracked = []
   /** Console events that reached the driver; it has no console, so any is a finding (task 4.3). */
   driverEvents = 0
+  consoleEvents = ''
   #console
+  #consoles = 0
 
   constructor(dir, main) {
     this.dir = dir
     this.main = main
   }
 
+  /** The console events the current console helper received, by type (CTRL_C_EVENT 0, CTRL_BREAK_EVENT 1, CTRL_CLOSE_EVENT 2). */
+  helperEvents() {
+    if (!existsSync(this.consoleEvents)) return []
+    return readFileSync(this.consoleEvents, 'utf8').split('\n').filter((line) => line !== '').map(Number)
+  }
+
   /** The helper that attaches to consoles, started again if an event ended it. */
   async console() {
     if (this.#console === undefined || !this.#console.alive) {
       this.#console = await startHelper()
-      await this.#console.request('ignore-console-events')
+      this.consoleEvents = join(this.dir, `console-events-${++this.#consoles}.log`)
+      await this.#console.request('ignore-console-events', { logFile: this.consoleEvents })
     }
     return this.#console
   }
@@ -479,7 +497,7 @@ async function libuvJob(probe) {
   const { child, member } = await probe.plainChild('libuv-job')
   const childInJob = (await probe.main.request('in-job', { pid: child.pid, job: 0 })).inJob
   const ownJob = await probe.main.request('own-job')
-  const result = libuvJobAnswer({ childInJob, driverPid: process.pid, childPid: child.pid, ownJob })
+  const result = libuvJobAnswer({ childInJob, childPid: child.pid, ownJob })
   return { ...result, data: { process: member, childInJob, driverPid: process.pid, jobProcesses: ownJob.Pids, ...limitsData(ownJob) } }
 }
 
@@ -643,7 +661,8 @@ function attachCommand(probe, child, name) {
   if (child === 'cmd') return verbatim(workerCommand(spec))
   const project = join(probe.dir, name)
   mkdirSync(project)
-  writeFileSync(join(project, 'package.json'), JSON.stringify({ name: 'veydr-probe', private: true, scripts: { probe: workerCommand(spec) } }))
+  // Not starting with a quote: whatever quoting npm adds for `cmd /d /s /c`, /s then has no quote of ours to strip.
+  writeFileSync(join(project, 'package.json'), JSON.stringify({ name: 'veydr-probe', private: true, scripts: { probe: `node "${WORKER}" "${spec}"` } }))
   const bin = dirname(process.execPath)
   // The standard user's profile does not have the job's PATH additions (design D9).
   const pathName = Object.keys(process.env).find((key) => key.toUpperCase() === 'PATH') ?? 'PATH'
@@ -651,14 +670,14 @@ function attachCommand(probe, child, name) {
   return { ...verbatim(`"${join(bin, 'npm.cmd')}" run probe`), options: { windowsVerbatimArguments: true, cwd: project, env } }
 }
 
-/**
- * The events each side received. The helper is on the child's console when it sends event 0, so it
- * receives it too and swallows it (design D3): a count above zero there is expected, and shows that
- * only its handler kept it alive. The driver must count none.
- */
-async function eventCounts(helper, helperAlive, driverEvents) {
-  const helperEventsSwallowed = helperAlive ? (await helper.request('events-swallowed')).count : null
-  return { driverEvents, helperEventsSwallowed }
+/** Sends an event, or resolves with null and keeps the reason if the helper ended during the call. */
+async function sendCtrl(helper, pid, event, failures) {
+  try {
+    return await helper.request('send-ctrl', { pid, event })
+  } catch (error) {
+    failures.push(message(error))
+    return null
+  }
 }
 
 async function ctrlBreakAttach(probe, child) {
@@ -674,7 +693,9 @@ async function ctrlBreakAttach(probe, child) {
   leader.stderr.on('data', keep)
   leader.on('error', () => {})
   try {
-    await probe.ready(name)
+    await probe.ready(name).catch((error) => {
+      throw new Error(`${message(error)}; its output: ${JSON.stringify(output)}`)
+    })
     const { Processes: processes } = await probe.main.request('snapshot')
     const pids = descendantsOf(processes, leader.pid)
     // A snapshot can hold a process that has just ended; only what runs now is part of the tree.
@@ -686,14 +707,16 @@ async function ctrlBreakAttach(probe, child) {
     const members = await probe.track(running.map((pid) => ({ pid, name: `${processes.find((p) => p.Pid === pid)?.Name ?? 'unknown'}#${pid}` })))
     const helper = await probe.console()
     const eventsBefore = probe.driverEvents
-    const send = await helper.request('send-ctrl', { pid: leader.pid, event: CTRL_BREAK_EVENT })
+    const sendFailures = []
+    const send = await sendCtrl(helper, leader.pid, CTRL_BREAK_EVENT, sendFailures)
     const marker = await probe.waitMarker(name, 'break', GRACEFUL_MS)
     const left = await probe.left(members, GRACEFUL_MS, { tolerate: true })
     const finalRows = await probe.rows(members.map((m) => m.pid))
     const unknown = members.filter((_, i) => finalRows[i]?.Error !== null && finalRows[i]?.Error !== undefined)
     const helperAlive = await helper.alivePing()
     const driverEvents = probe.driverEvents - eventsBefore
-    const data = { send, marker, helperAlive, ...(await eventCounts(helper, helperAlive, driverEvents)), driverPid: process.pid, unreadable, unknown: unknown.map((m) => m.name), processes: describe(members, left), output }
+    // The helper is on the child's console, so event 0 reaches it too (design D3): only the driver must get none.
+    const data = { send, sendFailures, marker, helperAlive, helperEvents: probe.helperEvents(), driverEvents, driverPid: process.pid, unreadable, unknown: unknown.map((m) => m.name), processes: describe(members, left), output }
     return { ...gracefulAnswer({ send, marker, left, helperAlive, driverEvents, unknown }), data }
   } finally {
     await probe.taskkill(leader.pid)
@@ -707,19 +730,25 @@ async function ctrlBreakDetached(probe) {
   const [member] = await probe.track([{ name, pid }])
   const helper = await probe.console()
   const eventsBefore = probe.driverEvents
-  const send = await helper.request('send-ctrl', { pid, event: CTRL_BREAK_EVENT })
+  const sendFailures = []
+  const send = await sendCtrl(helper, pid, CTRL_BREAK_EVENT, sendFailures)
   const marker = await probe.waitMarker(name, 'break', SETTLE_MS)
-  const left = await probe.left([member], send.Attached ? GRACEFUL_MS : 0)
+  const left = await probe.left([member], send?.Attached === true ? GRACEFUL_MS : 0)
   const helperAlive = await helper.alivePing()
   const driverEvents = probe.driverEvents - eventsBefore
-  const data = { process: member, send, marker, helperAlive, ...(await eventCounts(helper, helperAlive, driverEvents)) }
+  const data = { process: member, send, sendFailures, marker, helperAlive, helperEvents: probe.helperEvents(), driverEvents }
   return { ...gracefulAnswer({ send, marker, left, helperAlive, driverEvents }), data }
 }
 
 async function ctrlC(probe) {
   const helper = await probe.console()
-  // The control: the same event, to a child in the driver's own kind of process group.
-  const { member: baseline } = await probe.plainChild('ctrl-c-baseline', {}, { signals: true })
+  // The control: the same event, to a child outside a new process group. It starts from the helper
+  // with Ctrl+C allowed, since everything below the driver inherits the setting of the driver's own
+  // new process group, which launch-detached.mjs's `detached` gives it (run 41171471857).
+  await probe.main.request('allow-ctrl-c')
+  const baselineStarted = await probe.startFromHelper({ name: 'ctrl-c-baseline', signals: true })
+  await probe.ready('ctrl-c-baseline')
+  const [baseline] = await probe.track([{ name: 'ctrl-c-baseline', pid: baselineStarted.pid }])
   const baselineSend = await helper.request('send-ctrl', { pid: baseline.pid, event: CTRL_C_EVENT })
   const baselineMarker = await probe.waitMarker('ctrl-c-baseline', 'int', SETTLE_MS)
   const started = await probe.startFromHelper({ name: 'ctrl-c-group', signals: true }, { newGroup: true })

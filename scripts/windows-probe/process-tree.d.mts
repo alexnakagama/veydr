@@ -10,8 +10,8 @@ export interface CtrlSend { Attached: boolean; AttachError: number; Sent: boolea
 export function survivors<T extends Member>(members: readonly T[], rows: readonly ProcessRow[], options?: { tolerate?: boolean }): T[]
 export function descendantsOf(processes: readonly { Pid: number; Parent: number }[], root: number): number[]
 export function allEndedAnswer(members: readonly Member[], left: readonly Member[], action: string): AnswerDetail
-export function libuvJobAnswer(input: { childInJob: boolean; driverPid: number; childPid: number; ownJob: { Pids?: number[] | null; PidsError?: string | null } }): AnswerDetail
-export function gracefulAnswer(input: { send: CtrlSend; marker: boolean; left: readonly Member[]; helperAlive: boolean; driverEvents: number; unknown?: readonly Member[] }): AnswerDetail
+export function libuvJobAnswer(input: { childInJob: boolean; childPid: number; ownJob: { Pids?: number[] | null; PidsError?: string | null; LimitFlags?: number | null; LimitsError?: string | null } }): AnswerDetail
+export function gracefulAnswer(input: { send: CtrlSend | null; marker: boolean; left: readonly Member[]; helperAlive: boolean; driverEvents: number; unknown?: readonly Member[] }): AnswerDetail
 export function ctrlCAnswer(input: { baselineMarker: boolean; groupMarker: boolean; send: CtrlSend }): AnswerDetail
 export function consoleWindowAnswer(input: { station: { Name: string; Visible: boolean }; hidden: { Attached: boolean; AttachError: number; Visible: boolean }; shown: { Attached: boolean; AttachError: number; Visible: boolean } }): AnswerDetail
 export function reuseAnswer(reuse: { Spawned: number; ElapsedMs: number; ReusedPid: number | null; FirstCreated: string | null; SecondCreated: string | null }): AnswerDetail
