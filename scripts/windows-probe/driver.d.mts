@@ -55,6 +55,22 @@ export function measureContext(driverPid?: number): Promise<ContextMeasurement>
 
 export function checkProbeDirectory(dir?: string): ProbeDirectory
 
+export function windowsPowerShell(): string
+
+export interface ProgramResult {
+  code: number | null
+  signal: string | null
+  stdout: string
+  stderr: string
+  error?: string
+}
+
+export function runProgram(file: string, args: readonly string[], options?: { timeoutMs?: number; [option: string]: unknown }): Promise<ProgramResult>
+
+export function isEntryPoint(moduleUrl: string): boolean
+
+export function driverMain(name: string, run: (args: string[]) => Promise<void>): void
+
 export type Report = (id: string, answer: Answer, detail?: string, data?: Record<string, unknown>) => void
 
 export interface RunDriverOptions {

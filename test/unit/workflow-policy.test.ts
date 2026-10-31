@@ -1267,6 +1267,9 @@ describe('build.yml', () => {
 describe('windows-probe.yml (assess-windows-platform design D1)', () => {
   const w = loadWorkflow('.github/workflows/windows-probe.yml')
   const resultsFile = (area: string): string => `test-results/windows-probe/results/${area}.jsonl`
+  /** The driver and its arguments, as the launcher and standard-user.ps1 name it, until each area's probe exists. */
+  const implemented: Readonly<Record<string, string>> = { 'process-tree': 'process-tree.mjs', helper: 'helper-build.mjs' }
+  const driverOf = (area: string): string => implemented[area] ?? `placeholder.mjs ${area}`
   /** The `env:` of a step, as `key: value` pairs. */
   const envOf = (step: Range): Record<string, string> => {
     const env = stepField(w.lines, step)('env')
@@ -1338,7 +1341,7 @@ describe('windows-probe.yml (assess-windows-platform design D1)', () => {
       const timeout = timeoutIn(
         w.field(probe, 'run'),
         'node scripts/windows-probe/launch-detached.mjs --timeout ',
-        ` --out ${resultsFile(area)} -- scripts/windows-probe/placeholder.mjs ${area} --user admin`,
+        ` --out ${resultsFile(area)} -- scripts/windows-probe/${driverOf(area)} --user admin`,
       )
       expect(timeout, area).toBeDefined()
       expect(w.field(probe, 'timeout-minutes'), area).toMatch(/^\d+$/)
@@ -1386,7 +1389,7 @@ describe('windows-probe.yml (assess-windows-platform design D1)', () => {
       }
       expect(std.map((s) => w.field(s, 'name')), area).toEqual(['Probe as a standard user', 'Remove the standard user if it is left'])
       const [run, check] = std as [Range, Range]
-      const timeout = timeoutIn(w.field(run, 'run'), `${script} -Results ${resultsFile(area)} -Timeout `, ` -Driver placeholder.mjs ${area}`)
+      const timeout = timeoutIn(w.field(run, 'run'), `${script} -Results ${resultsFile(area)} -Timeout `, ` -Driver ${driverOf(area)}`)
       expect(timeout, area).toBeDefined()
       // The script's waits (a minute for the runtime check, the launcher's timeout and a minute more)
       // leave room for the account's setup and cleanup within the step's timeout, so its own cleanup runs.

@@ -89,6 +89,10 @@ describe('context checks (driver.mjs)', () => {
     expect(denied?.answer).toBeNull()
     expect(denied?.detail).toContain('Access is denied')
     expect(answers('admin', measured({ job: { driverInJob: true, limitFlags: '0x0' } }))['ctx-job']?.answer).toBeNull()
+    // Starting context.ps1 attached is itself what puts the driver in libuv's job.
+    const attached = answers('admin', measured({ helper: 'attached', job: { driverInJob: true, helperInJob: true, limitFlags: null, limitsError: 'attached' } }))['ctx-job']
+    expect(attached).toMatchObject({ answer: null, data: { inJob: true } })
+    expect(attached?.detail).toContain('hides whether the runner has one')
     expect(jobLimitNames(0)).toEqual([])
     expect(jobLimitNames(0x1000 | 0x80000)).toEqual(['SILENT_BREAKAWAY_OK', '0x80000'])
   })

@@ -38,20 +38,19 @@ jobs:
         env:
           NEGATIVE_CONTROL: ${{ inputs.negative-control }}
         run: node scripts/windows-probe/identity.mjs process-tree test-results/windows-probe/results/process-tree.jsonl
-      # The driver runs without a console, like Veydr's main process (design D9). Placeholder until the
-      # probe is implemented: it answers the context checks and reports the area's other checks as NOT-TESTABLE.
+      # The driver runs without a console, like Veydr's main process (design D9).
       # With negative-control true, the launcher starts this one driver on the job shell's console instead.
       - name: Probe
-        timeout-minutes: 5
+        timeout-minutes: 8
         env:
           NEGATIVE_CONTROL: ${{ inputs.negative-control }}
-        run: node scripts/windows-probe/launch-detached.mjs --timeout 240 --out test-results/windows-probe/results/process-tree.jsonl -- scripts/windows-probe/placeholder.mjs process-tree --user admin
+        run: node scripts/windows-probe/launch-detached.mjs --timeout 420 --out test-results/windows-probe/results/process-tree.jsonl -- scripts/windows-probe/process-tree.mjs --user admin
       # The same driver as a temporary standard user, created and removed by the script (design D9).
       # It runs even if the administrator's driver failed, so one failure does not cost both accounts' evidence.
       - name: Probe as a standard user
         if: ${{ !cancelled() }}
-        timeout-minutes: 10
-        run: powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/windows-probe/standard-user.ps1 -Results test-results/windows-probe/results/process-tree.jsonl -Timeout 240 -Driver placeholder.mjs process-tree
+        timeout-minutes: 12
+        run: powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/windows-probe/standard-user.ps1 -Results test-results/windows-probe/results/process-tree.jsonl -Timeout 420 -Driver process-tree.mjs
       # Removes the account if the step above was killed before its own cleanup, and then fails.
       - name: Remove the standard user if it is left
         if: always()
@@ -83,17 +82,16 @@ jobs:
         env:
           NEGATIVE_CONTROL: ${{ inputs.negative-control }}
         run: node scripts/windows-probe/identity.mjs helper test-results/windows-probe/results/helper.jsonl
-      # The driver runs without a console, like Veydr's main process (design D9). Placeholder until the
-      # probe is implemented: it answers the context checks and reports the area's other checks as NOT-TESTABLE.
+      # The driver runs without a console, like Veydr's main process (design D9).
       - name: Probe
         timeout-minutes: 5
-        run: node scripts/windows-probe/launch-detached.mjs --timeout 240 --out test-results/windows-probe/results/helper.jsonl -- scripts/windows-probe/placeholder.mjs helper --user admin
+        run: node scripts/windows-probe/launch-detached.mjs --timeout 240 --out test-results/windows-probe/results/helper.jsonl -- scripts/windows-probe/helper-build.mjs --user admin
       # The same driver as a temporary standard user, created and removed by the script (design D9).
       # It runs even if the administrator's driver failed, so one failure does not cost both accounts' evidence.
       - name: Probe as a standard user
         if: ${{ !cancelled() }}
         timeout-minutes: 10
-        run: powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/windows-probe/standard-user.ps1 -Results test-results/windows-probe/results/helper.jsonl -Timeout 240 -Driver placeholder.mjs helper
+        run: powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/windows-probe/standard-user.ps1 -Results test-results/windows-probe/results/helper.jsonl -Timeout 240 -Driver helper-build.mjs
       # Removes the account if the step above was killed before its own cleanup, and then fails.
       - name: Remove the standard user if it is left
         if: always()
