@@ -11,7 +11,7 @@
 // could not be created or used: the driver then runs nothing and answers each of its checks with
 // null and the reason, so they are NOT-TESTABLE with the error instead of missing.
 import { spawn } from 'node:child_process'
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -217,7 +217,7 @@ export function contextResult({ code, signal, fileText, stdout = '', stderr = ''
 
 /** Runs context.ps1 under Windows PowerShell 5.1 (design D2), which writes its measurement to a file. */
 function runContextScript(driverPid, { detached }) {
-  const powershell = join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
+  const powershell = windowsPowerShell()
   const script = fileURLToPath(new URL('./context.ps1', import.meta.url))
   let dir
   try {
@@ -284,7 +284,63 @@ export function checkProbeDirectory(dir = process.cwd()) {
   }
 }
 
+/** The path of Windows PowerShell 5.1, which every .ps1 probe script runs under (design D2). */
+export const windowsPowerShell = () => join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
+
+/**
+ * Runs a program without a window and resolves with `{ code, signal, stdout, stderr, error }`, stopping
+ * it after `timeoutMs`. Never rejects: `error` says why it did not start. Output is read as Latin-1,
+ * since Windows tools print in the console's code page and only ASCII is looked at.
+ */
+export function runProgram(file, args, { timeoutMs = 60_000, ...options } = {}) {
+  return new Promise((resolve) => {
+    const child = spawn(file, args, { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'], ...options })
+    const output = { stdout: [], stderr: [] }
+    child.stdout.on('data', (chunk) => output.stdout.push(chunk))
+    child.stderr.on('data', (chunk) => output.stderr.push(chunk))
+    const timer = setTimeout(() => child.kill(), timeoutMs)
+    const text = (chunks) => Buffer.concat(chunks).toString('latin1')
+    child.on('error', (error) => {
+      clearTimeout(timer)
+      resolve({ code: null, signal: null, stdout: text(output.stdout), stderr: text(output.stderr), error: error.message })
+    })
+    child.on('close', (code, signal) => {
+      clearTimeout(timer)
+      resolve({ code, signal, stdout: text(output.stdout), stderr: text(output.stderr) })
+    })
+  })
+}
+
 // ---------------------------------------------------------------------------------------------
+
+/**
+ * True when Node runs the module at `moduleUrl` as the entry point. Node resolves symlinks for
+ * `import.meta.url`, so argv[1] is too. Windows paths compare without case (a drive letter may
+ * differ), since a driver that wrongly thinks it was imported would exit 0 having done nothing.
+ */
+export function isEntryPoint(moduleUrl) {
+  if (process.argv[1] === undefined) return false
+  try {
+    const [argv, self] = [realpathSync(process.argv[1]), fileURLToPath(moduleUrl)]
+    return process.platform === 'win32' ? argv.toLowerCase() === self.toLowerCase() : argv === self
+  } catch {
+    return false
+  }
+}
+
+/** Runs a driver's `run(args)` and sets the exit code: 0 written, 1 failure, 2 usage error. */
+export function driverMain(name, run) {
+  run(process.argv.slice(2)).then(
+    () => {
+      process.exitCode = 0
+    },
+    (error) => {
+      const usage = error instanceof DriverUsageError
+      console.error(`${usage ? `usage: ${name} --user admin|standard [--unavailable <reason>]: ` : `${name}: `}${error instanceof Error ? error.message : String(error)}`)
+      process.exitCode = usage ? 2 : 1
+    },
+  )
+}
 
 /**
  * Runs a driver: reports the context checks, then calls `probe(report)`, which reports each of

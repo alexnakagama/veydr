@@ -132,6 +132,17 @@ Verified for 3.2, as reported by the maintainer on 2026-10-29: every job of run 
   Run `pt-job-terminate-std` and the `pt-ctrl-break-attach-<child>-std` checks through the standard-user runner. Verify: a probe run reports every one of these IDs with its context in `data`, and the driver survived the attach checks.
 - [ ] 4.4 Implement `helper-csc-build` (design D2). It compiles `scripts/windows-probe/job-helper.cs` with `%WINDIR%\Microsoft.NET\Framework64\v4.0.30319\csc.exe` into the job's temporary directory; the binary is never committed. It then starts the helper from the console-less launcher. The helper creates a Job Object, starts a child with a grandchild inside it, and terminates the job; the probe checks that both are gone. Run `helper-csc-build-std` through the standard-user runner. Verify: a probe run reports both IDs, and `data` records the compiler version and the helper's exit code.
 
+Group 4 review (`reviewer2`, 2026-10-31): two rounds, by reading only; no Windows run yet. The first round found no blocker in the C# or PowerShell and raised 5 medium findings on what the checks prove, plus notes, all handled. The second round accepted the three deviations (the helper's event count does not fail an answer, the breakaway control's null rule, and `data.nonOrphansEnded`) and raised one finding and one nit, both fixed: a process unreadable at the final read makes an attach check `null`, and driver events are counted per send. Verified on Linux: `npm test`, `npm run lint`, `npm run typecheck`, `npm run spec-coverage`. Not run: the pinned actionlint.
+
+Group 4 implementation notes (not yet verified on Windows; tasks stay open until a probe run):
+- `process-tree.ps1` is a long-running helper answering JSON lines, because a job lives in its handles and compiling takes seconds. Two copies run: one sends console events, one starts processes, since `SetConsoleCtrlHandler(NULL, TRUE)` is inherited by children.
+- That call covers Ctrl+C only, so the sending helper also registers a handler that swallows every event, or Ctrl+Break would reach PowerShell's own handler. The check's question still names the documented sequence.
+- The graceful-stop children start with stdin ignored and output piped, as the supervisor's `spawn` does. The `pt-ctrl-break-attach-npm` prediction's reason says "piped stdin"; the result is recorded as measured.
+- `pt-libuv-job` tells libuv's job from the runner's by listing the helper's own job, which is libuv's, since `IsProcessInJob` with no handle is true in either.
+- `pt-parent-exit-*` also measures a `cmd.exe` leader, and answers `yes` if either tree's process keeps running: a Node leader's non-detached children die with its libuv job, which would hide survivors of other leaders from D5's crash-recovery decision.
+- Task 4.3 says the helper receives no event, but event 0 reaches every process on the console, the helper included (design D3). So `data` records the events the helper's handler swallowed, which may be above zero, and the driver's, which must be zero or the answer is `no`.
+- `process-tree.mjs` runs under `--timeout 420` (step 8 and 12 minutes), since `pt-identity-reuse` alone may take 60 s.
+
 ## 5. Command, environment, and encoding probes
 
 - [ ] 5.1 Implement the command probes from the console-less launcher:

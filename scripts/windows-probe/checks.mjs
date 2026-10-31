@@ -133,7 +133,7 @@ const ATTACH_CHILDREN = {
   },
   npm: {
     what: '`npm run` of a package script running it (through `npm.cmd`)',
-    prediction: ['no', 'npm.cmd is a batch file: on Ctrl+Break cmd.exe asks "Terminate batch job (Y/N)?" and waits on the piped stdin, so the tree does not exit'],
+    prediction: ['no', 'npm.cmd is a batch file: on Ctrl+Break cmd.exe asks "Terminate batch job (Y/N)?", so the tree does not exit in time, even with stdin ignored as the supervisor starts commands'],
     standard: ['no', 'the batch-job prompt does not depend on the account'],
     feeds: ['W1 graceful stop', 'G-4'],
   },
