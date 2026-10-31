@@ -245,9 +245,10 @@ describe('tree-worker.mjs', () => {
     expect(() => process.kill(orphan, 0)).not.toThrow()
   })
 
-  it('writes a marker and exits 0 on a signal it handles', async () => {
+  // On Windows child.kill() is TerminateProcess, which no handler sees; the probe sends real console events there.
+  it.skipIf(process.platform !== 'linux')('[linux-only: POSIX signals] writes a marker and exits 0 on a signal it handles', async () => {
     const { dir, child } = start({ name: 'target', signals: true })
-    await new Promise((resolve) => setTimeout(resolve, 500))
+    await waitFile(readyFile(dir, 'target'))
     child.kill('SIGINT')
     const code = await new Promise((resolve) => child.once('exit', resolve))
     expect(code).toBe(0)
