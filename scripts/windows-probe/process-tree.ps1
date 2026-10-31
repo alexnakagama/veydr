@@ -11,17 +11,11 @@
 #
 # It is started attached, since Windows PowerShell 5.1 started detached does not run a script at all
 # (see context.ps1), so it is in libuv's job with a hidden console of its own. It frees that console
-# at once: like the driver it then has none, and `send-ctrl` can attach to a child's.
+# at once: like the driver it then has none, and `console-window` can attach to a child's.
 #
-# Only a process that handles console events itself may attach: `ignore-console-events` makes it safe.
-# SetConsoleCtrlHandler(NULL, TRUE) (design D3) covers only Ctrl+C, and PowerShell's own handler would
-# act on Ctrl+Break, so a handler of ours that swallows every event runs first and logs its type to a
-# file, which outlives this process. `send-ctrl` registers that handler again once attached: run
-# 41171471857 lost a helper to Ctrl+Break with exit code 0xC000013A, what the default handler
-# exits with, though the handler was registered before attaching. The NULL setting is inherited by
-# child processes, so a process that sends events must not be the one that starts them.
-# `allow-ctrl-c` clears that setting, which this process inherits from a driver started detached
-# (a new process group), so that a child it starts can receive Ctrl+C.
+# Console events are sent by the compiled ctrl-helper.exe, not from here. `allow-ctrl-c` clears the
+# Ctrl+C setting of `SetConsoleCtrlHandler(NULL, TRUE)`, which this process inherits from a driver
+# started detached (a new process group), so that a child it starts can receive Ctrl+C.
 #
 # Exit codes: 0 stdin closed, 1 failure. C# 5: Add-Type in Windows PowerShell 5.1 compiles with the
 # .NET Framework compiler.
@@ -47,7 +41,6 @@ Add-Type -TypeDefinition @'
 using System;
 using System.Collections.Generic;
 using System.ComponentModel;
-using System.IO;
 using System.Runtime.InteropServices;
 using System.Text;
 
@@ -121,12 +114,10 @@ public static class VeydrProbeTree
         public int fInherit, fReserved, dwFlags;
     }
 
-    delegate bool ConsoleHandler(uint ctrlType);
-
     [DllImport("kernel32.dll", SetLastError = true)] static extern bool FreeConsole();
     [DllImport("kernel32.dll", SetLastError = true)] static extern bool AttachConsole(uint processId);
     [DllImport("kernel32.dll")] static extern IntPtr GetConsoleWindow();
-    [DllImport("kernel32.dll", SetLastError = true)] static extern bool SetConsoleCtrlHandler(ConsoleHandler handler, bool add);
+    [DllImport("kernel32.dll", SetLastError = true)] static extern bool SetConsoleCtrlHandler(IntPtr handler, bool add);
     [DllImport("kernel32.dll", SetLastError = true)] static extern bool GenerateConsoleCtrlEvent(uint ctrlEvent, uint processGroupId);
     [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr window);
     [DllImport("user32.dll", SetLastError = true)] static extern IntPtr GetProcessWindowStation();
@@ -156,8 +147,6 @@ public static class VeydrProbeTree
     static readonly Dictionary<int, IntPtr> Jobs = new Dictionary<int, IntPtr>();
     static readonly Dictionary<int, IntPtr> SuspendedThreads = new Dictionary<int, IntPtr>();
     static int nextJob = 1;
-    /** Held here so the garbage collector leaves it alone while Windows can still call it. */
-    static ConsoleHandler swallow;
 
     public sealed class ProcessState
     {
@@ -242,21 +231,9 @@ public static class VeydrProbeTree
         FreeConsole();
     }
 
-    public static void IgnoreConsoleEvents(string logFile)
-    {
-        if (!SetConsoleCtrlHandler(null, true)) throw LastError();
-        swallow = delegate(uint ctrlType)
-        {
-            try { File.AppendAllText(logFile, ctrlType + "\n"); }
-            catch (IOException) { }
-            return true;
-        };
-        if (!SetConsoleCtrlHandler(swallow, true)) throw LastError();
-    }
-
     public static void AllowCtrlC()
     {
-        if (!SetConsoleCtrlHandler(null, false)) throw LastError();
+        if (!SetConsoleCtrlHandler(IntPtr.Zero, false)) throw LastError();
     }
 
     /** Whether each process runs, and when it was created; a process that ended is not found. */
@@ -471,31 +448,6 @@ public static class VeydrProbeTree
         }
     }
 
-    /** Attaches to the console of `processId`, sends the event to every process on it, and leaves. */
-    public static CtrlResult SendCtrl(int processId, uint ctrlEvent)
-    {
-        var result = new CtrlResult();
-        FreeConsole();
-        result.Attached = AttachConsole((uint)processId);
-        if (!result.Attached)
-        {
-            result.AttachError = Marshal.GetLastWin32Error();
-            return result;
-        }
-        try
-        {
-            if (swallow != null && !SetConsoleCtrlHandler(swallow, true)) throw LastError();
-            result.Sent = GenerateConsoleCtrlEvent(ctrlEvent, 0);
-            if (!result.Sent) result.SendError = Marshal.GetLastWin32Error();
-        }
-        finally
-        {
-            // At once, not after the event arrived: this process has no use for it. The handler stays.
-            FreeConsole();
-        }
-        return result;
-    }
-
     /** CTRL_BREAK_EVENT to a process group, from this process, which has no console (pt-ctrl-break-direct). */
     public static CtrlResult SendCtrlDirect(int processId)
     {
@@ -622,7 +574,6 @@ while ($null -ne ($line = $reader.ReadLine())) {
     # Each case assigns: output from a switch would be unrolled into the pipeline.
     switch ($request.op) {
       'ping' { $result = @{ pid = $PID } }
-      'ignore-console-events' { [VeydrProbeTree]::IgnoreConsoleEvents([string]$request.logFile) }
       'allow-ctrl-c' { [VeydrProbeTree]::AllowCtrlC() }
       'inspect' { $result = [VeydrProbeTree]::Inspect([int[]]$request.pids) }
       'snapshot' { $result = [VeydrProbeTree]::Snapshot() }
@@ -634,7 +585,6 @@ while ($null -ne ($line = $reader.ReadLine())) {
       'start' { $result = @{ pid = [VeydrProbeTree]::Start([string]$request.application, [string]$request.commandLine, [bool]$request.suspended, [bool]$request.newGroup, [bool]$request.breakaway) } }
       'resume' { [VeydrProbeTree]::Resume([int]$request.pid) }
       'terminate' { [VeydrProbeTree]::Terminate([int]$request.pid) }
-      'send-ctrl' { $result = [VeydrProbeTree]::SendCtrl([int]$request.pid, [uint32]$request.event) }
       'send-ctrl-direct' { $result = [VeydrProbeTree]::SendCtrlDirect([int]$request.pid) }
       'console-window' { $result = [VeydrProbeTree]::ConsoleWindow([int]$request.pid) }
       'window-station' { $result = [VeydrProbeTree]::CurrentWindowStation() }

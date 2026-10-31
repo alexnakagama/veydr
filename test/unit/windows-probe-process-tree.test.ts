@@ -68,6 +68,7 @@ describe('process-tree answers', () => {
     expect(gracefulAnswer({ ...good, left: [member('cmd', 1)] }).detail).toContain('still running after 5 s: cmd')
     expect(gracefulAnswer({ ...good, helperAlive: false }).detail).toContain('helper did not survive')
     expect(gracefulAnswer({ ...good, send: null, helperAlive: false }).detail).toContain('the helper ended while sending the event')
+    expect(gracefulAnswer({ ...good, send: null }).detail).toBe('the helper exited with 0 but printed no report')
     expect(gracefulAnswer({ ...good, driverEvents: 1 }).detail).toContain('the driver received 1 console events')
     // An unreadable process may still run, so it is never counted as ended; a seen failure still says no.
     expect(gracefulAnswer({ ...good, unknown: [member('cmd', 1)] })).toEqual({ answer: null, detail: 'could not tell whether these ended: cmd' })
@@ -79,6 +80,7 @@ describe('process-tree answers', () => {
   it('answers pt-ctrl-c only when the event reached the baseline', () => {
     expect(ctrlCAnswer({ baselineMarker: true, groupMarker: false, send: sent }).answer).toBe('yes')
     expect(ctrlCAnswer({ baselineMarker: true, groupMarker: true, send: sent }).answer).toBe('no')
+    expect(ctrlCAnswer({ baselineMarker: true, groupMarker: false, send: null }).answer).toBeNull()
     expect(ctrlCAnswer({ baselineMarker: false, groupMarker: false, send: sent }).answer).toBeNull()
     expect(ctrlCAnswer({ baselineMarker: true, groupMarker: false, send: { ...sent, Attached: false } }).answer).toBeNull()
   })
@@ -271,18 +273,18 @@ describe('on Windows', () => {
     const { job } = (await helper.request('create-job')) as { job: number }
     expect(job).toBeGreaterThan(0)
     expect(await helper.request('window-station')).toHaveProperty('Name')
-    const log = join(mkdtempSync(join(tmpdir(), 'veydr-probe-events-')), 'events.log')
-    await helper.request('ignore-console-events', { logFile: log })
     await helper.request('allow-ctrl-c')
     await expect(helper.request('in-job', { pid: 0, job: 99 })).rejects.toThrow()
     await helper.close()
   })
 
-  it.skipIf(process.platform !== 'win32')('[windows-only: .NET Framework csc.exe] job-helper.cs compiles', { timeout: 120_000 }, () => {
+  it.skipIf(process.platform !== 'win32')('[windows-only: .NET Framework csc.exe] the compiled helpers compile', { timeout: 120_000 }, () => {
     const dir = mkdtempSync(join(tmpdir(), 'veydr-probe-csc-'))
     try {
-      const run = spawnSync(compilerPath(), ['/target:exe', `/out:${join(dir, 'job-helper.exe')}`, join(root, 'scripts/windows-probe/job-helper.cs')], { encoding: 'latin1', windowsHide: true })
-      expect(run.status, run.stdout).toBe(0)
+      for (const name of ['job-helper', 'ctrl-helper']) {
+        const run = spawnSync(compilerPath(), ['/target:exe', `/out:${join(dir, `${name}.exe`)}`, join(root, `scripts/windows-probe/${name}.cs`)], { encoding: 'latin1', windowsHide: true })
+        expect(run.status, run.stdout).toBe(0)
+      }
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }

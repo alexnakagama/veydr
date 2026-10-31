@@ -11,4 +11,6 @@ export function buildAnswer(input: {
   tree?: Record<string, number>
   alive: readonly string[]
 }): { answer: Answer; detail: string }
+export function compileHelper(name: string, dir: string): Promise<{ compiler: string; binary: string; result: ProgramResult }>
+export function describeExit(run: ProgramResult): string
 export function runHelperBuild(args: readonly string[], options?: Partial<RunDriverOptions>): Promise<void>

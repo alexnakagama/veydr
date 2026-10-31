@@ -2,8 +2,8 @@
 // The process-tree probes (tasks 4.1–4.3, design D3): how a tree of processes started with
 // child_process.spawn can be stopped, from a parent without a console. The driver builds trees of
 // tree-worker.mjs, stops them, and reports what is still running. process-tree.ps1 reaches the Win32
-// APIs; two copies run, because one attaches to children's consoles and must swallow their events
-// (`console`), and the other starts processes, which must not inherit that (`main`).
+// APIs. Console events are sent by ctrl-helper.cs, compiled here, since W1's graceful stop would need
+// a compiled helper (design D5): in run 41173994270 a PowerShell helper died of every Ctrl+Break.
 //
 //   node scripts/windows-probe/process-tree.mjs --user admin|standard [--unavailable <reason>]
 //
@@ -22,6 +22,7 @@ import { dirname, join } from 'node:path'
 import { createInterface } from 'node:readline'
 import { fileURLToPath } from 'node:url'
 import { DriverUsageError, driverMain, isEntryPoint, jobLimitNames, parseDriverArgs, runDriver, runProgram, windowsPowerShell } from './driver.mjs'
+import { compileHelper, describeExit, helperReport } from './helper-build.mjs'
 import { placeholderIds } from './placeholder.mjs'
 import { WORKER, errorFile, markerFile, readyFile, specFile, workerCommand, writeAtomic } from './tree-files.mjs'
 
@@ -108,7 +109,7 @@ export function libuvJobAnswer({ childInJob, childPid, ownJob }) {
 export function gracefulAnswer({ send, marker, left, helperAlive, driverEvents, unknown = [] }) {
   const problems = []
   // No send: the helper ended during the call, so whether it attached is not known.
-  if (send === null) problems.push('the helper ended while sending the event')
+  if (send === null) problems.push(helperAlive ? 'the helper exited with 0 but printed no report' : 'the helper ended while sending the event')
   else if (!send.Attached) problems.push(`AttachConsole failed with error ${send.AttachError}`)
   else if (!send.Sent) problems.push(`GenerateConsoleCtrlEvent failed with error ${send.SendError}`)
   if (!marker) problems.push('the SIGBREAK handler wrote no marker')
@@ -122,6 +123,7 @@ export function gracefulAnswer({ send, marker, left, helperAlive, driverEvents, 
 
 /** pt-ctrl-c: only meaningful if the same event reaches a child outside a new process group. */
 export function ctrlCAnswer({ baselineMarker, groupMarker, send }) {
+  if (send === null) return { answer: null, detail: 'the helper gave no report of sending the event to the new process group' }
   if (!send.Attached || !send.Sent) return { answer: null, detail: `the event could not be sent to the new process group: attach error ${send.AttachError}, send error ${send.SendError}` }
   if (!baselineMarker) return { answer: null, detail: 'Ctrl+C did not reach a child outside a new process group either, so the result says nothing' }
   return groupMarker ? { answer: 'no', detail: 'the process in a new process group received Ctrl+C' } : { answer: 'yes', detail: '' }
@@ -291,29 +293,12 @@ class Probe {
   tracked = []
   /** Console events that reached the driver; it has no console, so any is a finding (task 4.3). */
   driverEvents = 0
-  consoleEvents = ''
-  #console
-  #consoles = 0
+  #ctrlHelper
+  #sends = 0
 
   constructor(dir, main) {
     this.dir = dir
     this.main = main
-  }
-
-  /** The console events the current console helper received, by type (CTRL_C_EVENT 0, CTRL_BREAK_EVENT 1, CTRL_CLOSE_EVENT 2). */
-  helperEvents() {
-    if (!existsSync(this.consoleEvents)) return []
-    return readFileSync(this.consoleEvents, 'utf8').split('\n').filter((line) => line !== '').map(Number)
-  }
-
-  /** The helper that attaches to consoles, started again if an event ended it. */
-  async console() {
-    if (this.#console === undefined || !this.#console.alive) {
-      this.#console = await startHelper()
-      this.consoleEvents = join(this.dir, `console-events-${++this.#consoles}.log`)
-      await this.#console.request('ignore-console-events', { logFile: this.consoleEvents })
-    }
-    return this.#console
   }
 
   /** Counts the signals Node turns console events into, instead of dying of them unrecorded. */
@@ -330,7 +315,38 @@ class Probe {
   }
 
   async close() {
-    await Promise.allSettled([this.main.close(), this.#console?.close()])
+    await this.main.close()
+  }
+
+  /** ctrl-helper.exe, compiled on first use; a compile error fails each check that needs it. */
+  ctrlHelper() {
+    this.#ctrlHelper ??= compileHelper('ctrl-helper', this.dir).then(({ binary, result }) => {
+      if (result.code !== 0) throw new Error(`csc.exe ${describeExit(result)} on ctrl-helper.cs: ${`${result.stdout}${result.stderr}`.replace(/\s+/g, ' ').trim().slice(0, 500)}`)
+      return binary
+    })
+    return this.#ctrlHelper
+  }
+
+  /**
+   * Sends a console event to the console of `pid` from a new ctrl-helper.exe. `send` is its report,
+   * or null if it ended without one, as the event would end it; `helperEvents` are the event types
+   * its handler logged (CTRL_C_EVENT 0, CTRL_BREAK_EVENT 1, CTRL_CLOSE_EVENT 2). The other fields go
+   * to `data` as they are.
+   */
+  async sendCtrl(pid, event) {
+    const log = join(this.dir, `ctrl-events-${++this.#sends}.log`)
+    const run = await runProgram(await this.ctrlHelper(), [String(pid), String(event), log], { timeoutMs: REQUEST_MS })
+    const lines = existsSync(log) ? readFileSync(log, 'utf8').split('\n').filter((line) => line !== '') : []
+    const helperEvents = lines.filter((line) => line !== 'armed').map(Number)
+    return {
+      send: run.code === 0 ? (helperReport(run.stdout) ?? null) : null,
+      helperAlive: run.code === 0,
+      helperExit: describeExit(run),
+      // `armed` without an event, in a helper that died, means its handler never ran.
+      helperArmed: lines.includes('armed'),
+      helperEvents,
+      helperGotOwnEvent: helperEvents.includes(event),
+    }
   }
 
   writeSpec(spec) {
@@ -498,7 +514,9 @@ async function libuvJob(probe) {
   const childInJob = (await probe.main.request('in-job', { pid: child.pid, job: 0 })).inJob
   const ownJob = await probe.main.request('own-job')
   const result = libuvJobAnswer({ childInJob, childPid: child.pid, ownJob })
-  return { ...result, data: { process: member, childInJob, driverPid: process.pid, jobProcesses: ownJob.Pids, ...limitsData(ownJob) } }
+  // W1 needs this: a process is in libuv's job after its first spawn, so any job W1 creates is nested.
+  const driverInLibuvJob = (ownJob.Pids ?? []).includes(process.pid)
+  return { ...result, data: { process: member, childInJob, driverPid: process.pid, driverInLibuvJob, jobProcesses: ownJob.Pids, ...limitsData(ownJob) } }
 }
 
 const limitsData = (ownJob) =>
@@ -670,16 +688,6 @@ function attachCommand(probe, child, name) {
   return { ...verbatim(`"${join(bin, 'npm.cmd')}" run probe`), options: { windowsVerbatimArguments: true, cwd: project, env } }
 }
 
-/** Sends an event, or resolves with null and keeps the reason if the helper ended during the call. */
-async function sendCtrl(helper, pid, event, failures) {
-  try {
-    return await helper.request('send-ctrl', { pid, event })
-  } catch (error) {
-    failures.push(message(error))
-    return null
-  }
-}
-
 async function ctrlBreakAttach(probe, child) {
   const name = `attach-${child}`
   const { file, args, options } = attachCommand(probe, child, name)
@@ -705,18 +713,15 @@ async function ctrlBreakAttach(probe, child) {
     const running = pids.filter((pid, i) => rows[i]?.Running === true && !isHost(pid))
     const unreadable = pids.filter((_, i) => rows[i]?.Error !== null && rows[i]?.Error !== undefined)
     const members = await probe.track(running.map((pid) => ({ pid, name: `${processes.find((p) => p.Pid === pid)?.Name ?? 'unknown'}#${pid}` })))
-    const helper = await probe.console()
     const eventsBefore = probe.driverEvents
-    const sendFailures = []
-    const send = await sendCtrl(helper, leader.pid, CTRL_BREAK_EVENT, sendFailures)
+    const { send, helperAlive, ...helper } = await probe.sendCtrl(leader.pid, CTRL_BREAK_EVENT)
     const marker = await probe.waitMarker(name, 'break', GRACEFUL_MS)
     const left = await probe.left(members, GRACEFUL_MS, { tolerate: true })
     const finalRows = await probe.rows(members.map((m) => m.pid))
     const unknown = members.filter((_, i) => finalRows[i]?.Error !== null && finalRows[i]?.Error !== undefined)
-    const helperAlive = await helper.alivePing()
     const driverEvents = probe.driverEvents - eventsBefore
     // The helper is on the child's console, so event 0 reaches it too (design D3): only the driver must get none.
-    const data = { send, sendFailures, marker, helperAlive, helperEvents: probe.helperEvents(), driverEvents, driverPid: process.pid, unreadable, unknown: unknown.map((m) => m.name), processes: describe(members, left), output }
+    const data = { send, marker, helperAlive, ...helper, driverEvents, driverPid: process.pid, unreadable, unknown: unknown.map((m) => m.name), processes: describe(members, left), output }
     return { ...gracefulAnswer({ send, marker, left, helperAlive, driverEvents, unknown }), data }
   } finally {
     await probe.taskkill(leader.pid)
@@ -728,20 +733,16 @@ async function ctrlBreakDetached(probe) {
   probe.spawnWorker({ name, signals: true }, { detached: true })
   const { pid } = await probe.ready(name)
   const [member] = await probe.track([{ name, pid }])
-  const helper = await probe.console()
   const eventsBefore = probe.driverEvents
-  const sendFailures = []
-  const send = await sendCtrl(helper, pid, CTRL_BREAK_EVENT, sendFailures)
+  const { send, helperAlive, ...helper } = await probe.sendCtrl(pid, CTRL_BREAK_EVENT)
   const marker = await probe.waitMarker(name, 'break', SETTLE_MS)
   const left = await probe.left([member], send?.Attached === true ? GRACEFUL_MS : 0)
-  const helperAlive = await helper.alivePing()
   const driverEvents = probe.driverEvents - eventsBefore
-  const data = { process: member, send, sendFailures, marker, helperAlive, helperEvents: probe.helperEvents(), driverEvents }
+  const data = { process: member, send, marker, helperAlive, ...helper, driverEvents }
   return { ...gracefulAnswer({ send, marker, left, helperAlive, driverEvents }), data }
 }
 
 async function ctrlC(probe) {
-  const helper = await probe.console()
   // The control: the same event, to a child outside a new process group. It starts from the helper
   // with Ctrl+C allowed, since everything below the driver inherits the setting of the driver's own
   // new process group, which launch-detached.mjs's `detached` gives it (run 41171471857).
@@ -749,19 +750,19 @@ async function ctrlC(probe) {
   const baselineStarted = await probe.startFromHelper({ name: 'ctrl-c-baseline', signals: true })
   await probe.ready('ctrl-c-baseline')
   const [baseline] = await probe.track([{ name: 'ctrl-c-baseline', pid: baselineStarted.pid }])
-  const baselineSend = await helper.request('send-ctrl', { pid: baseline.pid, event: CTRL_C_EVENT })
+  const { send: baselineSend } = await probe.sendCtrl(baseline.pid, CTRL_C_EVENT)
   const baselineMarker = await probe.waitMarker('ctrl-c-baseline', 'int', SETTLE_MS)
   const started = await probe.startFromHelper({ name: 'ctrl-c-group', signals: true }, { newGroup: true })
   await probe.ready('ctrl-c-group')
   const [member] = await probe.track([{ name: 'ctrl-c-group', pid: started.pid }])
-  const send = await helper.request('send-ctrl', { pid: started.pid, event: CTRL_C_EVENT })
+  const { send } = await probe.sendCtrl(started.pid, CTRL_C_EVENT)
   const groupMarker = await probe.waitMarker('ctrl-c-group', 'int', SETTLE_MS)
   const data = { baseline: { ...baseline, send: baselineSend, marker: baselineMarker }, newGroup: { ...member, send, marker: groupMarker } }
   return { ...ctrlCAnswer({ baselineMarker, groupMarker, send }), data }
 }
 
 async function consoleWindow(probe) {
-  const helper = await probe.console()
+  const helper = probe.main
   const station = await helper.request('window-station')
   const hiddenChild = await probe.plainChild('window-hidden', { windowsHide: true })
   const hidden = await helper.request('console-window', { pid: hiddenChild.child.pid })

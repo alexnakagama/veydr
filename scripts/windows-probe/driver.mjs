@@ -146,6 +146,9 @@ function jobAnswer(measurement) {
   if (job.limitFlags !== null) Object.assign(data, { limitFlags: hex(job.limitFlags), limits: jobLimitNames(job.limitFlags) })
   else if (job.driverInJob) data.limitsUnreadable = String(job.limitsError ?? 'no reason given')
   if (!job.driverInJob) return { answer: 'yes', detail: '', data }
+  // libuv adds a process to its own job at its first spawn that is not detached (run 41173994270), and
+  // an attached context.ps1 is that spawn, so this says nothing about a job of the runner's.
+  if (measurement.helper === 'attached') return { answer: null, detail: 'the driver is in a job, but starting context.ps1 attached put it in libuv\'s job, which hides whether the runner has one', data }
   const limits = job.limitFlags === null ? ', whose limits could not be read' : `, with limits ${data.limits.length === 0 ? 'none' : data.limits.join(' ')}`
   return { answer: 'no', detail: `the driver is inside a Job Object${limits}`, data }
 }

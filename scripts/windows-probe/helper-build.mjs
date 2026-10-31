@@ -38,7 +38,19 @@ export function helperReport(stdout) {
   }
 }
 
-const describeExit = ({ code, signal, error }) => error ?? `exited with ${signal ?? String(code)}`
+/** Compiles `<name>.cs` from this directory into `dir`, and resolves with the binary's path and csc.exe's result. */
+export async function compileHelper(name, dir) {
+  const compiler = compilerPath()
+  const source = join(dir, `${name}.cs`)
+  const binary = join(dir, `${name}.exe`)
+  copyFileSync(fileURLToPath(new URL(`./${name}.cs`, import.meta.url)), source)
+  const result = existsSync(compiler)
+    ? await runProgram(compiler, ['/target:exe', `/out:${binary}`, source], { timeoutMs: COMPILE_MS, cwd: dir })
+    : { code: null, signal: null, stdout: '', stderr: '', error: `${compiler} does not exist` }
+  return { compiler, binary, result }
+}
+
+export const describeExit = ({ code, signal, error }) => error ?? `exited with ${signal ?? String(code)}`
 const oneLine = (text) => text.replace(/\s+/g, ' ').trim().slice(0, 500)
 
 /** The answer from each step; `alive` lists the names of the tree's processes still running. */
@@ -72,13 +84,7 @@ function readTree(dir) {
 }
 
 async function buildAndRun(dir) {
-  const compiler = compilerPath()
-  const source = join(dir, 'job-helper.cs')
-  const binary = join(dir, 'job-helper.exe')
-  copyFileSync(fileURLToPath(new URL('./job-helper.cs', import.meta.url)), source)
-  const compile = existsSync(compiler)
-    ? await runProgram(compiler, ['/target:exe', `/out:${binary}`, source], { timeoutMs: COMPILE_MS, cwd: dir })
-    : { code: null, signal: null, stdout: '', stderr: '', error: `${compiler} does not exist` }
+  const { compiler, binary, result: compile } = await compileHelper('job-helper', dir)
   const data = { compiler, compilerVersion: compilerVersion(compile.stdout), compilerExitCode: compile.code }
   const empty = { code: null, signal: null, stdout: '', stderr: '' }
   if (compile.code !== 0) return { ...buildAnswer({ compile, run: empty, alive: [] }), data }
