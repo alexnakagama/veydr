@@ -7,8 +7,8 @@ import { ENCODING_TEST_STRING, VERBATIM_REFUSED_CASES } from '../../scripts/wind
 import { CORPUS } from '../../scripts/windows-probe/cmd-corpus.mjs'
 import { RECORD_FILE, SHIM_LINE, directSpawnAnswer, pathextAnswer, pathextCwdAnswer, previewArgs, refusalAnswer, routeAnswer, runCommands, stderrWithoutEnvironment, withoutEnvironment } from '../../scripts/windows-probe/commands.mjs'
 import { type ContextMeasurement, type ProgramResult, contextIds, reportCheck, runProgram, windowsPowerShell } from '../../scripts/windows-probe/driver.mjs'
-import { asciiLiteral, codePagesAnswer, encodingAnswer, encodingCommand, parseCodePages, runEncoding } from '../../scripts/windows-probe/encoding.mjs'
-import { compareEnvironment, parseSeen, pathCaseAnswer, registryAnswer, registryEnvironment, registryResult, runEnvironment, seenForData, withoutPath } from '../../scripts/windows-probe/environment.mjs'
+import { activeCodePage, asciiLiteral, chcpDiagnosticCommands, codePagesAnswer, encodingAnswer, encodingCommand, parseCodePages, runEncoding } from '../../scripts/windows-probe/encoding.mjs'
+import { compareEnvironment, differenceShape, parseSeen, pathCaseAnswer, registryAnswer, registryEnvironment, registryResult, runEnvironment, seenForData, withoutPath } from '../../scripts/windows-probe/environment.mjs'
 import { placeholderIds } from '../../scripts/windows-probe/placeholder.mjs'
 
 // The parts of the command, environment and encoding probes that can be checked anywhere: how
@@ -150,9 +150,32 @@ describe('environment answers', () => {
   it('compares without case in the names, and with case in the values, recording names only', () => {
     const registry = registryEnvironment({ Path: 'C:\\a', SAME: 'x', CASE: 'value', MISSING: secret }, {})
     const comparison = compareEnvironment(registry, { PATH: 'C:\\b', same: 'x', CASE: 'VALUE', EXTRA: secret, '=C:': 'C:\\', UNSET: undefined })
-    expect(comparison).toEqual({ compared: 3, different: ['CASE', 'PATH'], onlyInRegistry: ['MISSING'], onlyInherited: ['EXTRA'] })
+    expect(comparison).toMatchObject({ compared: 3, different: ['CASE', 'PATH'], onlyInRegistry: ['MISSING'], onlyInherited: ['EXTRA'] })
+    expect(Object.keys(comparison.differences).sort()).toEqual(['CASE', 'PATH'])
     expect(JSON.stringify(comparison)).not.toContain(secret)
     expect(JSON.stringify(registryAnswer(comparison))).not.toContain(secret)
+  })
+
+  it('describes a difference without either value', () => {
+    const shape = differenceShape(`C:\\a;${secret};C:\\b;`, `C:\\B;C:\\A;${secret}2`)
+    expect(shape).toEqual({
+      registryLength: secret.length + 11,
+      inheritedLength: secret.length + 11,
+      caseOnly: false,
+      registryEntries: 3,
+      inheritedEntries: 3,
+      commonEntries: 2,
+      sameOrder: false,
+      registryUnexpanded: false,
+      registryShortName: false,
+      inheritedShortName: false,
+    })
+    expect(JSON.stringify(shape)).not.toContain(secret)
+    expect(differenceShape('a', 'A').caseOnly).toBe(true)
+    expect(differenceShape('C:\\a;C:\\b', 'C:\\a;C:\\x;C:\\b').sameOrder).toBe(true)
+    expect(differenceShape('%HOME%\\t', 'C:\\t').registryUnexpanded).toBe(true)
+    expect(differenceShape('100%; 5%', 'x').registryUnexpanded).toBe(false)
+    expect(differenceShape('C:\\Users\\veydr-probe\\Temp', 'C:\\Users\\VEYDR-~1\\Temp')).toMatchObject({ registryShortName: false, inheritedShortName: true })
   })
 
   it('answers no on a difference, and null on nothing to compare', () => {
@@ -228,6 +251,15 @@ describe('encoding answers', () => {
     expect(command('node', 'plain')).toEqual({ file: 'C:\\node dir\\node.exe', args: ['-e', "process.stdout.write('\\u00fc')"], options: {} })
     expect(command('node', 'utf8').args.at(-1)).toBe(`"chcp 65001>nul & "C:\\node dir\\node.exe" -e "process.stdout.write('\\u00fc')""`)
     expect(() => command('perl', 'plain')).toThrow('does not know how to run perl')
+  })
+
+  it('builds the chcp diagnostics, and reads the code page in any language', () => {
+    const { active, nested } = chcpDiagnosticCommands({ text: 'ü', cmd: 'C:\\cmd.exe' })
+    expect(active.args.at(-1)).toBe('"chcp 65001>nul & chcp"')
+    expect(nested.args.at(-1)).toBe('"chcp 65001>nul & "C:\\cmd.exe" /d /c echo ü"')
+    expect(activeCodePage('Active code page: 65001\r\n')).toBe(65001)
+    expect(activeCodePage('Página de códigos activa: 437.\r\n')).toBe(437)
+    expect(activeCodePage('')).toBeNull()
   })
 
   it('takes Python\'s encoding from the variant, not from the environment', () => {

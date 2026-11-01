@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 // The environment probes (task 5.2, design D3): whether a process's inherited environment is the
 // registry's, and what a child sees of a path variable by its spelling. Variable values never reach
-// a result line, only names do; the one exception is the markers of env-path-case, which are the
-// probe's own.
+// a result line, only names and the shape of a difference (differenceShape) do; the one exception is
+// the markers of env-path-case, which are the probe's own.
 //
 //   node scripts/windows-probe/environment.mjs --user admin|standard [--unavailable <reason>]
 //
@@ -45,15 +45,41 @@ export function registryEnvironment(machine, user) {
   return merged
 }
 
+const listEntries = (value) => value.split(';').filter((entry) => entry !== '').map((entry) => entry.toLowerCase())
+
+/**
+ * The shape of a difference, for explaining a `no` without either value (run 41271095296 could not):
+ * lengths, how the `;`-separated entries compare, whether the registry's value still holds an
+ * unexpanded `%…%`, and whether either has an 8.3 short name, which logon may produce. `sameOrder`
+ * means something only with `commonEntries` above 1.
+ */
+export function differenceShape(registryValue, inheritedValue) {
+  const [fromRegistry, fromInherited] = [listEntries(registryValue), listEntries(inheritedValue)]
+  const common = fromRegistry.filter((entry) => fromInherited.includes(entry))
+  return {
+    registryLength: registryValue.length,
+    inheritedLength: inheritedValue.length,
+    caseOnly: registryValue.toLowerCase() === inheritedValue.toLowerCase(),
+    registryEntries: fromRegistry.length,
+    inheritedEntries: fromInherited.length,
+    commonEntries: common.length,
+    sameOrder: common.join(';') === fromInherited.filter((entry) => fromRegistry.includes(entry)).join(';'),
+    registryUnexpanded: /%[^%;]+%/.test(registryValue),
+    registryShortName: /~\d/.test(registryValue),
+    inheritedShortName: /~\d/.test(inheritedValue),
+  }
+}
+
 /** The names, never the values, of what differs between the registry's environment and an inherited one. */
 export function compareEnvironment(registry, inherited) {
   // Variables named with a leading `=` are cmd.exe's per-drive directories, not an environment.
   const entries = Object.entries(inherited).filter(([name, value]) => !name.startsWith('=') && value !== undefined)
   const seen = new Set(entries.map(([name]) => name.toUpperCase()))
-  const different = entries.filter(([name, value]) => registry.has(name.toUpperCase()) && registry.get(name.toUpperCase()).value !== value).map(([name]) => name)
+  const differing = entries.filter(([name, value]) => registry.has(name.toUpperCase()) && registry.get(name.toUpperCase()).value !== value)
   return {
     compared: entries.filter(([name]) => registry.has(name.toUpperCase())).length,
-    different: sorted(different),
+    different: sorted(differing.map(([name]) => name)),
+    differences: Object.fromEntries(differing.map(([name, value]) => [name, differenceShape(registry.get(name.toUpperCase()).value, value)])),
     onlyInRegistry: sorted([...registry].filter(([key]) => !seen.has(key)).map(([, { name }]) => name)),
     onlyInherited: sorted(entries.filter(([name]) => !registry.has(name.toUpperCase())).map(([name]) => name)),
   }

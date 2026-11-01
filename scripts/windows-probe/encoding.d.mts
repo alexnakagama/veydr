@@ -14,6 +14,8 @@ export function encodingCommand(
   variant: string,
   input: { text: string; node: string; cmd: string; env: Readonly<Record<string, string | undefined>> },
 ): { file: string; args: string[]; options: { windowsVerbatimArguments?: boolean; env?: Record<string, string | undefined> } }
+export function chcpDiagnosticCommands(input: { text: string; cmd: string }): Record<'active' | 'nested', { file: string; args: string[]; options: { windowsVerbatimArguments?: boolean } }>
+export function activeCodePage(stdout: string): number | null
 export function encodingAnswer(input: { run: ProgramResult; bytes: Uint8Array; expected: string }): AnswerDetail
 export function parseCodePages(stdout: string): CodePages | undefined
 export function codePagesAnswer(input: { hidden: CodePages | undefined; run: ProgramResult }): AnswerDetail

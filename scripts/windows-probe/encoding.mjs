@@ -25,20 +25,34 @@ export const asciiLiteral = (text) => `'${text.replace(/[^\x20-\x7e]/g, (ch) => 
 /** `env` without the variables that set Python's encoding, under any spelling. */
 const withoutPythonEncoding = (env) => Object.fromEntries(Object.entries(env).filter(([name]) => !['PYTHONUTF8', 'PYTHONIOENCODING'].includes(name.toUpperCase())))
 
-/**
- * How `tool` prints `text` in `variant`: `{ file, args, options }` for runProgram. A cmd line is
- * passed verbatim, with the outer quotes that `/s` removes, so Node adds no quoting of its own.
- */
+/** `line` for runProgram on cmd.exe, verbatim, with the outer quotes that `/s` removes, so Node adds no quoting of its own. */
+const onCmd = (cmd, line) => ({ file: cmd, args: ['/d', '/s', '/c', `"${line}"`], options: { windowsVerbatimArguments: true } })
+
+/** How `tool` prints `text` in `variant`: `{ file, args, options }` for runProgram. */
 export function encodingCommand(tool, variant, { text, node, cmd, env }) {
-  const onCmd = (line) => ({ file: cmd, args: ['/d', '/s', '/c', `"${line}"`], options: { windowsVerbatimArguments: true } })
   const write = `process.stdout.write(${asciiLiteral(text)})`
-  if (tool === 'cmd') return onCmd(`${variant === 'utf8' ? 'chcp 65001>nul & ' : ''}echo ${text}`)
-  if (tool === 'node') return variant === 'utf8' ? onCmd(`chcp 65001>nul & "${node}" -e "${write}"`) : { file: node, args: ['-e', write], options: {} }
+  if (tool === 'cmd') return onCmd(cmd, `${variant === 'utf8' ? 'chcp 65001>nul & ' : ''}echo ${text}`)
+  if (tool === 'node') return variant === 'utf8' ? onCmd(cmd, `chcp 65001>nul & "${node}" -e "${write}"`) : { file: node, args: ['-e', write], options: {} }
   if (tool === 'python') {
     const pythonEnv = variant === 'utf8' ? { ...withoutPythonEncoding(env), PYTHONUTF8: '1' } : withoutPythonEncoding(env)
     return { file: 'python', args: ['-c', `print(${asciiLiteral(text)})`], options: { env: pythonEnv } }
   }
   throw new Error(`encoding.mjs does not know how to run ${tool}`)
+}
+
+/**
+ * What explains enc-child-cmd-utf8, which run 41271095296 could not: whether `chcp` changed the
+ * console, and whether a new cmd.exe on that console writes UTF-8 where the one that ran `chcp` did not.
+ */
+export const chcpDiagnosticCommands = ({ text, cmd }) => ({
+  active: onCmd(cmd, 'chcp 65001>nul & chcp'),
+  nested: onCmd(cmd, `chcp 65001>nul & "${cmd}" /d /c echo ${text}`),
+})
+
+/** The code page in what `chcp` printed, in any language, or null. */
+export const activeCodePage = (stdout) => {
+  const found = /(\d+)\D*$/.exec(stdout.trim())
+  return found === null ? null : Number(found[1])
 }
 
 /**
@@ -96,6 +110,26 @@ async function findPython() {
   return run.code === 0 && /^Python \d/.test(run.stdout.trim()) ? { version: run.stdout.trim() } : { missing: `Python is not installed: python --version ${describeExit(run)}` }
 }
 
+/** `data` for enc-child-cmd-utf8. A diagnostic that fails says so here and never costs the check's answer. */
+async function chcpDiagnostics() {
+  try {
+    return await measureChcp()
+  } catch (error) {
+    return { chcpDiagnosticError: error instanceof Error ? error.message : String(error) }
+  }
+}
+
+async function measureChcp() {
+  const { active, nested } = chcpDiagnosticCommands({ text: ENCODING_TEST_STRING, cmd: system32('cmd.exe') })
+  const activeRun = await runProgram(active.file, active.args, { ...active.options, timeoutMs: CHILD_MS })
+  const nestedRun = await runProgram(nested.file, nested.args, { ...nested.options, timeoutMs: CHILD_MS })
+  const bytes = Buffer.from(nestedRun.stdout, 'latin1')
+  return {
+    chcpActiveCodePage: activeCodePage(activeRun.stdout),
+    nestedCmd: { hex: bytes.toString('hex'), exitCode: nestedRun.code, decodes: encodingAnswer({ run: nestedRun, bytes, expected: ENCODING_TEST_STRING }).answer },
+  }
+}
+
 async function childEncoding(tool, variant, python) {
   const where = { tool, variant, windowsHide: true }
   if (tool === 'python' && python.missing !== undefined) return { answer: null, detail: python.missing, data: where }
@@ -105,7 +139,7 @@ async function childEncoding(tool, variant, python) {
   const bytes = Buffer.from(run.stdout, 'latin1')
   return {
     ...encodingAnswer({ run, bytes, expected: ENCODING_TEST_STRING }),
-    data: { ...where, hex: bytes.toString('hex'), exitCode: run.code, stderr: oneLine(run.stderr), ...(tool === 'python' ? { python: python.version } : {}) },
+    data: { ...where, hex: bytes.toString('hex'), exitCode: run.code, stderr: oneLine(run.stderr), ...(tool === 'python' ? { python: python.version } : {}), ...(tool === 'cmd' && variant === 'utf8' ? await chcpDiagnostics() : {}) },
   }
 }
 
