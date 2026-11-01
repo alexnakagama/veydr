@@ -295,11 +295,12 @@ describe('runProgram', () => {
   })
 
   it('does not stop a program that already exited, and closes the pipes its descendant holds', { timeout: 30_000 }, async () => {
-    const grandchild = 'setTimeout(() => {}, 6000)'
-    const parent = `require('node:child_process').spawn(process.execPath, ['-e', ${JSON.stringify(grandchild)}], { stdio: 'inherit' }).unref(); console.log('started'); setTimeout(() => process.exit(0), 100)`
+    // detached: on Windows a non-detached child is in libuv's job, and dies with its parent.
+    const grandchild = 'setTimeout(() => {}, 10000)'
+    const parent = `require('node:child_process').spawn(process.execPath, ['-e', ${JSON.stringify(grandchild)}], { stdio: 'inherit', detached: true }).unref(); console.log('started'); setTimeout(() => process.exit(0), 100)`
     const started = Date.now()
-    const run = await runProgram(process.execPath, ['-e', parent], { timeoutMs: 1_000, graceMs: 500 })
-    expect(Date.now() - started).toBeLessThan(5_000)
+    const run = await runProgram(process.execPath, ['-e', parent], { timeoutMs: 3_000, graceMs: 500 })
+    expect(Date.now() - started).toBeLessThan(8_000)
     expect(run).toMatchObject({ code: 0, signal: 'SIGTERM' })
     expect(run.stdout).toContain('started')
   })
