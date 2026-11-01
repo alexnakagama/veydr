@@ -57,6 +57,8 @@ export function checkProbeDirectory(dir?: string): ProbeDirectory
 
 export function windowsPowerShell(): string
 
+export function system32(file: string): string
+
 export interface ProgramResult {
   code: number | null
   signal: string | null
@@ -65,13 +67,17 @@ export interface ProgramResult {
   error?: string
 }
 
-export function runProgram(file: string, args: readonly string[], options?: { timeoutMs?: number; [option: string]: unknown }): Promise<ProgramResult>
+export function runProgram(file: string, args: readonly string[], options?: { timeoutMs?: number; graceMs?: number; [option: string]: unknown }): Promise<ProgramResult>
+
+export function noAnswer(run: ProgramResult, timeoutMs: number): { answer: null; detail: string } | undefined
 
 export function isEntryPoint(moduleUrl: string): boolean
 
 export function driverMain(name: string, run: (args: string[]) => Promise<void>): void
 
 export type Report = (id: string, answer: Answer, detail?: string, data?: Record<string, unknown>) => void
+
+export function reportCheck(report: Report, id: string, check: () => Promise<{ answer: Answer; detail: string; data?: Record<string, unknown> }>): Promise<void>
 
 export interface RunDriverOptions {
   area: string

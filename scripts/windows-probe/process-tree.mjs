@@ -21,7 +21,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { createInterface } from 'node:readline'
 import { fileURLToPath } from 'node:url'
-import { DriverUsageError, driverMain, isEntryPoint, jobLimitNames, parseDriverArgs, runDriver, runProgram, windowsPowerShell } from './driver.mjs'
+import { DriverUsageError, driverMain, isEntryPoint, jobLimitNames, parseDriverArgs, runDriver, runProgram, system32, windowsPowerShell } from './driver.mjs'
 import { compileHelper, describeExit, helperReport } from './helper-build.mjs'
 import { placeholderIds } from './placeholder.mjs'
 import { WORKER, errorFile, markerFile, readyFile, specFile, workerCommand, writeAtomic } from './tree-files.mjs'
@@ -49,7 +49,6 @@ const LIBUV_JOB_LIMITS = 0x3c00
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 const message = (error) => (error instanceof Error ? error.message : String(error))
-const system32 = (file) => join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', file)
 
 // ---------------------------------------------------------------------------------------------
 // The answers, from what was measured

@@ -162,23 +162,55 @@ Group 4 implementation notes:
 
 ## 5. Command, environment, and encoding probes
 
-- [ ] 5.1 Implement the command probes from the console-less launcher:
+- [x] 5.1 Implement the command probes from the console-less launcher:
   - `cmd-direct-spawn`;
   - every `cmd-route-<route>-<case>`, for Node's `shell: true` and for `cmd.exe /d /v:off /s /c` with verbatim arguments and the quoting of `cmd-quote.mjs` (task 1.1); on the verbatim route, a case the candidate refuses answers `yes` if it was refused before spawning. Each case calls `fwd.cmd` (only `@node "%~dp0record.mjs" %*`, like `npm.cmd`); `record.mjs` writes `process.argv` as JSON. The answer is `yes` only if the recorded arguments equal the case's intended ones and the case's sentinel file, which an injected command would create, does not exist;
   - `cmd-pathext`, with `PATHEXT` and its order in `data`;
   - `cmd-pathext-cwd`: an `npm.cmd` decoy in the working directory, not on `PATH`, that would create a sentinel file if run. The answer is `yes` if the sentinel does not exist after `cmd.exe /d /s /c npm --version`. `data` records whether `NoDefaultCurrentDirectoryInExePath` is set.
 
   Verify: a probe run reports one line per route and case, and for each `no` the recorded arguments or the sentinel are in `data`.
-- [ ] 5.2 Implement the environment checks:
+- [x] 5.2 Implement the environment checks:
   - `env-registry` and `env-registry-std`: read the user and machine environment from the registry (user over machine, except `Path`, which is machine then user; `REG_EXPAND_SZ` expanded). The answer is `yes` if every variable defined in both it and the driver's `process.env` has equal values. `data` records the names, never the values, of variables found in only one of them or with different values.
   - `env-path-case`: start a child, which reports its environment, with an environment whose only path variable is spelled `PATH` and set to a marker value. The answer is `yes` if the child sees exactly one path variable, with the marker value. `data` records the inherited spelling, and what a second child sees when given both `Path` and `PATH` with different markers. The probe does not import Veydr's merge function (TypeScript, already unit-tested on the Windows lane);
 
   Verify: a probe run reports all three IDs, as administrator and as a standard user, and no variable value appears in any result file.
-- [ ] 5.3 Implement the encoding checks, all from the console-less launcher:
+- [x] 5.3 Implement the encoding checks, all from the console-less launcher:
   - `enc-codepages`: the answer is `yes` if a console child's output code page is 65001 without `chcp`. `data` records `GetACP`, `GetOEMCP`, and `GetConsoleOutputCP`, with and without `windowsHide`;
   - `enc-child-<tool>-<variant>`, for the tools `cmd` (`echo`), `node`, and `python` (`NOT-TESTABLE` if not installed), each in the variants `plain` and `utf8` (`chcp 65001` first, or `PYTHONUTF8=1` for Python). Each prints one fixed non-ASCII test string. The answer is `yes` if the received bytes are valid UTF-8 and decode to exactly that string. `data` records the bytes as hex.
 
   Verify: a probe run reports every encoding ID, with the console context in `data`.
+
+Group 5 status (2026-11-01): implemented in `commands.mjs`, `environment.mjs`, `encoding.mjs`, `record.mjs`, `registry-env.ps1` and `codepages.ps1`. Verified on Linux: `npm test`, `npm run lint`, `npm run typecheck`, `npm run spec-coverage`, and the pinned actionlint. As reported by the maintainer, the checks on [#17](https://github.com/alexnakagama/veydr/pull/17), including the `windows` job, passed.
+
+[Windows probe run 41271095296](https://github.com/alexnakagama/veydr/actions/runs/41271095296) (`aa090db`) verifies all three tasks: all 71 IDs of the three areas are reported, with no "no result" line; each `no` has the recorded arguments or the sentinel in `data`; the context is in `data`; and `ctx-no-console` and `ctx-standard-user` pass. The only environment-like text in these results is what task 5.1 requires (`PATHEXT`, `where.exe`'s paths) and an install path in Python's traceback. The `environment` results hold names only. Its jobs ran on two image versions, so it is not evidence; task 8.1 needs a run on one.
+
+- `cmd-route-verbatim-*`: all 28 `PASS`, 3 of them by refusal. Every `cmd-route-shell-*` prediction held; the injections on `amp`, `pipe` and `gt` created their sentinels.
+- `env-registry-std` was `FAIL`, with `Path`, `TEMP`, `TMP` and `USERNAME` different.
+- `enc-child-cmd-utf8` was `FAIL`: its bytes equal `enc-child-cmd-plain`'s, in code page 437.
+- `enc-child-node-*` and `enc-child-python-utf8` are `PASS`, and `enc-codepages` is `EXPECTED-FAIL`, with code page 437.
+
+Neither `FAIL` could be explained from that run, so `data` gained, with no prediction or question changed: `differences` on `env-registry*`, each differing variable's shape (lengths, how its `;` entries compare, unexpanded `%…%`, 8.3 short names) and never a value; and `chcpActiveCodePage` and `nestedCmd` on `enc-child-cmd-utf8`, what a new cmd.exe writes after the same `chcp`. Neither changes an answer, and a diagnostic that fails records `chcpDiagnosticError` instead of costing the check. `reviewer2` read this on 2026-11-01 and found no defect that changes an answer; its two low findings are fixed: the wording on what `environment` results hold (names and shapes, no values), and the diagnostic's error handling.
+
+[Windows probe run 41272480459](https://github.com/alexnakagama/veydr/actions/runs/41272480459) (`2627d93`) has the same status counts and explains both. Its jobs also ran on two image versions, so it is not evidence either. Both `FAIL`s stand as predictions that did not hold:
+- `enc-child-cmd-utf8`: `chcp` does change the console (`chcpActiveCodePage` 65001), and a new cmd.exe started after it writes correct UTF-8 (`nestedCmd.decodes` `yes`). Only the `echo` of the cmd.exe that ran `chcp`, on the same `/c` line, stays in code page 437. Whether a later line of a batch file behaves the same was not measured.
+- `env-registry-std`, which holds for `env-registry` too:
+  - `USERNAME`: the registry's value has 6 characters, `SYSTEM`'s length, and the inherited one 11, as logon sets it. This is the expected one.
+  - `TEMP` and `TMP`: 39 characters in the registry and 36 inherited, with an 8.3 short name only in the inherited value. Those are the lengths of the long and short forms of an 11-character profile name, which fits logon writing the same directory in short form; values are not recorded, so this is an inference.
+  - `Path`: as the standard user, all 72 entries are common, in the same order, and the merged registry value is one character longer. Empty entries are not counted, so that is most likely one extra `;`, in how the probe joins the values or in how logon does. The directories are the same.
+- `env-registry` as administrator also differs in `Path` (2 more entries), `PATHEXT` (1 more) and `PSModulePath` (3 more), all additions with the registry's entries in order, as predicted for the job's own changes.
+
+Group 5 review (`reviewer2`, 2026-11-01), by reading only. No blocker; 3 medium and 6 low findings:
+- Fixed: on the verbatim route a refusal answers `yes` only for a case in `VERBATIM_REFUSED_CASES`, and any other refusal answers `null`, since it can depend on the temp path.
+- Fixed: `runProgram` stops the whole tree at a timeout, and after a grace period closes pipes a descendant still holds, so a timeout now bounds the call. It always reports a signal.
+- Fixed: recorded arguments and `stderr` in `commands.jsonl` show `(… from the environment)` instead of a variable's value or part of one. Task 5.1 requires `PATHEXT` and `where.exe`'s paths in `data`, so those two stay.
+- Fixed: `cmd-pathext-cwd` answers `null` if neither the decoy nor npm ran, and leftovers no longer fail a finished `commands.mjs` run.
+- The re-review confirmed these fixes and raised 1 new low finding, fixed: `runProgram` no longer stops a program that has already exited, since its PID may have been reused. Only the pipes are closed, and the result keeps its `signal`. A third reading of that fix found nothing new. Its guard is not exercised on Linux, where killing an exited process does nothing, so only a Windows run can show it keeps `taskkill` from running.
+- Accepted: `cmd-pathext` reads the resolution from `where.exe` and `npm --version` together, an interpretation noted in the code; `previewArgs` may cut a surrogate pair; the DEP0190 warning goes to stderr only.
+
+To read in group 8:
+- `env-registry-std` will probably be a `FAIL`. The question is applied literally, `HKLM` defines `USERNAME=SYSTEM`, and logon overrides it, so that prediction was too optimistic. `data.different` names the variables.
+- `REG_EXPAND_SZ` is expanded against the driver's environment, so a reference to a registry-only variable also shows as different.
+- `enc-child-python-plain` may answer `yes` on an image with Python 3.15, which defaults to UTF-8 mode.
 
 ## 6. Port probes
 

@@ -343,6 +343,9 @@ const VERBATIM_REFUSED = {
   long: 'escaped, the arguments exceed cmd.exe\'s 8191-character line',
 }
 
+/** The corpus cases whose verbatim check asks for a refusal, not for the arguments to arrive. */
+export const VERBATIM_REFUSED_CASES = Object.freeze(Object.keys(VERBATIM_REFUSED))
+
 /** Whether cmd-quote.mjs refuses the case, so VERBATIM_REFUSED cannot drift from the code. */
 function refusedByCandidate(c) {
   try {

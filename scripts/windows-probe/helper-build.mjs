@@ -51,7 +51,7 @@ export async function compileHelper(name, dir) {
 }
 
 export const describeExit = ({ code, signal, error }) => error ?? `exited with ${signal ?? String(code)}`
-const oneLine = (text) => text.replace(/\s+/g, ' ').trim().slice(0, 500)
+export const oneLine = (text) => text.replace(/\s+/g, ' ').trim().slice(0, 500)
 
 /** The answer from each step; `alive` lists the names of the tree's processes still running. */
 export function buildAnswer({ compile, run, report, tree, alive }) {
