@@ -288,30 +288,70 @@ export function checkProbeDirectory(dir = process.cwd()) {
 }
 
 /** The path of Windows PowerShell 5.1, which every .ps1 probe script runs under (design D2). */
-export const windowsPowerShell = () => join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
+export const windowsPowerShell = () => system32(join('WindowsPowerShell', 'v1.0', 'powershell.exe'))
+
+/** The path of `file` in Windows' System32 directory. */
+export const system32 = (file) => join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', file)
+
+/** How long a stopped program's tree may take to go, and to let go of its output pipes. */
+const STOP_GRACE_MS = 10_000
+
+/** Stops a program: on Windows `child.kill()` ends only the program itself, so taskkill /T goes first, while the tree's parent links exist. */
+function stopProgram(child) {
+  if (process.platform !== 'win32') {
+    child.kill()
+    return
+  }
+  const kill = () => child.kill()
+  const taskkill = spawn(system32('taskkill.exe'), ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' })
+  taskkill.on('error', kill)
+  taskkill.on('close', kill)
+}
 
 /**
  * Runs a program without a window and resolves with `{ code, signal, stdout, stderr, error }`, stopping
- * it after `timeoutMs`. Never rejects: `error` says why it did not start. Output is read as Latin-1,
- * since Windows tools print in the console's code page and only ASCII is looked at.
+ * its process tree after `timeoutMs`; `signal` is then always set, also for a program that exited but
+ * left a descendant holding its output pipes open. Such pipes are closed after `graceMs`, and the
+ * result is what was read until then.
+ * `error` says why it did not start. Output is read as Latin-1, which keeps every byte, since Windows
+ * tools print in the console's code page.
  */
-export function runProgram(file, args, { timeoutMs = 60_000, ...options } = {}) {
+export function runProgram(file, args, { timeoutMs = 60_000, graceMs = STOP_GRACE_MS, ...options } = {}) {
   return new Promise((resolve) => {
     const child = spawn(file, args, { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'], ...options })
     const output = { stdout: [], stderr: [] }
     child.stdout.on('data', (chunk) => output.stdout.push(chunk))
     child.stderr.on('data', (chunk) => output.stderr.push(chunk))
-    const timer = setTimeout(() => child.kill(), timeoutMs)
     const text = (chunks) => Buffer.concat(chunks).toString('latin1')
-    child.on('error', (error) => {
+    let timedOut = false
+    let grace
+    const timer = setTimeout(() => {
+      timedOut = true
+      // A program that already exited has only its pipes left, and its PID may be another process's by now.
+      if (child.exitCode === null && child.signalCode === null) stopProgram(child)
+      grace = setTimeout(() => {
+        child.stdout.destroy()
+        child.stderr.destroy()
+        child.unref()
+        finish({ code: child.exitCode, signal: 'SIGTERM' })
+      }, graceMs)
+    }, timeoutMs)
+    const finish = (result) => {
       clearTimeout(timer)
-      resolve({ code: null, signal: null, stdout: text(output.stdout), stderr: text(output.stderr), error: error.message })
-    })
-    child.on('close', (code, signal) => {
-      clearTimeout(timer)
-      resolve({ code, signal, stdout: text(output.stdout), stderr: text(output.stderr) })
-    })
+      clearTimeout(grace)
+      resolve({ ...result, stdout: text(output.stdout), stderr: text(output.stderr) })
+    }
+    child.on('error', (error) => finish({ code: null, signal: null, error: error.message }))
+    // taskkill ends a program with an exit code, not a signal.
+    child.on('close', (code, signal) => finish({ code, signal: timedOut ? (signal ?? 'SIGTERM') : signal }))
   })
+}
+
+/** The answer for a command that did not start or did not finish within `timeoutMs`, or undefined if it did: nothing can be read from it. */
+export function noAnswer(run, timeoutMs) {
+  if (run.error !== undefined) return { answer: null, detail: `the command did not start: ${run.error}` }
+  if (run.signal !== null) return { answer: null, detail: `the command did not finish within ${timeoutMs / 1000} s` }
+  return undefined
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -343,6 +383,20 @@ export function driverMain(name, run) {
       process.exitCode = usage ? 2 : 1
     },
   )
+}
+
+/**
+ * Reports what `check` resolves with, `{ answer, detail, data }`. A check that throws answers null,
+ * so one failed measurement does not cost the checks after it.
+ */
+export async function reportCheck(report, id, check) {
+  let result
+  try {
+    result = await check()
+  } catch (error) {
+    result = { answer: null, detail: `the probe failed: ${error instanceof Error ? error.message : String(error)}`, data: {} }
+  }
+  report(id, result.answer, result.detail, result.data)
 }
 
 /**

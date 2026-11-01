@@ -180,6 +180,21 @@ Group 4 implementation notes:
 
   Verify: a probe run reports every encoding ID, with the console context in `data`.
 
+Group 5 status (2026-11-01): implemented, in `commands.mjs`, `environment.mjs`, `encoding.mjs`, `record.mjs`, `registry-env.ps1` and `codepages.ps1`, and not yet run on Windows. All three tasks stay open until a `windows-probe.yml` run verifies them. That run needs the work committed and pushed, which the maintainer has held back for now. Verified on Linux: `npm test`, `npm run lint`, `npm run typecheck`, `npm run spec-coverage`, and the pinned actionlint.
+
+Group 5 review (`reviewer2`, 2026-11-01), by reading only. No blocker; 3 medium and 6 low findings:
+- Fixed: on the verbatim route a refusal answers `yes` only for a case in `VERBATIM_REFUSED_CASES`, and any other refusal answers `null`, since it can depend on the temp path.
+- Fixed: `runProgram` stops the whole tree at a timeout, and after a grace period closes pipes a descendant still holds, so a timeout now bounds the call. It always reports a signal.
+- Fixed: recorded arguments and `stderr` in `commands.jsonl` show `(… from the environment)` instead of a variable's value or part of one. Task 5.1 requires `PATHEXT` and `where.exe`'s paths in `data`, so those two stay.
+- Fixed: `cmd-pathext-cwd` answers `null` if neither the decoy nor npm ran, and leftovers no longer fail a finished `commands.mjs` run.
+- The re-review confirmed these fixes and raised 1 new low finding, fixed: `runProgram` no longer stops a program that has already exited, since its PID may have been reused. Only the pipes are closed, and the result keeps its `signal`. A third reading of that fix found nothing new. Its guard is not exercised on Linux, where killing an exited process does nothing, so only a Windows run can show it keeps `taskkill` from running.
+- Accepted: `cmd-pathext` reads the resolution from `where.exe` and `npm --version` together, an interpretation noted in the code; `previewArgs` may cut a surrogate pair; the DEP0190 warning goes to stderr only.
+
+To read in group 8:
+- `env-registry-std` will probably be a `FAIL`. The question is applied literally, `HKLM` defines `USERNAME=SYSTEM`, and logon overrides it, so that prediction was too optimistic. `data.different` names the variables.
+- `REG_EXPAND_SZ` is expanded against the driver's environment, so a reference to a registry-only variable also shows as different.
+- `enc-child-python-plain` may answer `yes` on an image with Python 3.15, which defaults to UTF-8 mode.
+
 ## 6. Port probes
 
 - [ ] 6.1 Implement `scripts/windows-probe/ports.mjs` with a helper that listens on known ports on `127.0.0.1`, `::1`, and `0.0.0.0`. Implement:

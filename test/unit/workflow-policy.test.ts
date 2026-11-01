@@ -1268,7 +1268,7 @@ describe('windows-probe.yml (assess-windows-platform design D1)', () => {
   const w = loadWorkflow('.github/workflows/windows-probe.yml')
   const resultsFile = (area: string): string => `test-results/windows-probe/results/${area}.jsonl`
   /** The driver and its arguments, as the launcher and standard-user.ps1 name it, until each area's probe exists. */
-  const implemented: Readonly<Record<string, string>> = { 'process-tree': 'process-tree.mjs', helper: 'helper-build.mjs' }
+  const implemented: Readonly<Record<string, string>> = { 'process-tree': 'process-tree.mjs', helper: 'helper-build.mjs', commands: 'commands.mjs', environment: 'environment.mjs', encoding: 'encoding.mjs' }
   const driverOf = (area: string): string => implemented[area] ?? `placeholder.mjs ${area}`
   /** The `env:` of a step, as `key: value` pairs. */
   const envOf = (step: Range): Record<string, string> => {

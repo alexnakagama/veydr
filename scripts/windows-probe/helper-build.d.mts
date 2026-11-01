@@ -12,5 +12,6 @@ export function buildAnswer(input: {
   alive: readonly string[]
 }): { answer: Answer; detail: string }
 export function compileHelper(name: string, dir: string): Promise<{ compiler: string; binary: string; result: ProgramResult }>
-export function describeExit(run: ProgramResult): string
+export function describeExit(run: Pick<ProgramResult, 'code' | 'signal' | 'error'>): string
+export function oneLine(text: string): string
 export function runHelperBuild(args: readonly string[], options?: Partial<RunDriverOptions>): Promise<void>

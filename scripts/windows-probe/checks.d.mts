@@ -65,6 +65,7 @@ export interface SnapshotEntry {
 export const PROBE_AREAS: readonly ProbeArea[]
 export const CONTEXT_AREA: 'context'
 export const CMD_ROUTES: Readonly<Record<'shell' | 'verbatim', string>>
+export const VERBATIM_REFUSED_CASES: readonly string[]
 export const ENCODING_TEST_STRING: string
 export const ENCODING_TOOLS: Readonly<Record<'cmd' | 'node' | 'python', string>>
 export const ENCODING_VARIANTS: Readonly<Record<'plain' | 'utf8', string>>
