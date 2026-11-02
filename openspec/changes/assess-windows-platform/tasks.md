@@ -221,6 +221,15 @@ To read in group 8:
   The control check is that at least one method finds the helper's own sockets. Verify: a probe run reports every one of these IDs, and the control passes.
 - [ ] 6.2 Run `port-ps-std`, `port-api-std`, and `port-owner-identity-std` through the standard-user runner, against a helper started by the standard user. Run `port-ps-latency` and `port-api-latency` as that user too: 10 calls each, all durations in `data`, answering `yes` if the median is at most 300 ms and the slowest at most 1 s (design D3). Verify: a probe run reports the five IDs with `context: standard`, and the control passes as a standard user.
 
+Group 6 status (2026-11-02): implemented in `ports.mjs`, `port-listener.mjs` and `ports.ps1`, and the `ports` job now runs `ports.mjs` in both steps. 6.1 and 6.2 stay open until a Windows probe run verifies them; nothing has been committed or run on Windows yet, and neither has the C# in `ports.ps1`, which the `windows` CI job compiles and runs in a new Windows-only unit test. Notes:
+- A listener counts as found only on its address, port and PID. `netstat` lines are told by their wildcard remote address, not the localized state word.
+- The listener takes ports from the system, which it reports, and closes every connection at once, since `0.0.0.0` is reachable from outside the runner. It ends when its stdin closes.
+- One `GetExtendedTcpTable` call in the latency figures is the IPv4 table plus the IPv6 table, as W3 needs both. Durations are timed inside one PowerShell process, so they leave out PowerShell's startup, which W3 must weigh if it starts a process per poll.
+- An owner's name comes from the process list, which needs no rights, and its creation time from a handle, so `port-owner-identity-std` measures what a standard user really lacks. An owner that ended after the table was read is listed in `ownersGone` and is not counted as unreadable.
+- `data` holds only the rows on the helper's ports and the unreadable owners, not the machine's listing.
+
+Group 6 review (`reviewer2`, 2026-11-02), by reading only: no blocker, 1 medium and 7 low findings. Fixed: an owner that ended between its two reads no longer counts as unreadable; the table read leaves room for growth and refuses a size with no table; ports.ps1's header says a reused PID could pair a name with the wrong creation time, which W3 must avoid; the listener's sockets ignore errors; a listener that ends during the measurements gives `null`, not `no`; and the Windows-only test no longer fails on stderr noise. Not changed: `GetExtendedTcpTable` rows leave out the IPv6 scope, since the probe's listeners are on loopback and `data` holds only their rows. The re-review confirmed every fix, with nothing new. Verified on Linux: `npm test`, `npm run lint`, `npm run typecheck`, `npm run spec-coverage`, and the pinned actionlint, which ran before the review fixes, none of which touched a workflow.
+
 ## 7. Electron and installer probes
 
 - [ ] 7.1 Implement the `electron` job:
