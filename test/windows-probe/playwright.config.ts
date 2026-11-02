@@ -5,6 +5,9 @@ import { defineConfig } from '@playwright/test'
 export default defineConfig({
   testDir: '.',
   testMatch: 'launch.spec.ts',
+  // Playwright deletes this directory when it starts, and its default is the whole of test-results/,
+  // which holds the results file of the job running this probe.
+  outputDir: '../../test-results/windows-probe-playwright',
   workers: 1,
   fullyParallel: false,
   retries: 0,

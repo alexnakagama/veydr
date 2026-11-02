@@ -1,6 +1,6 @@
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, resolve, sep } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { CHECKS } from '../../scripts/windows-probe/checks.mjs'
 import { deriveStatus } from '../../scripts/windows-probe/summary.mjs'
@@ -251,6 +251,15 @@ describe('electron answers', () => {
   it('takes no positional arguments, and runs only as administrator', async () => {
     await expect(runElectron(['x', '--user', 'admin'], context)).rejects.toThrow('expected no positional arguments')
     await expect(runElectron(['--user', 'standard'], context)).rejects.toThrow('has no checks that run as standard')
+  })
+
+  it('keeps Playwright, which deletes its output directory when it starts, away from the results file', () => {
+    const config = readFileSync(join(root, 'test/windows-probe/playwright.config.ts'), 'utf8')
+    const outputDir = /outputDir: '([^']+)'/.exec(config)?.[1]
+    expect(outputDir).toBeDefined()
+    const resolved = resolve(root, 'test/windows-probe', outputDir ?? '')
+    expect(resolved).toBe(join(root, 'test-results/windows-probe-playwright'))
+    expect(join(root, 'test-results/windows-probe/results/electron.jsonl').startsWith(`${resolved}${sep}`)).toBe(false)
   })
 
   it('does not put the probe\'s spec in the e2e suite, which reads only test/e2e', () => {
