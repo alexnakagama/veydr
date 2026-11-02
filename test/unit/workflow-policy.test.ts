@@ -1268,7 +1268,7 @@ describe('windows-probe.yml (assess-windows-platform design D1)', () => {
   const w = loadWorkflow('.github/workflows/windows-probe.yml')
   const resultsFile = (area: string): string => `test-results/windows-probe/results/${area}.jsonl`
   /** The driver and its arguments, as the launcher and standard-user.ps1 name it, until each area's probe exists. */
-  const implemented: Readonly<Record<string, string>> = { 'process-tree': 'process-tree.mjs', helper: 'helper-build.mjs', commands: 'commands.mjs', environment: 'environment.mjs', encoding: 'encoding.mjs', ports: 'ports.mjs' }
+  const implemented: Readonly<Record<string, string>> = { 'process-tree': 'process-tree.mjs', helper: 'helper-build.mjs', commands: 'commands.mjs', environment: 'environment.mjs', encoding: 'encoding.mjs', ports: 'ports.mjs', electron: 'electron.mjs', nsis: 'nsis.mjs' }
   const driverOf = (area: string): string => implemented[area] ?? `placeholder.mjs ${area}`
   /** The `env:` of a step, as `key: value` pairs. */
   const envOf = (step: Range): Record<string, string> => {
@@ -1438,6 +1438,22 @@ describe('windows-probe.yml (assess-windows-platform design D1)', () => {
       const expected = electronJobs.includes(job) ? { electron: '"true"', dependencies: undefined } : { electron: undefined, dependencies: '"false"' }
       expect({ electron: w.withValue(step, 'electron'), dependencies: w.withValue(step, 'dependencies') }, job).toEqual(expected)
     }
+  })
+
+  it('builds the app and downloads Electron before the Electron-launching probes (design D8), and checks electron-builder.yml stays unchanged', () => {
+    for (const job of ['electron', 'nsis']) {
+      const names = w.steps(job).map((s) => w.field(s, 'name'))
+      expect(w.field(named(job, 'Build the app'), 'run'), job).toBe('npm run build')
+      expect(w.field(named(job, 'Download Electron'), 'run'), job).toBe('node scripts/ensure-electron.cjs')
+      expect(names.indexOf('Build the app'), job).toBe(names.indexOf('Write the identity line') + 1)
+      expect(names.indexOf('Download Electron'), job).toBe(names.indexOf('Build the app') + 1)
+      expect(names.indexOf('Probe'), job).toBe(names.indexOf('Download Electron') + 1)
+      expect(w.field(named(job, 'Build the app'), 'timeout-minutes'), job).toMatch(/^\d+$/)
+      expect(w.field(named(job, 'Download Electron'), 'timeout-minutes'), job).toMatch(/^\d+$/)
+    }
+    const names = w.steps('nsis').map((s) => w.field(s, 'name'))
+    expect(w.field(named('nsis', 'Check that electron-builder.yml is unchanged'), 'run')).toBe('git diff --exit-code electron-builder.yml')
+    expect(names.indexOf('Check that electron-builder.yml is unchanged')).toBe(names.indexOf('Probe') + 1)
   })
 
   it('merges every area into summary.txt with summary.mjs, whatever happened to the probe jobs', () => {

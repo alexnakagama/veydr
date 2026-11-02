@@ -267,11 +267,17 @@ jobs:
         env:
           NEGATIVE_CONTROL: ${{ inputs.negative-control }}
         run: node scripts/windows-probe/identity.mjs electron test-results/windows-probe/results/electron.jsonl
-      # The driver runs without a console, like Veydr's main process (design D9). Placeholder until the
-      # probe is implemented: it answers the context checks and reports the area's other checks as NOT-TESTABLE.
-      - name: Probe
+      - name: Build the app
+        timeout-minutes: 10
+        run: npm run build
+      # npm run build does not download Electron (design D8).
+      - name: Download Electron
         timeout-minutes: 5
-        run: node scripts/windows-probe/launch-detached.mjs --timeout 240 --out test-results/windows-probe/results/electron.jsonl -- scripts/windows-probe/placeholder.mjs electron --user admin
+        run: node scripts/ensure-electron.cjs
+      # The driver runs without a console, like Veydr's main process (design D9).
+      - name: Probe
+        timeout-minutes: 16
+        run: node scripts/windows-probe/launch-detached.mjs --timeout 900 --out test-results/windows-probe/results/electron.jsonl -- scripts/windows-probe/electron.mjs --user admin
       - name: Upload results
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -300,11 +306,20 @@ jobs:
         env:
           NEGATIVE_CONTROL: ${{ inputs.negative-control }}
         run: node scripts/windows-probe/identity.mjs nsis test-results/windows-probe/results/nsis.jsonl
-      # The driver runs without a console, like Veydr's main process (design D9). Placeholder until the
-      # probe is implemented: it answers the context checks and reports the area's other checks as NOT-TESTABLE.
-      - name: Probe
+      - name: Build the app
+        timeout-minutes: 10
+        run: npm run build
+      # npm run build does not download Electron (design D8).
+      - name: Download Electron
         timeout-minutes: 5
-        run: node scripts/windows-probe/launch-detached.mjs --timeout 240 --out test-results/windows-probe/results/nsis.jsonl -- scripts/windows-probe/placeholder.mjs nsis --user admin
+        run: node scripts/ensure-electron.cjs
+      # The driver runs without a console, like Veydr's main process (design D9). It builds the
+      # installer with command-line options only, installs it, runs the app and uninstalls it.
+      - name: Probe
+        timeout-minutes: 31
+        run: node scripts/windows-probe/launch-detached.mjs --timeout 1800 --out test-results/windows-probe/results/nsis.jsonl -- scripts/windows-probe/nsis.mjs --user admin
+      - name: Check that electron-builder.yml is unchanged
+        run: git diff --exit-code electron-builder.yml
       - name: Upload results
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

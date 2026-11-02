@@ -239,19 +239,42 @@ Group 6 review (`reviewer2`, 2026-11-02), by reading only: no blocker, 1 medium 
 
 ## 7. Electron and installer probes
 
-- [ ] 7.1 Implement the `electron` job:
+- [x] 7.1 Implement the `electron` job:
   - setup with `electron: "true"`, `npm run build`, and `node scripts/ensure-electron.cjs`, since `npm run build` does not download Electron (design D8);
   - `electron-launch` (`--smoke-test`, exit code and output recorded), and one `electron-smoke-<check>` line per check in `checks.mjs` (every smoke check except `devtools-disabled`, which the unpackaged build does not run). `electron-smoke-platform` is predicted `no`;
   - `ctx-electron-no-console`, which checks Electron's main process for a console through `context.ps1`;
   - `electron-playwright`, which runs a new minimal spec, `test/windows-probe/launch.spec.ts`, with its own Playwright config. It uses only Playwright's Electron launcher, imports nothing from the e2e harness or `test/support/proc.ts`, and checks that the window renders and shows `windows` with the unsupported-platform state.
 
   Verify: a probe run reports every one of these IDs. A `no` must carry the failing step's output in `detail`. The new spec does not run in the Linux e2e suite, and `test-platform-policy.test.ts` still passes.
-- [ ] 7.2 Implement the `nsis` job:
+- [x] 7.2 Implement the `nsis` job:
   - `nsis-build` runs `electron-builder --win nsis --publish never` with command-line options for a per-user, one-click installer; `electron-builder.yml` stays unchanged;
   - `nsis-install` performs a silent install (`/S`), a `--smoke-test` launch of the installed executable (exit code, and whether the `VEYDR_SMOKE_TEST` report is readable), and a silent uninstall, checking the install directory is gone. Each smoke check is recorded as `nsis-smoke-<check>`, with `nsis-smoke-platform` predicted `no`.
 
   Verify: a probe run reports both IDs, and `git diff --exit-code electron-builder.yml` passes in the job.
-- [ ] 7.3 Only if the maintainer approves the koffi load check under gate G-4 (design D6): implement `ffi-koffi-electron` with an exact version, an integrity-checked tarball, and a probe-only `package.json` outside the lockfile. Without approval, record it as `NOT-TESTABLE` with the reason "not approved", and note the decision here. Verify: a probe run reports the ID, and the repository's `package.json` and `package-lock.json` are unchanged.
+- [x] 7.3 Only if the maintainer approves the koffi load check under gate G-4 (design D6): implement `ffi-koffi-electron` with an exact version, an integrity-checked tarball, and a probe-only `package.json` outside the lockfile. Without approval, record it as `NOT-TESTABLE` with the reason "not approved", and note the decision here. Verify: a probe run reports the ID, and the repository's `package.json` and `package-lock.json` are unchanged.
+
+Group 7 status (2026-11-02): implemented, and verified by the run below. The code is in `electron.mjs`, `nsis.mjs`, `smoke-run.mjs` (what they share), `electron-context.cjs`, and `test/windows-probe/launch.spec.ts` with its own `playwright.config.ts`. Both jobs now build the app and download Electron before their probes, and the `nsis` job ends with `git diff --exit-code electron-builder.yml`. Verified on Linux: `electron-context.cjs` loads with `-r` in Electron's main process, a real `--smoke-test` gives an answer for each smoke check, and electron-builder accepts the `-c.` options and writes only to the given directory.
+
+Decision for 7.3: the maintainer has not approved the koffi load check under gate G-4, so `ffi-koffi-electron` answers `null` with the reason "not approved", and no koffi code exists (design D6). Option B therefore cannot be chosen in W0.
+
+Group 7 review (`reviewer2`, 2026-11-02): two rounds, by reading only. The first round found no blocker and raised findings in every area, all handled. Its main one corrected a false premise of ours: Node makes stdout and stderr pipes blocking on Windows, so the file repeat is kept only to preserve the smoke checks' evidence, not because a report can be lost to asynchronous writes. Fixed: only a run with no report line repeats; a file report counts only if that run ended as it says; each smoke check keeps the first run's end; the install directory is the known `veydr`, not a comparison of `Programs`; the `nsis` timeout covers the worst case (1800 s); the build gets its own environment without signing or publishing credentials; a race in the console measurement; an unguarded write in the preload. Not changed, accepted by the re-review: no special handling of a `winCodeSign` symlink failure, since `nsis-build`'s output tail carries it. We also accepted leaving out a Playwright `outputDir`, since `test-results/` is ignored; that was wrong (see the first Windows run below). The second round confirmed these and added one suggestion, done: a missing install directory lists what `Programs` holds. Verified on Linux: `npm test`, `npm run lint`, `npm run typecheck`, `npm run spec-coverage`, and the pinned actionlint. Not verified: anything on Windows.
+
+First Windows run of the `electron` job (2026-11-02, reported by the maintainer): it failed, with `ENOENT` appending to `electron.jsonl` after 2 result lines. Playwright deletes its output directory when it starts, and without an `outputDir` that is `test-results/` beside `package.json`, so it deleted the job's results file. Reproduced on Linux with the job's command, and fixed with an `outputDir` of its own, `test-results/windows-probe-playwright`, pinned by a test.
+
+[Windows probe run 41465512151](https://github.com/alexnakagama/veydr/actions/runs/41465512151) (`12f88f7`) verifies 7.1–7.3: every `electron` and `nsis` ID is reported, with no "no result" line, and the header has `negative-control false` and the current `checks.mjs` hash. As reported by the maintainer, every job passed, so the `git diff --exit-code electron-builder.yml` step did too, and `package.json` and `package-lock.json` are unchanged on the branch. Its jobs ran on two image versions (`environment`, `helper` and `process-tree` on 20261021.278.1, the others on 20261030.294.1), so it is not evidence; task 8.1 needs a run on one.
+
+- `electron-launch`, `ctx-electron-no-console` and `electron-playwright` are `PASS`, and every `electron-smoke-*` check is `PASS` but `electron-smoke-platform`, `EXPECTED-FAIL`.
+- `nsis-build` and `nsis-install` are `PASS`: an installer of 112.5 MB, installed to `%LOCALAPPDATA%\Programs\veydr`, whose report came through a pipe (`reportVia` `pipe`) with exit code 1, as its failing report says, and the directory was gone after the uninstall. Every `nsis-smoke-*` check is `PASS` but `nsis-smoke-platform`, `EXPECTED-FAIL`.
+- `ffi-koffi-electron` is `NOT-TESTABLE` ("not approved").
+- The file repeat never ran: both reports arrived on the pipe.
+- The whole summary has 94 `PASS`, 32 `EXPECTED-FAIL`, 8 `NOT-TESTABLE` and 2 `FAIL`. The two `FAIL`s are the known `enc-child-cmd-utf8` and `env-registry-std` (group 5).
+
+Group 7 notes:
+- `nsis-install` asks whether a GUI-subsystem program's report can be read, so that is measured on a pipe. A run that printed no report line on the pipe is repeated with stdout in a file, and counts only if it ended as its report says. The smoke checks then still have their evidence, while `electron-launch` and `nsis-install` answer `no`. `data.reportVia` says which it was, and each smoke check's `data` keeps the first run's end. Such a result would be a finding for W4; no product code changes here.
+- `ctx-electron-no-console` needs context.ps1 to be a child of Electron's main process, so a separate launch loads `electron-context.cjs` with `-r`. It runs last, since Veydr's single-instance lock allows one launch at a time, and is stopped once context.ps1 has reported.
+- `electron-playwright` answers `yes` only if exactly one test passed, since a skipped test also exits with 0. The spec is skipped outside Windows.
+- A per-user one-click install goes to `%LOCALAPPDATA%\Programs\veydr`: electron-builder names the directory after `package.json`'s `name`. The uninstaller copies itself and returns at once, so the probe waits for the directory to go. `nsis.runAfterFinish` is off, and the installer is unsigned.
+- A failed `Build the app` step fails its job with no probe lines, so the area shows as "no result".
 
 ## 8. Evidence and decisions
 

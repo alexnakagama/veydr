@@ -125,7 +125,7 @@ function section(measurement, name, fields) {
   return { value }
 }
 
-function noConsoleAnswer(measurement, driverPid) {
+export function noConsoleAnswer(measurement, driverPid) {
   const { value: con, problem } = section(measurement, 'console', { attached: 'boolean', lastError: 'number', window: 'number' })
   if (problem !== undefined) return { answer: null, detail: problem }
   const data = { attachParent: con.attached ? 'succeeded' : `failed with error ${con.lastError}`, consoleWindow: hex(con.window) }
@@ -297,7 +297,7 @@ export const system32 = (file) => join(process.env.SystemRoot ?? 'C:\\Windows', 
 const STOP_GRACE_MS = 10_000
 
 /** Stops a program: on Windows `child.kill()` ends only the program itself, so taskkill /T goes first, while the tree's parent links exist. */
-function stopProgram(child) {
+export function stopProgram(child) {
   if (process.platform !== 'win32') {
     child.kill()
     return
@@ -320,8 +320,9 @@ export function runProgram(file, args, { timeoutMs = 60_000, graceMs = STOP_GRAC
   return new Promise((resolve) => {
     const child = spawn(file, args, { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'], ...options })
     const output = { stdout: [], stderr: [] }
-    child.stdout.on('data', (chunk) => output.stdout.push(chunk))
-    child.stderr.on('data', (chunk) => output.stderr.push(chunk))
+    // `stdio` may send a stream elsewhere, such as to a file.
+    child.stdout?.on('data', (chunk) => output.stdout.push(chunk))
+    child.stderr?.on('data', (chunk) => output.stderr.push(chunk))
     const text = (chunks) => Buffer.concat(chunks).toString('latin1')
     let timedOut = false
     let grace
@@ -330,8 +331,8 @@ export function runProgram(file, args, { timeoutMs = 60_000, graceMs = STOP_GRAC
       // A program that already exited has only its pipes left, and its PID may be another process's by now.
       if (child.exitCode === null && child.signalCode === null) stopProgram(child)
       grace = setTimeout(() => {
-        child.stdout.destroy()
-        child.stderr.destroy()
+        child.stdout?.destroy()
+        child.stderr?.destroy()
         child.unref()
         finish({ code: child.exitCode, signal: 'SIGTERM' })
       }, graceMs)

@@ -1,4 +1,5 @@
 // Types for scripts/windows-probe/driver.mjs.
+import type { ChildProcess } from 'node:child_process'
 import type { CatalogEntry } from './checks.mjs'
 
 export type User = 'admin' | 'standard'
@@ -40,6 +41,8 @@ export interface ContextAnswer {
   data: Record<string, unknown>
 }
 
+export function noConsoleAnswer(measurement: ContextMeasurement, driverPid: number): { answer: Answer; detail: string; data?: Record<string, unknown> }
+
 export function contextAnswers(input: { user: User; measurement: ContextMeasurement; driverPid: number; probeDir?: ProbeDirectory }): ContextAnswer[]
 
 export function contextResult(run: {
@@ -68,6 +71,8 @@ export interface ProgramResult {
 }
 
 export function runProgram(file: string, args: readonly string[], options?: { timeoutMs?: number; graceMs?: number; [option: string]: unknown }): Promise<ProgramResult>
+
+export function stopProgram(child: ChildProcess): void
 
 export function noAnswer(run: ProgramResult, timeoutMs: number): { answer: null; detail: string } | undefined
 
