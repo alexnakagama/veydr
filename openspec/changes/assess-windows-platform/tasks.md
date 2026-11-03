@@ -285,7 +285,7 @@ Group 7 notes:
   - wherever the admin and standard-user results of a check differ, the difference is explained.
 
   The run must be on a single Windows image version; if the summary lists several, rerun. Rerun once more to check that the results are stable (record any check whose result differs between runs, and why). Commit the reviewed run's `test/windows-probe/summary.txt` and `test/windows-probe/results/*.jsonl`. Verify: the summary header names the run's commit, one Windows image version, and the `checks.mjs` hash, and it is not a negative-control run.
-- [ ] 8.2 Write `docs/windows-evidence.md` with three sections (design D7):
+- [x] 8.2 Write `docs/windows-evidence.md` with three sections (design D7):
   - the commit that added `test/windows-probe/predictions.json` (group 1's merge), and every `REVISIONS` entry with its reason;
   - verified on the runner, each conclusion stating whether it holds as a standard user, as administrator only, or both, and, for process trees, whether it was measured inside a Job Object (`ctx-job`);
   - not verifiable on the runner, each with what would verify it;
@@ -301,7 +301,7 @@ Group 7 notes:
   - every decision cites a recorded ID.
 
   Link the "not verifiable" section from `docs/deferred-checks.md`. Verify: `npm test` passes, and a temporary edit of one summary status makes the test fail (checked once, then reverted).
-- [ ] 8.3 Apply the decision rules of design D5 to the recorded results. Record the outcome in a new "Outcome" section of this change's `design.md` and in the doc's decisions section:
+- [x] 8.3 Apply the decision rules of design D5 to the recorded results. Record the outcome in a new "Outcome" section of this change's `design.md` and in the doc's decisions section:
   - the process-tree route and the graceful-stop route, including whether an attaching helper is needed, and whether a .NET Framework helper is possible (`helper-csc-build`) (W1);
   - crash recovery, from `pt-parent-exit-descendant` and `pt-parent-exit-leader`: whether Windows can have survivors after a crash (W1);
   - the shell-mode route and any restricted cases (W2);
@@ -309,6 +309,21 @@ Group 7 notes:
   - whether the Windows CI lane can run Electron e2e (W1–W4).
 
   Verify: each outcome cites check IDs present in `summary.txt`.
+
+Group 8 status (2026-11-03): [Windows probe run 41657147660](https://github.com/alexnakagama/veydr/actions/runs/41657147660) (`901fa06`, `master` after group 7's merge) is the reviewed run. It was started by the maintainer, and its artifact was downloaded by hand, since the GitHub CLI is not installed here. All eight areas ran on one image, `win25-vs2026` 20261030.294.1 (build 10.0.26100.33674, Node v24.22.2), with `negative-control false` and the current `checks.mjs` hash. Rerunning `summary.mjs` locally on its results reproduces `summary.txt` byte for byte, apart from the date line. The run is copied, unchanged, to `test/windows-probe/summary.txt` and `test/windows-probe/results/`. It has 94 `PASS`, 32 `EXPECTED-FAIL`, 2 `FAIL` and 8 `NOT-TESTABLE`.
+
+Review of the run (8.1):
+- **Controls.** Every control passes: `ctx-no-console` for all 12 drivers, `ctx-standard-user` in all four areas, `pt-control`, `pt-control-std`, `port-control` and `port-control-std`. There is no `invalid` header line and no "no result" line.
+- **The two `FAIL`s** are the known ones of group 5, `enc-child-cmd-utf8` and `env-registry-std`, explained there and in `docs/windows-evidence.md`. No prediction was edited.
+- **Predicted `no`, answered yes.** Three checks show as `PASS`: `pt-ctrl-break-attach-npm`, `pt-ctrl-break-attach-npm-std` and `port-ps-latency`. The doc lists them with the predictions that did not hold.
+- **The `EXPECTED-FAIL`s** are those of groups 4–7: the shell route's 18 corpus cases, and the context, process-tree, encoding, environment, port and smoke-platform checks the doc explains.
+- **`NOT-TESTABLE`.** The six limits, `ffi-koffi-electron` (not approved), and `ctx-job`, which cannot see past libuv's job (the group 4 finding).
+- **Admin and standard-user differences.** Only `port-owner-identity` and `env-registry` answer differently for the two accounts; the doc explains both.
+- **Stability.** The probe code at `901fa06` equals that of run 41465512151 (`12f88f7`; no change under `scripts/`, `test/` or `.github/` between them). That run has the same status counts, and the per-check statuses in the group 4–7 notes agree with this run. Its per-check summary was not kept, though, and it ran on two images. So 8.1 stays open until a second run on one image is compared check by check.
+
+8.2: `docs/windows-evidence.md` (recorded run, predictions, verified on the runner, not verifiable on the runner, decisions), `test/unit/windows-evidence.test.ts`, the "Windows probes" section of `docs/deferred-checks.md`, which links the not-verifiable section, and a README documentation row (`readme-docs.test.ts` requires one for every doc). The evidence test also regenerates the summary from `results/*.jsonl` with `summary.mjs` and requires the same bytes, so a hand-edited status or detail fails. It treats every hyphenated, backticked token that starts like a check ID as a citation that must exist. Verified: temporary edits made it fail, each checked once and reverted: one status (`pt-control` to `FAIL`), a context control's report, a check ID dropped from the doc, a mistyped ID, and a second image line. `npm test`, `npm run lint`, `npm run typecheck` and `npm run spec-coverage` pass.
+
+8.3: the "Outcome" section of `design.md` and the doc's "Decisions" section. A script checked that every outcome cites only IDs present in `summary.txt`, and each cites at least two. The outcomes: option C (a csc-built helper, which also starts commands suspended); a graceful stop through that helper; crash recovery from the run ledger; the verbatim shell route; `GetExtendedTcpTable` through the helper for ports; and Electron under Playwright in Windows CI.
 
 ## 9. Integration check
 

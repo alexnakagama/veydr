@@ -1,0 +1,143 @@
+# windows-probe summary
+# commit 901fa06d4ec23ea7e423475a5594edd04cabc9ef
+# run 41657147660
+# date 2026-11-03T14:51:00.198Z
+# checks.mjs sha256:f691d460b289fda3a831a8b7f0012e354c368776219dd376e97d0a84fcde9322
+# negative-control false
+# image win25-vs2026 20261030.294.1 build 10.0.26100.33674 node v24.22.2: commands, electron, encoding, environment, helper, nsis, ports, process-tree
+av-third-party NOT-TESTABLE the runner has Microsoft Defender only
+cmd-direct-spawn PASS
+cmd-pathext PASS
+cmd-pathext-cwd EXPECTED-FAIL cmd.exe ran the npm.cmd decoy from the working directory
+cmd-route-shell-amp EXPECTED-FAIL received ["x"] instead of ["x&type nul>veydr-sentinel-amp"]; an injected command created the sentinel
+cmd-route-shell-backslash-quote EXPECTED-FAIL received ["x\"y"] instead of ["x\\\"y"]
+cmd-route-shell-backslash-trailing PASS
+cmd-route-shell-bang-var PASS
+cmd-route-shell-batch-params PASS
+cmd-route-shell-caret EXPECTED-FAIL received ["abc"] instead of ["a^b^^c^"]
+cmd-route-shell-carriage-return EXPECTED-FAIL received ["ab"] instead of ["a\rb"]
+cmd-route-shell-delimiters PASS
+cmd-route-shell-empty EXPECTED-FAIL received [] instead of [""]
+cmd-route-shell-gt EXPECTED-FAIL received ["x"] instead of ["x>veydr-sentinel-gt"]; an injected command created the sentinel
+cmd-route-shell-long EXPECTED-FAIL received ["a"] instead of ["a&a&a&a&a&a&a&a&a&a&a&a&a&a&a&a&a&a&a&a&a&a&a&a&a&a&a&a&a&a&a&a&a&a&a&a&a&a&a&a&a&a&a&a&a&a&a&a&a&a&a&a&a&a&a&a&a&a&a&a&a&a&a&a&a&a&a&a&a&a&a&a&a&a&a&a&a&a&a&a&a&a&a&a&a&a&a&a&a&a&a&a&a&a&a&a&a&a&a&a&a&a&a&a&a&a&a&a&a&a&a&a&a&a&a&a&a&a&a&a&a&a&a&a&a&a&a&a&… (4000 characters)"]
+cmd-route-shell-lt EXPECTED-FAIL record.mjs wrote nothing (cmd.exe exited with 1)
+cmd-route-shell-near-limit PASS
+cmd-route-shell-newline EXPECTED-FAIL received ["a"] instead of ["a\nb"]
+cmd-route-shell-non-ascii PASS
+cmd-route-shell-paren PASS
+cmd-route-shell-percent-across PASS
+cmd-route-shell-percent-lone PASS
+cmd-route-shell-percent-split EXPECTED-FAIL received ["100%","(10 characters from the environment)","(73 characters from the environment)","(148 characters from the environment)","(23 characters from the environment)","(17 characters from the environment)","Server","(18 characters from the environment)","(137 characters from the environment)","Files","(24 characters from the environment)","Files","(12 characters from the environment)","(14 characters from the environment)","(24 characters from the environment)","Files","(232 characters from the environment)","(121 characters from the environment)","(43 characters from the environment)","(15 characters from the environment)","(210 characters from the environment)","(21 characters from the environment)","(30 characters from the environment)","(19 characters from the environment)","(8 characters from the environment)","(21 characters from the environment)","(15 characters from the environment)","SQL","(33 characters from the environment)","(15 characters from the environment)","SQL","(13 characters from the environment)","(35 characters from the environment)","(24 characters from the environment)","Files","(13 characters from the environment)","(15 characters from the environment)","(11 characters from the environment)","(19 characters from the environment)","Files","(9 characters from the environment)","Toolset","(20 characters from the environment)","(15 characters from the environment)","SQL","(31 characters from the environment)","(15 characters from the environment)","SQL","(31 characters from the environment)","(15 characters from the environment)","SQL","(31 characters from the environment)","(15 characters from the environment)","SQL","(31 characters from the environment)","(15 characters from the environment)","SQL","(85 characters from the environment)","(157 characters from the environment)","(15 characters from the environment)","Service","(40 characters from the environment)","(15 characters from the environment)","(12 characters from the environment)","(56 characters from the environment)","(25 characters from the environment)","Files","(25 characters from the environment)","(24 characters from the environment)","(24 characters from the environment)","(31 characters from the environment)","(28 characters from the environment)","(12 characters from the environment)","(28 characters from the environment)","Files","(24 characters from the environment)","(33 characters from the environment)","(49 characters from the environment)","(38 characters from the environment)","(15 characters from the environment)","SQL","(33 characters from the environment)","(138 characters from the environment)"] instead of ["100%","%PATH%"]
+cmd-route-shell-percent-substitution EXPECTED-FAIL received ["(10 characters from the environment)","(73 characters from the environment)","(148 characters from the environment)","(23 characters from the environment)","(17 characters from the environment)","Server","(18 characters from the environment)","(137 characters from the environment)","Files","(24 characters from the environment)","Files","(12 characters from the environment)","(14 characters from the environment)","(24 characters from the environment)","Files","(232 characters from the environment)","(121 characters from the environment)","(43 characters from the environment)","(15 characters from the environment)","(210 characters from the environment)","(21 characters from the environment)","(30 characters from the environment)","(19 characters from the environment)","(8 characters from the environment)","(21 characters from the environment)","(15 characters from the environment)","SQL","(33 characters from the environment)","(15 characters from the environment)","SQL","(13 characters from the environment)","(35 characters from the environment)","(24 characters from the environment)","Files","(13 characters from the environment)","(15 characters from the environment)","(11 characters from the environment)","(19 characters from the environment)","Files","(9 characters from the environment)","Toolset","(20 characters from the environment)","(15 characters from the environment)","SQL","(31 characters from the environment)","(15 characters from the environment)","SQL","(31 characters from the environment)","(15 characters from the environment)","SQL","(31 characters from the environment)","(15 characters from the environment)","SQL","(31 characters from the environment)","(15 characters from the environment)","SQL","(85 characters from the environment)","(157 characters from the environment)","(15 characters from the environment)","Service","(40 characters from the environment)","(15 characters from the environment)","(12 characters from the environment)","(56 characters from the environment)","(25 characters from the environment)","Files","(25 characters from the environment)","(24 characters from the environment)","(24 characters from the environment)","(31 characters from the environment)","(28 characters from the environment)","(12 characters from the environment)","(28 characters from the environment)","Files","(24 characters from the environment)","(33 characters from the environment)","(49 characters from the environment)","(38 characters from the environment)","(15 characters from the environment)","SQL","(33 characters from the environment)","(138 characters from the environment)"] instead of ["%PATH:\\=/%"]
+cmd-route-shell-percent-var EXPECTED-FAIL received ["(10 characters from the environment)","(73 characters from the environment)","(148 characters from the environment)","(23 characters from the environment)","(17 characters from the environment)","Server","(18 characters from the environment)","(137 characters from the environment)","Files","(24 characters from the environment)","Files","(12 characters from the environment)","(14 characters from the environment)","(24 characters from the environment)","Files","(232 characters from the environment)","(121 characters from the environment)","(43 characters from the environment)","(15 characters from the environment)","(210 characters from the environment)","(21 characters from the environment)","(30 characters from the environment)","(19 characters from the environment)","(8 characters from the environment)","(21 characters from the environment)","(15 characters from the environment)","SQL","(33 characters from the environment)","(15 characters from the environment)","SQL","(13 characters from the environment)","(35 characters from the environment)","(24 characters from the environment)","Files","(13 characters from the environment)","(15 characters from the environment)","(11 characters from the environment)","(19 characters from the environment)","Files","(9 characters from the environment)","Toolset","(20 characters from the environment)","(15 characters from the environment)","SQL","(31 characters from the environment)","(15 characters from the environment)","SQL","(31 characters from the environment)","(15 characters from the environment)","SQL","(31 characters from the environment)","(15 characters from the environment)","SQL","(31 characters from the environment)","(15 characters from the environment)","SQL","(85 characters from the environment)","(157 characters from the environment)","(15 characters from the environment)","Service","(40 characters from the environment)","(15 characters from the environment)","(12 characters from the environment)","(56 characters from the environment)","(25 characters from the environment)","Files","(25 characters from the environment)","(24 characters from the environment)","(24 characters from the environment)","(31 characters from the environment)","(28 characters from the environment)","(12 characters from the environment)","(28 characters from the environment)","Files","(24 characters from the environment)","(33 characters from the environment)","(49 characters from the environment)","(38 characters from the environment)","(15 characters from the environment)","SQL","(33 characters from the environment)","(138 characters from the environment)"] instead of ["%PATH%"]
+cmd-route-shell-pipe EXPECTED-FAIL received ["x"] instead of ["x|type nul>veydr-sentinel-pipe"]; an injected command created the sentinel
+cmd-route-shell-plain PASS
+cmd-route-shell-quote-embedded EXPECTED-FAIL received ["say","hi"] instead of ["say \"hi\""]
+cmd-route-shell-quote-inject EXPECTED-FAIL received ["a&type nul>veydr-sentinel-quote-inject&b"] instead of ["a\"&type nul>veydr-sentinel-quote-inject&\"b"]
+cmd-route-shell-quote-unbalanced EXPECTED-FAIL received ["ab"] instead of ["a\"b"]
+cmd-route-shell-space EXPECTED-FAIL received ["two","words"] instead of ["two words"]
+cmd-route-shell-tab EXPECTED-FAIL received ["two","words"] instead of ["two\twords"]
+cmd-route-verbatim-amp PASS
+cmd-route-verbatim-backslash-quote PASS
+cmd-route-verbatim-backslash-trailing PASS
+cmd-route-verbatim-bang-var PASS
+cmd-route-verbatim-batch-params PASS
+cmd-route-verbatim-caret PASS
+cmd-route-verbatim-carriage-return PASS
+cmd-route-verbatim-delimiters PASS
+cmd-route-verbatim-empty PASS
+cmd-route-verbatim-gt PASS
+cmd-route-verbatim-long PASS
+cmd-route-verbatim-lt PASS
+cmd-route-verbatim-near-limit PASS
+cmd-route-verbatim-newline PASS
+cmd-route-verbatim-non-ascii PASS
+cmd-route-verbatim-paren PASS
+cmd-route-verbatim-percent-across PASS
+cmd-route-verbatim-percent-lone PASS
+cmd-route-verbatim-percent-split PASS
+cmd-route-verbatim-percent-substitution PASS
+cmd-route-verbatim-percent-var PASS
+cmd-route-verbatim-pipe PASS
+cmd-route-verbatim-plain PASS
+cmd-route-verbatim-quote-embedded PASS
+cmd-route-verbatim-quote-inject PASS
+cmd-route-verbatim-quote-unbalanced PASS
+cmd-route-verbatim-space PASS
+cmd-route-verbatim-tab PASS
+ctx-electron-no-console PASS
+ctx-job NOT-TESTABLE commands/admin: NOT-TESTABLE the driver is in a job, but starting context.ps1 attached put it in libuv's job, which hides whether the runner has one; electron/admin: NOT-TESTABLE the driver is in a job, but starting context.ps1 attached put it in libuv's job, which hides whether the runner has one; encoding/admin: NOT-TESTABLE the driver is in a job, but starting context.ps1 attached put it in libuv's job, which hides whether the runner has one; environment/admin: NOT-TESTABLE the driver is in a job, but starting context.ps1 attached put it in libuv's job, which hides whether the runner has one; environment/standard: NOT-TESTABLE the driver is in a job, but starting context.ps1 attached put it in libuv's job, which hides whether the runner has one; helper/admin: NOT-TESTABLE the driver is in a job, but starting context.ps1 attached put it in libuv's job, which hides whether the runner has one; helper/standard: NOT-TESTABLE the driver is in a job, but starting context.ps1 attached put it in libuv's job, which hides whether the runner has one; nsis/admin: NOT-TESTABLE the driver is in a job, but starting context.ps1 attached put it in libuv's job, which hides whether the runner has one; ports/admin: NOT-TESTABLE the driver is in a job, but starting context.ps1 attached put it in libuv's job, which hides whether the runner has one; ports/standard: NOT-TESTABLE the driver is in a job, but starting context.ps1 attached put it in libuv's job, which hides whether the runner has one; process-tree/admin: NOT-TESTABLE the driver is in a job, but starting context.ps1 attached put it in libuv's job, which hides whether the runner has one; process-tree/standard: NOT-TESTABLE the driver is in a job, but starting context.ps1 attached put it in libuv's job, which hides whether the runner has one
+ctx-no-console PASS commands/admin: PASS; electron/admin: PASS; encoding/admin: PASS; environment/admin: PASS; environment/standard: PASS; helper/admin: PASS; helper/standard: PASS; nsis/admin: PASS; ports/admin: PASS; ports/standard: PASS; process-tree/admin: PASS; process-tree/standard: PASS
+ctx-standard-user PASS environment/standard: PASS; helper/standard: PASS; ports/standard: PASS; process-tree/standard: PASS
+electron-launch PASS
+electron-playwright PASS
+electron-smoke-config-dir-writable PASS
+electron-smoke-platform EXPECTED-FAIL no platform implementation for windows
+electron-smoke-preload-bridge PASS
+electron-smoke-process-sandbox PASS
+electron-smoke-renderer-isolation PASS
+electron-smoke-timeout PASS
+electron-smoke-ui-loaded PASS
+enc-child-cmd-plain EXPECTED-FAIL the output is not valid UTF-8
+enc-child-cmd-utf8 FAIL the output is not valid UTF-8
+enc-child-node-plain PASS
+enc-child-node-utf8 PASS
+enc-child-python-plain EXPECTED-FAIL the output decodes to "" (it exited with 1)
+enc-child-python-utf8 PASS
+enc-codepages EXPECTED-FAIL the console output code page is 437
+env-desktop-launch NOT-TESTABLE the runner has no interactive desktop session, so no app can be started from Explorer
+env-path-case PASS
+env-registry EXPECTED-FAIL different values for Path, PATHEXT, PSModulePath, TEMP, TMP, USERNAME
+env-registry-std FAIL different values for Path, TEMP, TMP, USERNAME
+ffi-koffi-electron NOT-TESTABLE not approved
+helper-csc-build PASS
+helper-csc-build-std PASS
+l10n-console NOT-TESTABLE the runner image is English only
+nsis-build PASS
+nsis-install PASS
+nsis-smoke-config-dir-writable PASS
+nsis-smoke-devtools-disabled PASS
+nsis-smoke-platform EXPECTED-FAIL no platform implementation for windows
+nsis-smoke-preload-bridge PASS
+nsis-smoke-process-sandbox PASS
+nsis-smoke-renderer-isolation PASS
+nsis-smoke-timeout PASS
+nsis-smoke-ui-loaded PASS
+port-api PASS
+port-api-latency PASS
+port-api-std PASS
+port-control PASS
+port-control-std PASS
+port-netstat PASS
+port-owner-identity PASS
+port-owner-identity-std EXPECTED-FAIL 14 of 15 owners could not be read: PID 4 (System), PID 832 (wininit), PID 952 (services), PID 980 (lsass), PID 1080 (svchost), PID 1284 (svchost), PID 1948 (vmms), PID 2440 (svchost), PID 2560 (svchost), PID 2728 (svchost), PID 3308 (spoolsv), PID 3664 (dockerd), PID 3816 (mqsvc), PID 3856 (sshd)
+port-ps PASS
+port-ps-latency PASS
+port-ps-std PASS
+pt-console-window PASS
+pt-control PASS
+pt-control-std PASS
+pt-ctrl-break-attach-cmd PASS
+pt-ctrl-break-attach-cmd-std PASS
+pt-ctrl-break-attach-node PASS
+pt-ctrl-break-attach-node-std PASS
+pt-ctrl-break-attach-npm PASS
+pt-ctrl-break-attach-npm-std PASS
+pt-ctrl-break-detached EXPECTED-FAIL AttachConsole failed with error 6; the SIGBREAK handler wrote no marker; still running after 5 s: attach-detached
+pt-ctrl-break-direct EXPECTED-FAIL the event did not reach the child (sent: false, error 6)
+pt-ctrl-c PASS
+pt-identity PASS
+pt-identity-reuse PASS
+pt-job-race EXPECTED-FAIL the grandchild created before the assignment is outside the job
+pt-job-terminate PASS
+pt-job-terminate-std PASS
+pt-kill-leader EXPECTED-FAIL still running after child.kill(): kill-leader-orphan
+pt-libuv-breakaway PASS
+pt-libuv-job PASS
+pt-logoff NOT-TESTABLE a runner job cannot log off its user or shut Windows down and observe the result
+pt-parent-exit-descendant PASS
+pt-parent-exit-leader EXPECTED-FAIL no leader kept running
+pt-taskkill-orphan EXPECTED-FAIL still running after taskkill /T /F on the leader: taskkill-orphan-orphan
+pt-taskkill-tree PASS
+smartscreen NOT-TESTABLE SmartScreen prompts for downloaded files on an interactive desktop, which the runner lacks
+ux-uac-prompt NOT-TESTABLE UAC elevation prompts need an interactive desktop; running as a standard user is covered by the -std checks
