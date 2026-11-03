@@ -353,6 +353,24 @@ Standard-user checks carry the suffix `-std`, e.g. `port-owner-identity-std`. Ev
 
 *Alternative:* run the probes from inside Electron to get the real parent. Rejected for most probes: it would tie every probe to the Electron build. The console-less launcher reproduces the property that matters, and `electron-launch` (D3) separately checks that Electron's main process has no console (`ctx-electron-no-console`).
 
+## Outcome
+
+The rules of D5 applied to [Windows probe run 41657147660](https://github.com/alexnakagama/veydr/actions/runs/41657147660) (`901fa06`, image `win25-vs2026` 20261030.294.1), recorded in `test/windows-probe/summary.txt` (task 8.3). `docs/windows-evidence.md` gives the same decisions with the measurements behind them. Every process-tree result was measured inside libuv's job; whether the runner adds a job of its own is unknown (`ctx-job` is `NOT-TESTABLE`).
+
+- **Process trees (W1, G-4): option C**, a Job Object through a helper executable built with the .NET Framework 4.8 `csc.exe`.
+  - `pt-taskkill-orphan` is `EXPECTED-FAIL`, and `pt-job-terminate` and `pt-job-terminate-std` are `PASS`, so job containment is needed and option A is out.
+  - Option B is out: `ffi-koffi-electron` is `NOT-TESTABLE` (not approved, D6).
+  - `helper-csc-build` and `helper-csc-build-std` are `PASS`, so the .NET Framework route is possible and no native build is needed.
+  - `pt-job-race` is `EXPECTED-FAIL`, and its `data` shows that a suspended start closes the gap. So the helper also starts each command suspended and assigns it to the job before resuming it.
+- **Graceful stop (W1): through an attaching helper**, which is option C's helper and never Electron's process, then the forced stop.
+  - `pt-ctrl-break-direct` is `EXPECTED-FAIL`.
+  - `pt-ctrl-break-attach-node`, `pt-ctrl-break-attach-npm` and their `-std` variants are `PASS`, so batch-file commands are covered too. `pt-ctrl-break-attach-npm` was predicted `no`; the "Terminate batch job" prompt does not hold the tree with stdin ignored.
+  - `pt-ctrl-break-detached` is `EXPECTED-FAIL`, so commands are started with `windowsHide: true`, never detached.
+- **Crash recovery (W1): survivors are found from the run ledger, as on Linux.** `pt-parent-exit-descendant` is `PASS`. `pt-parent-exit-leader` is `EXPECTED-FAIL`, so with Node-spawned children the leader itself did not survive. Under option C, commands run in the helper's job instead, so W1 verifies in its own CI what a crash does to them.
+- **Shell mode (W2): the verbatim route** (`cmd.exe /d /v:off /s /c` with `cmd-quote.mjs`), adopted unchanged, since every `cmd-route-verbatim-*` check is `PASS`. The inputs it refuses are rejected: a line break or NUL, or a line beyond 8191 characters (`cmd-route-verbatim-newline`, `cmd-route-verbatim-carriage-return`, `cmd-route-verbatim-long`). Node's `shell: true` is not used (`cmd-route-shell-amp`, `cmd-route-shell-pipe`, `cmd-route-shell-gt`). Outside the D5 rules, `cmd-pathext-cwd` is `EXPECTED-FAIL`, so W2 resolves the program through `PATH` and `PATHEXT` itself and passes cmd.exe an absolute path.
+- **Ports (W3): `GetExtendedTcpTable` through the option C helper.** `port-api-std` and `port-api-latency` are `PASS`. `port-owner-identity-std` is `EXPECTED-FAIL`, so W3 shows owners a standard user cannot open as restricted.
+- **Electron in Windows CI (W1–W4): yes.** `electron-launch`, `electron-playwright` and `ctx-electron-no-console` are `PASS`. W1 makes the e2e harness portable. `nsis-build` and `nsis-install` are `PASS` for W4.
+
 ## Risks / Trade-offs
 
 - [A probe hangs (e.g. an installer waiting for input, or a process that ignores termination)] → every job has a timeout, every probe step has its own timeout, and each probe writes its result lines incrementally, so a partial result is still uploaded.

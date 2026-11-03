@@ -306,6 +306,7 @@ Everything is stored in `~/.config/Veydr/` (or `$XDG_CONFIG_HOME/Veydr/`): `conf
 | Network isolation | [docs/network-isolation.md](docs/network-isolation.md) |
 | Dependencies and version policy | [docs/dependencies.md](docs/dependencies.md) |
 | Checks deferred to packaging | [docs/deferred-checks.md](docs/deferred-checks.md) |
+| Windows probe evidence (Windows not yet supported) | [docs/windows-evidence.md](docs/windows-evidence.md) |
 | CI pipeline, workflow security rules, releases | [docs/ci.md](docs/ci.md) |
 | Architecture and design decisions | [openspec/changes/archive/2026-10-25-establish-foundation/design.md](openspec/changes/archive/2026-10-25-establish-foundation/design.md) |
 
