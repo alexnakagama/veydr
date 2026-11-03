@@ -63,9 +63,28 @@ interface MainProbe {
   readonly heap: readonly { readonly t: number; readonly heap: number }[]
 }
 
+/** A renderer long task: start in ms since the window probe was armed (just before the flood). */
+interface LongTask {
+  readonly startMs: number
+  readonly durationMs: number
+  /** The entry's `name` and its attributions' container types (where the task ran). */
+  readonly name: string
+  readonly attribution: readonly string[]
+}
+
+/** A long animation frame (≥ 50 ms) and its longest scripts: what the long tasks were doing. */
+interface LongFrame {
+  readonly startMs: number
+  readonly durationMs: number
+  readonly blockingMs: number
+  readonly renderMs: number
+  readonly scripts: readonly { readonly invoker: string; readonly source: string; readonly durationMs: number }[]
+}
+
 interface WindowProbe {
   readonly pings: readonly number[]
-  readonly longTasks: readonly number[]
+  readonly longTasks: readonly LongTask[]
+  readonly longFrames: readonly LongFrame[]
 }
 
 const percentile = (values: readonly number[], p: number): number => {
@@ -165,11 +184,34 @@ async function withSession(producer: Producer, count: number, run: (s: Session) 
 async function startWindowProbe(page: Page): Promise<void> {
   await page.evaluate(() => {
     const api = (globalThis as unknown as { veydr: VeydrApi }).veydr
-    const probe = { pings: [] as number[], longTasks: [] as number[], stop: false }
+    const probe = { pings: [] as number[], longTasks: [] as LongTask[], longFrames: [] as LongFrame[], origin: 0, stop: false }
     ;(globalThis as unknown as { __perf: typeof probe }).__perf = probe
+    const ms = (value: number): number => Math.round(value)
     new PerformanceObserver((list) => {
-      for (const entry of list.getEntries()) probe.longTasks.push(entry.duration)
+      for (const entry of list.getEntries()) {
+        const attribution = (entry as PerformanceEntry & { attribution?: readonly { containerType: string }[] }).attribution ?? []
+        probe.longTasks.push({ startMs: ms(entry.startTime - probe.origin), durationMs: ms(entry.duration), name: entry.name, attribution: attribution.map((a) => a.containerType) })
+      }
     }).observe({ type: 'longtask' })
+    interface FrameEntry extends PerformanceEntry {
+      readonly blockingDuration: number
+      readonly renderStart: number
+      readonly scripts: readonly { readonly invoker: string; readonly sourceURL: string; readonly sourceFunctionName: string; readonly duration: number }[]
+    }
+    new PerformanceObserver((list) => {
+      for (const entry of list.getEntries() as FrameEntry[]) {
+        probe.longFrames.push({
+          startMs: ms(entry.startTime - probe.origin),
+          durationMs: ms(entry.duration),
+          blockingMs: ms(entry.blockingDuration),
+          renderMs: entry.renderStart > 0 ? ms(entry.startTime + entry.duration - entry.renderStart) : 0,
+          scripts: [...entry.scripts]
+            .sort((a, b) => b.duration - a.duration)
+            .slice(0, 3)
+            .map((s) => ({ invoker: s.invoker, source: `${s.sourceFunctionName || '(anonymous)'} ${s.sourceURL.split('/').at(-1) ?? ''}`.trim(), durationMs: ms(s.duration) })),
+        })
+      }
+    }).observe({ type: 'long-animation-frame' })
     const ping = async (): Promise<void> => {
       while (!probe.stop) {
         const started = performance.now()
@@ -182,7 +224,8 @@ async function startWindowProbe(page: Page): Promise<void> {
   })
   // Calibration: the observer must see a deliberate 80 ms task, or a result of "no long tasks"
   // would mean nothing. It runs as a page task (`setTimeout`): work done directly by
-  // `page.evaluate` is not reported as a long task. The entry is removed before measuring.
+  // `page.evaluate` is not reported as a long task. The entries are removed before measuring, and
+  // times are counted from then on.
   await page.evaluate(() => {
     setTimeout(() => {
       const until = performance.now() + 80
@@ -192,18 +235,21 @@ async function startWindowProbe(page: Page): Promise<void> {
     }, 0)
   })
   await expect
-    .poll(() => page.evaluate(() => (globalThis as unknown as { __perf: { longTasks: number[] } }).__perf.longTasks.length), { message: 'the long-task observer works' })
+    .poll(() => page.evaluate(() => (globalThis as unknown as { __perf: { longTasks: unknown[] } }).__perf.longTasks.length), { message: 'the long-task observer works' })
     .toBeGreaterThan(0)
   await page.evaluate(() => {
-    ;(globalThis as unknown as { __perf: { longTasks: number[] } }).__perf.longTasks.length = 0
+    const probe = (globalThis as unknown as { __perf: { longTasks: unknown[]; longFrames: unknown[]; origin: number } }).__perf
+    probe.longTasks.length = 0
+    probe.longFrames.length = 0
+    probe.origin = performance.now()
   })
 }
 
 async function stopWindowProbe(page: Page): Promise<WindowProbe> {
   return page.evaluate(() => {
-    const probe = (globalThis as unknown as { __perf: { pings: number[]; longTasks: number[]; stop: boolean } }).__perf
+    const probe = (globalThis as unknown as { __perf: WindowProbe & { stop: boolean } }).__perf
     probe.stop = true
-    return { pings: probe.pings, longTasks: probe.longTasks }
+    return { pings: probe.pings, longTasks: probe.longTasks, longFrames: probe.longFrames }
   })
 }
 
@@ -254,8 +300,10 @@ async function floodScenario(name: 'P1' | 'P2', producer: Producer, count: numbe
       ipcPings: view.pings.length,
       heapMaxBytes: Math.max(...main.heap.map((s) => s.heap)),
       heapGrowthPer10sBytes: heapGrowthPer10s(main.heap),
-      longTaskMaxMs: Math.max(0, ...view.longTasks),
+      longTaskMaxMs: Math.max(0, ...view.longTasks.map((task) => task.durationMs)),
       longTasks: view.longTasks.length,
+      longTaskList: view.longTasks,
+      longFrames: view.longFrames,
       baselineLines: base,
       veydrLines: produced,
       throughputRatioMin: Math.min(...ratios),
