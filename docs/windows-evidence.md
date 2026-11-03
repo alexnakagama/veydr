@@ -11,6 +11,7 @@ Windows is **not yet supported**. This document records what the `windows-probe.
 | Runner image | `win25-vs2026` 20261030.294.1, Windows build 10.0.26100.33674, Node v24.22.2, for all eight probe areas |
 | Recorded files | [`test/windows-probe/summary.txt`](../test/windows-probe/summary.txt) (one line per check) and `test/windows-probe/results/<area>.jsonl` (the probes' raw answers, with `data`) |
 | Totals | 94 `PASS`, 32 `EXPECTED-FAIL`, 2 `FAIL`, 8 `NOT-TESTABLE` |
+| Stability | [Run 41662139747](https://github.com/alexnakagama/veydr/actions/runs/41662139747), the same commit on the same image, gave the same status for all 136 checks. Only per-VM identifiers and measured values differed (PIDs, ports, window handles, timestamps, durations), and every duration stayed within its threshold. |
 
 Each check is a yes/no question with a predicted answer. `PASS` means the answer is yes; `EXPECTED-FAIL` means no, as predicted; `FAIL` means no where yes was predicted, so the prediction was wrong; `NOT-TESTABLE` means no answer could be obtained. A predicted `no` that was answered yes shows as `PASS`, so those surprises are listed below too. The questions and predictions are in `scripts/windows-probe/checks.mjs`.
 
