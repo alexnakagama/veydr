@@ -327,8 +327,12 @@ Review of the run (8.1):
 
 ## 9. Integration check
 
-- [ ] 9.1 Run `npm run verify` on Linux, and check the `windows` CI job and `ci-ok` on the pull request. Verify: all pass, and spec coverage reports zero unmapped scenarios.
-- [ ] 9.2 Check that nothing claims Windows support: `grep -rn "Windows" README.md docs/` shows only "not yet supported" statements, CI notes, and the evidence document, and `supervisor.test.ts` › `start-on-windows` still passes. Verify: both checks hold, and are recorded in the pull request.
+- [x] 9.1 Run `npm run verify` on Linux, and check the `windows` CI job and `ci-ok` on the pull request. Verify: all pass, and spec coverage reports zero unmapped scenarios.
+- [x] 9.2 Check that nothing claims Windows support: `grep -rn "Windows" README.md docs/` shows only "not yet supported" statements, CI notes, and the evidence document, and `supervisor.test.ts` › `start-on-windows` still passes. Verify: both checks hold, and are recorded in the pull request.
+
+Group 9 status (2026-11-03):
+- 9.1: `npm run verify` on Linux passes all five stages (typecheck, lint, test, test:integration, spec-coverage); spec coverage reports 136 scenarios, 136 mapped, 0 unmapped. On the pull request for branch `tasks/group9` (`16ff9a1`), the `windows` CI job and `ci-ok` pass (reported by the maintainer; the GitHub CLI is not installed here).
+- 9.2: `grep -rn "Windows" README.md docs/` shows only "not yet supported" statements (README, `install-linux.md`, `processes.md`, `logs.md`, `commands.md`, `deferred-checks.md`; `ports.md` says port inspection is "not yet available" on Windows), CI notes (`ci.md`), and the evidence document, which opens with "Windows is **not yet supported**". The other hits mention Windows without claiming support: `\r\n` line endings in `logs.md`, ASAR integrity on macOS and Windows in `security-baseline.md`, and `electron-winstaller` in `dependencies.md`. `supervisor.test.ts` › `start-on-windows` passes. Both checks are recorded in the pull request.
 
 ## Workflow follow-up
 
