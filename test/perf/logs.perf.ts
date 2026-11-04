@@ -37,8 +37,12 @@ const THRESHOLDS = {
  * - The flooded command is selected, so its output view is shown and follows the output.
  * - Event-loop delay and heap come from a probe preloaded into main (`support/main-probe.cjs`):
  *   `monitorEventLoopDelay` at 10 ms resolution, and `heapUsed` sampled every 100 ms.
- * - Heap growth: the last 30 s of samples are split into six 5 s windows; the minimum of each
- *   window (the heap after garbage collection) is fitted with least squares; growth = slope × 10 s.
+ * - Heap growth: the heap read right after each major (mark-compact) garbage collection in the
+ *   last 30 s is fitted with least squares; growth = slope × 10 s. At least three such readings
+ *   are required. (Method change after a nightly failure, 2026-11-04: it used to fit the minimum
+ *   of six 5 s windows, but under P2 a major collection runs only every 8–10 s, so a window
+ *   without one reported 47–57 MB against a floor of about 30 MB and swung the slope by several
+ *   MB per 10 s. The threshold is unchanged.)
  * - IPC ping: the window calls `app.getInfo` every 100 ms and measures the round trip.
  * - Long tasks: a `longtask` PerformanceObserver in the window.
  * - Throughput: `lines.mjs` paces its output (lines per second) and blocks on a full pipe, so
@@ -61,6 +65,8 @@ interface MainProbe {
   readonly loopDelayMaxMs: number
   readonly loopDelayMeanMs: number
   readonly heap: readonly { readonly t: number; readonly heap: number }[]
+  /** The heap read right after each major garbage collection. */
+  readonly heapAfterMajorGc: readonly { readonly t: number; readonly heap: number }[]
 }
 
 /** A renderer long task: start in ms since the window probe was armed (just before the flood). */
@@ -92,17 +98,12 @@ const percentile = (values: readonly number[], p: number): number => {
   return sorted[Math.min(sorted.length - 1, Math.ceil((p / 100) * sorted.length) - 1)] ?? Number.NaN
 }
 
-/** Least-squares slope of the 5 s window minima over the last 30 s, as bytes per 10 s. */
-function heapGrowthPer10s(samples: MainProbe['heap']): number {
-  const end = samples.at(-1)?.t ?? 0
-  const points: [number, number][] = []
-  for (let w = 0; w < 6; w++) {
-    const from = end - 30_000 + w * 5_000
-    const window = samples.filter((s) => s.t >= from && s.t < from + 5_000)
-    if (window.length === 0) continue
-    const min = window.reduce((a, b) => (b.heap < a.heap ? b : a))
-    points.push([min.t, min.heap])
-  }
+/** The heap readings after a major garbage collection in the 30 s before `end`. */
+const lastThirtySeconds = (afterGc: MainProbe['heapAfterMajorGc'], end: number): MainProbe['heapAfterMajorGc'] => afterGc.filter((s) => s.t >= end - 30_000 && s.t <= end)
+
+/** Least-squares slope of the heap after major garbage collections, as bytes per 10 s. */
+function heapGrowthPer10s(afterGc: MainProbe['heapAfterMajorGc']): number {
+  const points = afterGc.map((s): [number, number] => [s.t, s.heap])
   const n = points.length
   const mx = points.reduce((a, [x]) => a + x, 0) / n
   const my = points.reduce((a, [, y]) => a + y, 0) / n
@@ -292,6 +293,7 @@ async function floodScenario(name: 'P1' | 'P2', producer: Producer, count: numbe
     const view = await stopWindowProbe(window)
     const produced = reports.map((report) => (JSON.parse(readFileSync(report, 'utf8')) as { lines: number }).lines)
     const ratios = produced.map((lines, i) => lines / (base[i] ?? Number.NaN))
+    const afterGc = lastThirtySeconds(main.heapAfterMajorGc, main.heap.at(-1)?.t ?? 0)
 
     const measured = {
       loopDelayP99Ms: main.loopDelayP99Ms,
@@ -299,7 +301,8 @@ async function floodScenario(name: 'P1' | 'P2', producer: Producer, count: numbe
       ipcPingP95Ms: percentile(view.pings, 95),
       ipcPings: view.pings.length,
       heapMaxBytes: Math.max(...main.heap.map((s) => s.heap)),
-      heapGrowthPer10sBytes: heapGrowthPer10s(main.heap),
+      heapGrowthPer10sBytes: heapGrowthPer10s(afterGc),
+      heapAfterMajorGcMB: afterGc.map((s) => Math.round(s.heap / 100_000) / 10),
       longTaskMaxMs: Math.max(0, ...view.longTasks.map((task) => task.durationMs)),
       longTasks: view.longTasks.length,
       longTaskList: view.longTasks,
@@ -312,6 +315,7 @@ async function floodScenario(name: 'P1' | 'P2', producer: Producer, count: numbe
 
     expect(view.pings.length, 'pings were measured').toBeGreaterThan(producer.seconds * 5)
     expect(main.heap.length, 'heap was sampled').toBeGreaterThan(producer.seconds * 5)
+    expect(afterGc.length, 'major garbage collections in the last 30 s, for the heap growth').toBeGreaterThanOrEqual(3)
     expect(measured.loopDelayP99Ms).toBeLessThanOrEqual(THRESHOLDS.loopDelayP99Ms)
     expect(measured.ipcPingP95Ms).toBeLessThanOrEqual(THRESHOLDS.ipcPingP95Ms)
     expect(measured.heapMaxBytes).toBeLessThanOrEqual(THRESHOLDS.heapMaxBytes[name])

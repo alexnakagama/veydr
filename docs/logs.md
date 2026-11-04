@@ -94,6 +94,6 @@ Measured on the development machine (2026-10-25, Debian 13, kernel 6.12, Electro
 | P3 | 999,949 lines printed = 902,852 delivered + 97,097 reported skipped (one range); none missing or repeated |
 | P4 | 18 keystrokes, p95 70 ms (an earlier run: 54 ms) |
 
-The long-task observer is checked before each measurement: it must report a deliberate 80 ms task.
+The long-task observer is checked before each measurement: it must report a deliberate 80 ms task. Heap growth is the least-squares slope of the main heap read right after each major garbage collection in the last 30 s, and at least three such readings are required. Until 2026-11-04 it was fitted to the minimum of six 5 s windows, which swung by several MB per 10 s under P2, where a major collection runs only every 8–10 s; the P1 and P2 growth figures above were measured that way.
 
 **Throughput tolerance.** A command printing up to the rates of P1 and P2 is not slowed by more than 20 % by Veydr's output handling (spec: high-volume output). Veydr processes output on its main thread; a command printing faster than Veydr can process is slowed to that rate, because it waits for the pipe to be read. On the development machine that rate was about 124 MB/s of 100-byte lines (about 1.2 million lines per second, with the window not keeping up), against 3.1 GB/s into `cat > /dev/null` (`npm run measure`, `test/measure/log-pipeline.measure.ts`).
