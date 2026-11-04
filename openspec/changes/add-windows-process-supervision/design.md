@@ -63,7 +63,8 @@ The helper passes the command its own stdout and stderr handles (Node's pipes) t
 - Both directions carry JSON lines, version 1:
   - helper to Veydr: `ready` (helper PID), `started` (leader PID and creation time), `members` (job members, each as PID and creation time), `exited` (leader exit code), `stopped` (graceful, forced, and survivors), `error` (message);
   - Veydr to helper: `stop` (`graceMs`), `list` (asks for a fresh `members`).
-- `members` is event-driven. The job is associated with an I/O completion port, and the helper sends a fresh list on `JOB_OBJECT_MSG_NEW_PROCESS`, `JOB_OBJECT_MSG_EXIT_PROCESS`, and on `list`.
+- `members` is event-driven. The job is associated with an I/O completion port, and the helper sends a fresh list on `JOB_OBJECT_MSG_NEW_PROCESS`, `JOB_OBJECT_MSG_EXIT_PROCESS`, and on `list`. Each `members` carries `answer`: `false` for a job event, and `true` exactly once per `list`, in the order the requests arrived. Veydr matches answers to its requests in order, so `remaining()` and `attributed()` report an observation made after the call. An answer that matches no request is a helper failure.
+- The helper reads the control channel at all times. It answers `list` while a stop is under way (including during the `graceMs` wait), after `exited`, and after `stopped`, until it exits. Veydr sends `stop` at most once per run. A `list` that gets no answer within 10 s is a helper failure.
 - A malformed line, an unknown message, or a closed channel before `exited` is treated as a helper failure. Veydr terminates the helper, whose job then ends the tree, and reports the stop as unverified, as the supervisor already does for a failed stop.
 
 **Alternatives considered:**
