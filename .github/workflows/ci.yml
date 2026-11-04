@@ -132,7 +132,8 @@ jobs:
           if-no-files-found: error
 
   # Typecheck, lint, and unit tests on Windows (design D6), so path, case, and line-ending assumptions
-  # surface before the Windows platform is implemented. Integration, end-to-end, and packaging tests
+  # surface before the Windows platform is implemented, then the Windows process-tree integration
+  # tests against the helper built here. The other integration tests, end-to-end, and packaging tests
   # need Linux and do not run here; unit tests that need a Linux facility are skipped with a stated
   # reason (design D7, docs/ci.md).
   windows:
@@ -158,6 +159,16 @@ jobs:
       - name: Unit tests
         if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
         run: npm test
+      # The Windows integration tests need the helper, built from source each time (no helper binary
+      # is committed). The test step requires the build step's success, so after a failed build no
+      # Windows integration test is reported, neither passed nor skipped, and the failed build fails the job.
+      - id: helper
+        name: Build Windows helper
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        run: node scripts/build-windows-helper.mjs
+      - name: Windows integration tests
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' && steps.helper.outcome == 'success' }}
+        run: npm run test:windows
 
   # The one required check. It runs whatever happened to the jobs above and fails unless every one
   # of them succeeded: a plain needs: would let a skipped or cancelled job through.
