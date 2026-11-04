@@ -40,13 +40,13 @@ Group 1 outcome (not committed yet): `npm run typecheck`, `npm run lint`, `npm t
 
 ## 2. Control protocol and TypeScript client
 
-- [ ] 2.1 Add `src/main/platform/windows/protocol.ts`. It parses and encodes the version-1 JSON lines of design D2:
+- [x] 2.1 Add `src/main/platform/windows/protocol.ts`. It parses and encodes the version-1 JSON lines of design D2:
   - helper to Veydr: `ready`, `started`, `members`, `exited`, `stopped`, `error`;
   - Veydr to helper: `stop`, `list`;
   - the token handshake.
 
   It rejects malformed or unknown lines with a typed error. Add `identity.ts` for the Windows `ProcessIdentity`: the PID plus the creation time as a decimal FILETIME string (design D4). Verify: unit tests cover every message, malformed input, and identity equality.
-- [ ] 2.2 Add `src/main/platform/windows/helper-client.ts`. It:
+- [x] 2.2 Add `src/main/platform/windows/helper-client.ts`. It:
   - creates a random named pipe with `net.createServer`, accepts exactly one connection, and only with the one-time token;
   - passes the pipe name as an argument and the token as one line on the helper's stdin, then closes that stdin, so the token never appears on a command line;
   - spawns the helper with `windowsHide: true`, never `detached`;
@@ -55,13 +55,31 @@ Group 1 outcome (not committed yet): `npm run typecheck`, `npm run lint`, `npm t
 
   The pipe path and the spawn function are injectable. Verify: unit tests drive it with a fake helper over a real local socket on Linux and Windows, including the failure cases, and `npm test` passes on both.
 
+Group 2 outcome (not committed yet): `npm run typecheck`, `npm run lint`, `npm test` (71 files) and `npm run spec-coverage` (zero unmapped) pass on Linux, and the Windows unit tests passed 10 repeated runs.
+- During implementation, a defect was fixed: concurrent `attributed()` callers received the latest `members` instead of the answer to their own request.
+- The reviewer2 pass found 2 medium, 4 low, and 4 nits. All are fixed with tests, and they were re-reviewed:
+  - the stop deadline overflowed `setTimeout` for very large `graceMs`;
+  - `list` during a long stop was unspecified; design D2 and task 3.1 now require the helper to answer `list` at any time, and they record the `answer` flag on `members`;
+  - idle pipe connections were unbounded in time and could lock out the helper; each now has a 2 s handshake timer, and the oldest of more than 16 is evicted;
+  - nothing bounded the channel after the helper exited; a 1 s drain now does;
+  - a helper started without pipes leaked;
+  - an unreadable image gave a blank name; it is now shown as `PID <n>`.
+- The re-review found one low nit: an evicted connection stayed in the pending set until its close event. It is fixed.
+- The `windows` CI job then failed two client tests:
+  - A real race: a named pipe reports the client connected before the server accepts the connection, so the helper's exit could arrive first and hide its `error` line. Before `started`, the client now waits up to the 1 s drain for the helper's connection, and the test reproduces the order on Linux.
+  - A test that expected a refused connection after the handshake: on Windows, the client instead waits for a free pipe instance that never comes. The test now asserts only that nothing connects.
+  - reviewer2 re-reviewed both fixes with no findings. A helper that exits before connecting now reports its `SpawnError` after the 1 s drain, which was accepted.
+
+Not verified on Linux, and still to be checked on the pull request: that these unit tests pass on Windows, and the default DACL of the control pipe.
+
 ## 3. Job containment and forced stop
 
 - [ ] 3.1 Implement the helper's `run` subcommand (design D1, D2). It:
   - creates a Job Object with `KILL_ON_JOB_CLOSE` and no breakaway;
   - starts the command with `CREATE_SUSPENDED | CREATE_NEW_CONSOLE | CREATE_NEW_PROCESS_GROUP | CREATE_UNICODE_ENVIRONMENT` and `SW_HIDE`, passing exactly its own stdout and stderr and a `NUL` stdin through `PROC_THREAD_ATTRIBUTE_HANDLE_LIST`;
   - assigns the command to the job, then resumes it;
-  - reports `started`, `members` (from the job's completion port), and `exited`;
+  - reports `started`, `members` (from the job's completion port, with `answer: false`), and `exited`;
+  - answers each `list` with exactly one `members` carrying `answer: true`, in order, at any time until it exits, including during a stop (design D2);
   - stays alive until the job is empty.
 
   Verify: the helper builds with `/warnaserror+` in the `windows` job.
