@@ -14,27 +14,29 @@ Notes:
 
 ## 1. Helper build, CI lane, and scenario mapping
 
-- [ ] 1.1 Add `src/main/platform/windows/helper/veydr-helper.cs` with only the `version` subcommand, which prints the protocol version (design D5). Add `scripts/build-windows-helper.mjs`. It:
+- [x] 1.1 Add `src/main/platform/windows/helper/veydr-helper.cs` with only the `version` subcommand, which prints the protocol version (design D5). Add `scripts/build-windows-helper.mjs`. It:
   - compiles the helper with the .NET Framework 4.8 `csc.exe` (`/nologo /optimize+ /warnaserror+ /target:exe`) into `out-helper/veydr-helper.exe`;
   - stores the source's SHA-256 next to the binary and skips the build when it matches;
   - exits 1 with the compiler output when compilation fails, and exits 1 with "the Windows helper can only be built on Windows" on other systems.
 
   Add `out-helper/` to `.gitignore`. Add unit tests for the script's paths, the up-to-date check, and the non-Windows message. Verify: `npm test` passes on Linux, and the `windows` job builds the helper.
-- [ ] 1.2 Add `npm run test:windows` (`vitest run --project integration windows-`). Add `test/integration/windows-process-tree.test.ts`, guarded with `describe.skipIf(process.platform !== 'win32')` and titled `[windows-only: Job Objects]`. For now it holds:
+- [x] 1.2 Add `npm run test:windows` (`vitest run --project integration windows-`). Add `test/integration/windows-process-tree.test.ts`, guarded with `describe.skipIf(process.platform !== 'win32')` and titled `[windows-only: Job Objects]`. For now it holds:
   - a test that runs the built helper's `version`;
   - one tagged `it.todo` for each new `process-supervision` scenario of this change that a later group implements, including `windows-limitations-documented` and `windows-process-trees-verified-natively`, whose tests land in other files in group 6. Group 6 then removes those two todos.
 
   Verify: on Linux the file is reported as skipped with its reason, `test-platform-policy.test.ts` passes, and `npm run spec-coverage` reports zero unmapped scenarios.
-- [ ] 1.3 In `.github/workflows/ci.yml`'s `windows` job, add "Build Windows helper" and "Windows integration tests" after the unit tests (design D8). The test step must also require the build step's success. Extend `test/unit/workflow-policy.test.ts` with two tests:
+- [x] 1.3 In `.github/workflows/ci.yml`'s `windows` job, add "Build Windows helper" and "Windows integration tests" after the unit tests (design D8). The test step must also require the build step's success. Extend `test/unit/workflow-policy.test.ts` with two tests:
   - `[spec:quality-gates/helper-build-failure-fails-the-windows-check]`: checks the steps and their conditions;
   - `[spec:quality-gates/no-committed-helper-binary]`: fails if `git ls-files` lists a `*.exe`, `*.dll` or `*.pdb` under `src/main/platform/windows/` or `out-helper/`.
 
   Update the pull-request check-set test for the modified scenario. Verify: `npm test` passes, a temporary committed `.exe` fixture makes the policy test fail (checked once, then reverted), and on the pull request the `windows` job runs both new steps.
-- [ ] 1.4 Document the helper:
+- [x] 1.4 Document the helper:
   - in `docs/dependencies.md`, the G-4 decision: what the helper is, that it is built from source with `csc.exe`, never committed, and unsigned until G-6;
   - in `docs/ci.md`, the two new `windows` steps and `npm run test:windows`.
 
   Verify: `readme-docs.test.ts` and the docs tests pass.
+
+Group 1 outcome (not committed yet): `npm run typecheck`, `npm run lint`, `npm test` (68 files) and `npm run spec-coverage` (zero unmapped) pass on Linux, and the temporary committed `.exe` fixture made the policy test fail before it was removed. The reviewer2 pass found one defect, fixed with a test: the source hash was taken before `csc.exe` read the source, so an edit in between could store a hash that does not match the binary. Not verified on Linux and still to be checked on the pull request: that the C# compiles with `/warnaserror+`, that `windows-process-tree.test.ts` runs (not skipped) and passes, and that the `windows` job runs both new steps.
 
 ## 2. Control protocol and TypeScript client
 

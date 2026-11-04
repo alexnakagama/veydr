@@ -22,6 +22,15 @@ All eight entries are one advisory, `sprintf-js` ≤ 1.1.3 DoS through unbounded
 
 `npm run dist:linux` runs `electron-builder`, which downloads its Linux tools on first use into `~/.cache/electron-builder` from the `electron-userland/electron-builder-binaries` GitHub releases, each checked against a SHA-256 hash pinned in `app-builder-lib`: `appimage-12.0.1` (AppImage runtime and `mksquashfs`), `fpm-1.17.0-ruby-3.4.3-linux-amd64` (builds the `.deb`), and `7zip`. It also fetches the Electron 44.9.3 release archive for the package through `@electron/get` (checksum-verified). The user approved these downloads in chat on 2026-10-25, together with gate G-5. No new npm dependency was added: fuses are applied by electron-builder's own `@electron/fuses`, and the packaging tests parse the fuse wire and the ASAR header themselves.
 
+## Windows process-tree helper (gate G-4, 2026-11-03)
+
+The maintainer approved option C of `assess-windows-platform` for Windows process trees on 2026-11-03: a small helper program, `veydr-helper.exe`, that owns each command's Job Object. It is not an npm dependency and adds no package, and `electron-builder.yml` and `package-lock.json` are unchanged.
+
+* **Built from source, never committed.** The source is one C# 5 file, `src/main/platform/windows/helper/veydr-helper.cs`. `node scripts/build-windows-helper.mjs` compiles it with the `csc.exe` that .NET Framework 4.8 provides on Windows (`%WINDIR%\Microsoft.NET\Framework64\v4.0.30319\csc.exe`, with `/optimize+ /warnaserror+`) into the git-ignored `out-helper/`, and skips the build while the SHA-256 of the source, stored next to the binary, is unchanged. The `windows` CI job builds it each run (see [ci.md](ci.md)); a policy test fails if a binary is committed under the helper's source or build directories.
+* **No toolchain beyond Windows itself.** It needs no SDK, NuGet package or native toolchain. It is compiled in development, in tests, and in CI, and is not compiled on the user's machine; the packaged app will ship the binary (change W4).
+* **Unsigned until G-6.** The helper is not signed, and signing is a separate gate (G-6, decided with the Windows packaging). An unsigned executable started from the app directory may be flagged by antivirus or SmartScreen; the helper is not reachable from the app until commands can be started on Windows (W2), and the risk is listed in [deferred-checks.md](deferred-checks.md).
+* **It grows with the Windows work.** Group 1 builds it with one subcommand, `version`. Later groups add the commands that run a command in a Job Object, stop it, and inspect or end survivors, and the port inspection (W3) extends the same file.
+
 ## Version choices
 
 * **Electron 44.9.3**: latest 44.x patch when pinned. 45.0.0 followed on the same day (2026-10-21; 44.9.3 at 03:31Z, 45.0.0 at 06:03Z, per the registry) and was deliberately not adopted: a new major with no soak time. Adopt a newer major deliberately, from the stable line, when its first patch releases ship. Electron releases a major roughly every eight weeks and supports only the latest few majors, so schedule a re-evaluation at each group review.

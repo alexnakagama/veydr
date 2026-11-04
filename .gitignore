@@ -1,6 +1,7 @@
 node_modules/
 out/
 out-probe/
+out-helper/
 dist/
 test-results/
 playwright-report/

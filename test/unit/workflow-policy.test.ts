@@ -766,7 +766,8 @@ describe('ci.yml (design D4)', () => {
     expect(conditions('integration')).toEqual([undefined, undefined, undefined])
     expect(conditions('e2e')).toEqual([undefined, undefined, undefined, 'failure()'])
     expect(conditions('package')).toEqual([undefined, undefined, undefined, undefined])
-    expect(conditions('windows')).toEqual([undefined, undefined, guard, guard, guard])
+    const afterHelper = "${{ !cancelled() && steps.setup.outcome == 'success' && steps.helper.outcome == 'success' }}"
+    expect(conditions('windows')).toEqual([undefined, undefined, guard, guard, guard, guard, afterHelper])
     // The guard refers to the setup step by its id, so the setup step must keep it.
     for (const name of ['static', 'windows']) {
       const setup = stepsOf(lines, job(name)).map((s) => stepField(lines, s))[1]
@@ -810,9 +811,16 @@ describe('ci.yml (design D4)', () => {
       ['packaging', 'package', 'xvfb-run --auto-servernum npm run test:packaging'],
     ]
     for (const [check, name, command] of commands) expect(scripts(name), check).toContain(command)
-    // Typecheck, lint, and unit tests also run on Windows, against the same commit.
+    // Typecheck, lint, and unit tests also run on Windows, against the same commit, followed by the
+    // Windows integration tests on the helper built there.
     expect(jobField('windows', 'runs-on')?.value).toBe('windows-2025')
-    expect(scripts('windows')).toEqual(['npm run typecheck', 'npm run lint', 'npm test'])
+    expect(scripts('windows')).toEqual([
+      'npm run typecheck',
+      'npm run lint',
+      'npm test',
+      'node scripts/build-windows-helper.mjs',
+      'npm run test:windows',
+    ])
     const actionlint = stepsOf(lines, job('static')).map((s) => stepField(lines, s)('uses')?.value ?? '')
     expect(actionlint).toContainEqual(expect.stringMatching(/^docker:\/\/rhysd\/actionlint@sha256:[0-9a-f]{64}$/))
     // The default checkout of a pull_request run is the merge commit; nothing overrides it, and no
@@ -832,6 +840,24 @@ describe('ci.yml (design D4)', () => {
     expect(within(action, stepAround(action, cache))).toContainEqual(
       expect.objectContaining({ key: 'if', value: "inputs.cache == 'true' && inputs.dependencies == 'true' && runner.os != 'Windows'" }),
     )
+  })
+
+  it('[spec:quality-gates/helper-build-failure-fails-the-windows-check] runs the Windows integration tests only after a successful helper build (design D8)', () => {
+    const steps = stepsOf(lines, job('windows')).map((s) => stepField(lines, s))
+    const names = steps.map((field) => field('name')?.value)
+    // The build comes straight after the unit tests, and the integration tests straight after the build.
+    expect(names.slice(-3)).toEqual(['Unit tests', 'Build Windows helper', 'Windows integration tests'])
+    const [build, tests] = steps.slice(-2)
+    expect(build?.('id')?.value).toBe('helper')
+    expect(build?.('run')?.value).toBe('node scripts/build-windows-helper.mjs')
+    expect(build?.('if')?.value).toBe("${{ !cancelled() && steps.setup.outcome == 'success' }}")
+    expect(tests?.('run')?.value).toBe('npm run test:windows')
+    // After a failed build this condition is false, so no integration test is reported at all (neither
+    // passed nor skipped), while the failed build step fails the job. Neither step may tolerate a failure.
+    expect(tests?.('if')?.value).toBe("${{ !cancelled() && steps.setup.outcome == 'success' && steps.helper.outcome == 'success' }}")
+    expect(stepsOf(lines, job('windows')).flatMap((s) => within(lines, s)).filter((l) => l.key === 'continue-on-error')).toEqual([])
+    // The step the condition names is the helper build, and nothing else uses that id.
+    expect(steps.filter((field) => field('id')?.value === 'helper')).toHaveLength(1)
   })
 
   it('[spec:quality-gates/push-to-master-runs-the-same-checks] runs the same checks on pushes to master', () => {
@@ -895,6 +921,47 @@ describe('ci.yml (design D4)', () => {
     // --audit-level=low fails on every severity; --omit=dev limits it to what ships in the packages.
     expect(scripts('static')).toContain('npm audit --omit=dev --audit-level=low')
     expect(childNames(lines, childAt(lines, job('ci-ok').start, 'needs'))).toContain('static')
+  })
+})
+
+// The Windows helper is built from source each time and never committed (add-windows-process-supervision design D5, D8).
+
+/** The tracked files that are executables or libraries under the helper's source or build directories. */
+const committedHelperBinaries = (trackedFiles: readonly string[]): string[] =>
+  trackedFiles.filter((file) => /^(src\/main\/platform\/windows|out-helper)\//i.test(file) && /\.(exe|dll|pdb)$/i.test(file))
+
+describe('Windows helper binary policy (add-windows-process-supervision design D8)', () => {
+  it('[spec:quality-gates/no-committed-helper-binary] no executable or library is committed under the helper source or build directories', () => {
+    // Tracked files and files about to be added (untracked and not ignored), so a binary is caught before it is committed.
+    const list = spawnSync('git', ['ls-files', '-z', '--cached', '--others', '--exclude-standard'], { cwd: root, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 })
+    expect(list.error, 'git ls-files').toBeUndefined()
+    expect(list.status, list.stderr).toBe(0)
+    const tracked = list.stdout.split('\0').filter((file) => file !== '')
+    // Not vacuous: the helper's source is listed.
+    expect(tracked).toContain('src/main/platform/windows/helper/veydr-helper.cs')
+    expect(committedHelperBinaries(tracked)).toEqual([])
+  })
+
+  it('recognizes executables, libraries and symbol files in either directory, and nothing else', () => {
+    expect(
+      committedHelperBinaries([
+        'src/main/platform/windows/helper/veydr-helper.exe',
+        'src/main/platform/windows/native/ports.DLL',
+        'src/main/platform/windows/helper/veydr-helper.pdb',
+        'out-helper/veydr-helper.exe',
+        'out-helper/nested/dir/x.dll',
+      ]),
+    ).toHaveLength(5)
+    expect(
+      committedHelperBinaries([
+        'src/main/platform/windows/helper/veydr-helper.cs',
+        'src/main/platform/windows/index.ts',
+        'scripts/windows-probe/job-helper.exe.md',
+        'test/fixtures/sample.exe',
+        'src/main/platform/linux/helper.exe',
+        'out-helper-notes/readme.exe',
+      ]),
+    ).toEqual([])
   })
 })
 
