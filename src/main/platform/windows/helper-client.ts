@@ -151,6 +151,8 @@ class HelperRun implements ManagedProcess {
   private descendantsKey = ''
   private readonly descendantListeners: { readonly cb: (descendants: readonly ProcessIdentity[]) => void; reported: string }[] = []
   private drainTimer: NodeJS.Timeout | null = null
+  /** The drain after the helper's exit is over: nothing more is waited for. */
+  private drained = false
   /** Callers waiting for a `list` not sent yet; they share the next one. */
   private batch: Waiter<readonly HelperMember[]>[] | null = null
   /** Sent `list` requests in order; each `members` answer settles the oldest. */
@@ -478,15 +480,23 @@ class HelperRun implements ManagedProcess {
       return
     }
     // The channel, or a connection not yet read, still delivers what the helper wrote before it
-    // exited (e.g. its `error`). The helper's handles are not inherited (design D2), so its end
-    // closes with it; should something else hold it open, it is closed after a short drain.
-    if ((this.socket !== null && !this.channelClosed) || this.pending.size > 0) {
+    // exited (e.g. its `error`). Before `started`, its connection may not even be accepted yet: a
+    // named pipe reports the client connected before the server sees it, so the exit can come
+    // first. The helper's handles are not inherited (design D2), so its end closes with it; should
+    // something else hold it open, it is closed after a short drain.
+    const channelOpen = (this.socket !== null && !this.channelClosed) || this.pending.size > 0
+    const mayDeliver = channelOpen || (this.phase === 'starting' && this.socket === null)
+    if (mayDeliver && !this.drained) {
       this.drainTimer ??= setTimeout(() => {
+        this.drained = true
         for (const socket of this.pending) socket.destroy()
         this.socket?.destroy()
+        this.settle()
       }, this.options.drainTimeoutMs ?? DRAIN_TIMEOUT_MS)
       return
     }
+    // Sockets destroyed by the drain settle again once closed.
+    if (channelOpen) return
     if (this.exitInfo === null || this.helperExit.code !== 0) {
       return this.fail(new Error(`the Windows helper exited unexpectedly (exit code ${String(this.helperExit.code)})`))
     }

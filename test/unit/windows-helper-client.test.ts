@@ -221,8 +221,16 @@ describe('starting the helper', () => {
   it('accepts no further connection once the helper has proven itself', async () => {
     const { helper } = await startedRun()
     const intruder = connect(helper.pipe)
-    const [error] = (await once(intruder, 'error')) as [NodeJS.ErrnoException]
-    expect(['ENOENT', 'ECONNREFUSED']).toContain(error.code)
+    // A Unix socket refuses at once. A named pipe still exists while the helper's instance is open,
+    // so the client waits for a free instance that never comes. Either way nothing connects.
+    const outcome = await new Promise<string>((resolve) => {
+      intruder.once('connect', () => resolve('connected'))
+      intruder.once('error', () => resolve('refused'))
+      setTimeout(resolve, 500, 'still waiting')
+    })
+    intruder.destroy()
+    expect(outcome).not.toBe('connected')
+    expect(harness.log.events.filter((e) => e.event === 'process.helper-connection-refused')).toEqual([])
   })
 
   it('refuses a connection without the token and still accepts the helper', async () => {
@@ -350,17 +358,18 @@ describe('starting the helper', () => {
   it('keeps the helper error that arrived just before the helper exited', async () => {
     const pending = start(harness.options())
     const helper = await waitForHelper()
-    await helper.connect()
-    helper.send({ type: 'error', message: 'access denied' })
-    // The exit is reported before the channel has delivered the last line.
+    // The exit is reported before Veydr has accepted, let alone read, the helper's connection, as
+    // a named pipe allows: the helper connects, writes its error, and exits at once.
     helper.exited = true
     helper.emit('exit', 1, null)
+    await helper.connect()
+    helper.send({ type: 'error', message: 'access denied' })
     helper.socket?.end()
     await expectSpawnError(pending, /access denied/)
   })
 
   it('fails the start when the helper exits without connecting', async () => {
-    const pending = start(harness.options())
+    const pending = start(harness.options({ drainTimeoutMs: 50 }))
     const helper = await waitForHelper()
     await helper.exit(2)
     await expectSpawnError(pending, /exited unexpectedly \(exit code 2\)/)

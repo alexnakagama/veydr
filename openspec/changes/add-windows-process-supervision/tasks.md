@@ -65,6 +65,10 @@ Group 2 outcome (not committed yet): `npm run typecheck`, `npm run lint`, `npm t
   - a helper started without pipes leaked;
   - an unreadable image gave a blank name; it is now shown as `PID <n>`.
 - The re-review found one low nit: an evicted connection stayed in the pending set until its close event. It is fixed.
+- The `windows` CI job then failed two client tests:
+  - A real race: a named pipe reports the client connected before the server accepts the connection, so the helper's exit could arrive first and hide its `error` line. Before `started`, the client now waits up to the 1 s drain for the helper's connection, and the test reproduces the order on Linux.
+  - A test that expected a refused connection after the handshake: on Windows, the client instead waits for a free pipe instance that never comes. The test now asserts only that nothing connects.
+  - reviewer2 re-reviewed both fixes with no findings. A helper that exits before connecting now reports its `SpawnError` after the 1 s drain, which was accepted.
 
 Not verified on Linux, and still to be checked on the pull request: that these unit tests pass on Windows, and the default DACL of the control pipe.
 
