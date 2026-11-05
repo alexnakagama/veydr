@@ -110,7 +110,7 @@ Group 3 outcome (not committed yet): `npm run typecheck`, `npm run lint`, `npm t
 - The re-review of the fixes found no further issues.
 - Open for group 4: a child that a command's tool starts with `windowsHide` gets a console of its own, so the Ctrl+Break of design D3 does not reach it, and only the forced step ends it.
 
-Not verified on Linux, and still to be checked on the pull request: that the helper compiles with `/warnaserror+`, that every Windows integration test runs (not skipped) and passes, whether `conhost.exe` joins the job, and the console and hidden-window assumptions.
+On the pull request (alexnakagama/veydr#30, merged), every check passed, `ci-ok` included. In the `windows` job, "Build Windows helper" succeeded, so the helper compiles with `/warnaserror+`, and "Windows integration tests" succeeded. The step's vitest summary was not read, because the log needs a GitHub sign-in. So it is not confirmed that every Windows integration test was reported as run rather than skipped (expected: 9 passed, 7 todo), and the run does not show whether `conhost.exe` joined the job. Check this on the next `windows` run.
 
 ## 4. Graceful stop
 
