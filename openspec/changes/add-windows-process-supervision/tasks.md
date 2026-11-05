@@ -74,7 +74,7 @@ Not verified on Linux, and still to be checked on the pull request: that these u
 
 ## 3. Job containment and forced stop
 
-- [ ] 3.1 Implement the helper's `run` subcommand (design D1, D2). It:
+- [x] 3.1 Implement the helper's `run` subcommand (design D1, D2). It:
   - creates a Job Object with `KILL_ON_JOB_CLOSE` and no breakaway;
   - starts the command with `CREATE_SUSPENDED | CREATE_NEW_CONSOLE | CREATE_NEW_PROCESS_GROUP | CREATE_UNICODE_ENVIRONMENT` and `SW_HIDE`, passing exactly its own stdout and stderr and a `NUL` stdin through `PROC_THREAD_ATTRIBUTE_HANDLE_LIST`;
   - assigns the command to the job, then resumes it;
@@ -83,14 +83,34 @@ Not verified on Linux, and still to be checked on the pull request: that these u
   - stays alive until the job is empty.
 
   Verify: the helper builds with `/warnaserror+` in the `windows` job.
-- [ ] 3.2 Implement the forced part of `stop`: `TerminateJobObject`, then a wait of up to 1 s for the job to empty, then a `stopped` report with the members still alive (design D3, graceful attempt still absent). Add `src/main/platform/windows/process-tree.ts`, whose `spawn` uses the helper client and rejects with `SpawnError` when the helper is missing or does not match the protocol version. Verify: unit tests for the missing and mismatched helper.
-- [ ] 3.3 Replace the `it.todo`s in `windows-process-tree.test.ts` with tests built from Node fixture trees (design D7). Each test checks independently with `Get-CimInstance Win32_Process`, starts a sentinel process that must survive, and repeats `VEYDR_STRESS` times. The tests are:
+- [x] 3.2 Implement the forced part of `stop`: `TerminateJobObject`, then a wait of up to 1 s for the job to empty, then a `stopped` report with the members still alive (design D3, graceful attempt still absent). Add `src/main/platform/windows/process-tree.ts`, whose `spawn` uses the helper client and rejects with `SpawnError` when the helper is missing or does not match the protocol version. Verify: unit tests for the missing and mismatched helper.
+- [x] 3.3 Replace the `it.todo`s in `windows-process-tree.test.ts` with tests built from Node fixture trees (design D7). Each test checks independently with `Get-CimInstance Win32_Process`, starts a sentinel process that must survive, and repeats `VEYDR_STRESS` times. The tests are:
   - `[spec:process-supervision/children-and-grandchildren-stopped-on-windows]`;
   - `[spec:process-supervision/orphaned-descendant-stopped-on-windows]`;
   - `[spec:process-supervision/descendant-started-immediately]`;
   - `[spec:process-supervision/uncooperative-process-on-windows]`.
 
   Also test that output reaches `stdout` and `stderr` unchanged and that no console window is created (`MainWindowHandle` is 0). Verify: the `windows` job passes on the pull request, with every test reported as run, not skipped.
+
+Group 3 outcome (not committed yet): `npm run typecheck`, `npm run lint`, `npm test` (72 files) and `npm run spec-coverage` (zero unmapped) pass on Linux; `npm run test:windows` is skipped there with its reason.
+- Added during implementation, beyond the task text:
+  - a batch file runs explicitly through `cmd.exe /d /e:on /v:off /s /c`, with its arguments passed bare or quoted, and `"`, `%`, line breaks, NUL and a trailing backslash refused (implicit `CreateProcess` batch handling allows argument injection);
+  - the helper refuses a control pipe not served by its parent process, and connects anonymously;
+  - any helper failure, including the control channel closing, ends the job and exits 1 (part of 5.1, whose tests stay in group 5);
+  - `spawn` checks for a full program path, an existing program and working directory, and NUL characters, so a missing working directory does not read as a missing helper.
+- The reviewer2 pass found 3 medium and 5 low items; 6 were fixed and re-reviewed, and 2 were kept with reasons, which were accepted:
+  - batch arguments were too strict for npm-style shims; they are now quoted;
+  - the integration tests may count `conhost.exe` as a job member; they now accept console hosts as extra members, judged per answer so a host that comes or goes cannot make them flaky, and the fixture children share the command's console (no `windowsHide`);
+  - the sentinel had a console of its own and could not detect a stray event; it now shares the runner's console, and the test asserts this with `GetConsoleProcessList`;
+  - `MainWindowHandle` cannot see a console window; the test enumerates visible windows of the tree, its console hosts, and the helper (Windows Terminal hosts are not covered; the CI runner has none);
+  - a second abort could exit before the first had reported; it now waits;
+  - `spawn` used the platform's `isAbsolute`; it now applies the helper's drive-or-UNC rule, to the helper path too;
+  - kept: a helper `error` before `started` is already a `SpawnError` (`other`); a finer reason needs an error code in a later protocol version;
+  - kept: a `members` line can still exceed 1 MiB beyond about 20,000 processes, which fails the helper and so ends the job.
+- The re-review of the fixes found no further issues.
+- Open for group 4: a child that a command's tool starts with `windowsHide` gets a console of its own, so the Ctrl+Break of design D3 does not reach it, and only the forced step ends it.
+
+Not verified on Linux, and still to be checked on the pull request: that the helper compiles with `/warnaserror+`, that every Windows integration test runs (not skipped) and passes, whether `conhost.exe` joins the job, and the console and hidden-window assumptions.
 
 ## 4. Graceful stop
 
