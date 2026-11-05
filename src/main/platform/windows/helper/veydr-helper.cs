@@ -5,6 +5,8 @@
 //   veydr-helper.exe version                      prints the control protocol version on one line
 //   veydr-helper.exe run <pipe> <file> [<arg>...]  runs <file> in a Job Object of its own (design D1),
 //                                                 controlled over the named pipe <pipe> (design D2)
+//   veydr-helper.exe inspect                      reports which identities on stdin are live (design D4)
+//   veydr-helper.exe terminate <graceMs>          ends the identities on stdin that still match (design D4)
 //
 // `run` reads a one-time token as one line on stdin, connects to <pipe>, which must be served by the
 // process that started the helper, and proves itself with the token. It then starts <file>, with the
@@ -15,7 +17,12 @@
 // Exit codes: 0 the command ran and its job is empty; 1 a failure, reported as an `error` line (or on
 // stderr before the pipe is connected), after which nothing of the command is left running; 2 a
 // usage error, described on stderr. A `stop` first sends Ctrl+Break to the command's hidden console,
-// then ends the job if it has not emptied (design D3). Later groups add `inspect` and `terminate`;
+// then ends the job if it has not emptied (design D3). If the control channel closes before the
+// command has ended, Veydr is gone: the helper ends the job and exits with 1 (design D1).
+//
+// `inspect` and `terminate` read one line on stdin, a JSON array of identities
+// (`[{"pid":P,"created":"<FILETIME>"},...]`, exactly as protocol.ts encodes it), and print one JSON
+// line on stdout (see SurvivorCommands). They exit with 0, 1 (a failure, described on stderr), or 2.
 // W3 adds `ports`.
 using System;
 using System.Collections.Generic;
@@ -38,7 +45,7 @@ static class VeydrHelper
 
     public const int ExitOk = 0, ExitFailure = 1, ExitUsage = 2;
 
-    const string Usage = "usage: veydr-helper version | veydr-helper run <pipe> <file> [<arg>...]";
+    const string Usage = "usage: veydr-helper version | veydr-helper run <pipe> <file> [<arg>...] | veydr-helper inspect | veydr-helper terminate <graceMs>";
 
     static int Main()
     {
@@ -64,6 +71,9 @@ static class VeydrHelper
             Array.Copy(args, 3, commandArgs, 0, commandArgs.Length);
             return new RunCommand(args[1], args[2], commandArgs).Execute();
         }
+        if (args.Length == 1 && args[0] == "inspect") return SurvivorCommands.Inspect();
+        int graceMs;
+        if (args.Length == 2 && args[0] == "terminate" && SurvivorCommands.TryParseGrace(args[1], out graceMs)) return SurvivorCommands.Terminate(graceMs);
 
         Console.Error.WriteLine(Usage);
         return ExitUsage;
@@ -109,9 +119,9 @@ sealed class Member
 sealed class RunCommand
 {
     /** Exit code of processes ended by `TerminateJobObject`, as `taskkill /F` uses. */
-    const uint KilledExitCode = 1;
+    public const uint KilledExitCode = 1;
     /** How long the forced stop waits for the job to empty (design D3; Linux's KILL_WAIT_MS). */
-    const int KillWaitMs = 1000;
+    public const int KillWaitMs = 1000;
     /** How long the helper waits to connect to its control pipe. */
     const int ConnectTimeoutMs = 10000;
     /** Longest accepted token line, and the token's form (64 hex digits from the client). */
@@ -142,32 +152,6 @@ sealed class RunCommand
 
     /** How long an abort waits for its `error` line to be written. */
     const int AbortReportMs = 1000;
-    /**
-     * Most consoles a graceful stop tries to attach to (design D3), so that a job of many processes
-     * without a reachable console cannot delay the forced step noticeably.
-     */
-    const int MaxConsoleAttempts = 64;
-    /** Most processes a console may list before it is not trusted to hold only the command's processes. */
-    const int MaxConsoleProcesses = 1 << 16;
-    /**
-     * How long the helper stays attached after sending Ctrl+Break, waiting for its own copy of the
-     * event: once detached, the default handler would take it and end the helper (W0's probe
-     * likewise stays attached for 1 s).
-     */
-    const int BreakDeliveryMs = 1000;
-    /** Set when IgnoreBreak has handled a Ctrl+Break, which the event sends the helper too. */
-    static readonly ManualResetEvent BreakDelivered = new ManualResetEvent(false);
-    /**
-     * Keeps Ctrl+C and Ctrl+Break from ending the helper while it is attached to the command's
-     * console (design D3). Held in a field so the delegate outlives the native registration.
-     * Windows calls it on a thread of its own; it must not throw, as a failing handler counts as
-     * not handling the event, and the default handler then ends the process.
-     */
-    static readonly Native.ConsoleCtrlHandler IgnoreBreak = delegate(uint ctrlType)
-    {
-        if (ctrlType == Native.CTRL_BREAK_EVENT) BreakDelivered.Set();
-        return ctrlType == Native.CTRL_C_EVENT || ctrlType == Native.CTRL_BREAK_EVENT;
-    };
 
     readonly string pipePath, file;
     readonly string[] commandArgs;
@@ -288,7 +272,7 @@ sealed class RunCommand
         Environment.Exit(VeydrHelper.ExitFailure);
     }
 
-    static string Truncate(string text, int length)
+    public static string Truncate(string text, int length)
     {
         return text.Length <= length ? text : text.Substring(0, length);
     }
@@ -731,7 +715,7 @@ sealed class RunCommand
         return json.Append(']').ToString();
     }
 
-    static string MembersJson(List<Member> members)
+    public static string MembersJson(List<Member> members)
     {
         string full = MembersJson(members, true);
         return full.Length <= MaxMembersLineChars ? full : MembersJson(members, false);
@@ -888,30 +872,30 @@ sealed class RunCommand
      */
     bool SendCtrlBreak()
     {
-        if (!IgnoreCtrlEvents()) return false;
+        if (!CtrlEvents.Ignore()) return false;
         // The helper's own console (Veydr's, or a hidden one of its own): AttachConsole refuses a
         // second one. The helper writes nothing to a console, so it never needs it back.
         Native.FreeConsole();
-        IgnoreCtrlEvents();
+        CtrlEvents.Ignore();
 
         // At most MaxConsoleAttempts entries, so a list is enough (and needs only mscorlib).
         List<IntPtr> triedConsoles = new List<IntPtr>();
         int attempts = 0;
         foreach (Member member in Members())
         {
-            if (attempts++ == MaxConsoleAttempts) break;
+            if (attempts++ == CtrlEvents.MaxConsoleAttempts) break;
             // Fails for a process without a console, such as one that called FreeConsole or a
             // console host, and for one that has exited since it was listed.
             if (!Native.AttachConsole(member.Pid))
             {
-                IgnoreCtrlEvents();
+                CtrlEvents.Ignore();
                 continue;
             }
             try
             {
                 // Attaching gives the helper the console's default control handling again, which
                 // would end it on the event it is about to send (W0's probe registers again too).
-                if (!IgnoreCtrlEvents()) return false;
+                if (!CtrlEvents.Ignore()) return false;
                 IntPtr window = Native.GetConsoleWindow();
                 // A console seen before was already found unfit; a console without a window
                 // cannot be told apart from another, so it is always checked.
@@ -921,38 +905,16 @@ sealed class RunCommand
                     triedConsoles.Add(window);
                 }
                 if (!ConsoleHoldsOnlyJobMembers()) continue;
-                BreakDelivered.Reset();
-                if (Native.GenerateConsoleCtrlEvent(Native.CTRL_BREAK_EVENT, 0))
-                {
-                    // The event reaches every process on the console, the helper included, each on
-                    // a thread of its own; the helper detaches only once it has handled its copy.
-                    BreakDelivered.WaitOne(BreakDeliveryMs);
-                    return true;
-                }
+                if (CtrlEvents.SendBreak()) return true;
             }
             finally
             {
                 Native.FreeConsole();
                 // Detaching may reset the control handling too, and an event may still be on its way.
-                IgnoreCtrlEvents();
+                CtrlEvents.Ignore();
             }
         }
         return false;
-    }
-
-    /**
-     * Registers IgnoreBreak and ignores Ctrl+C (a NULL handler does not cover Ctrl+Break); `false`
-     * if either fails. Attaching to or freeing a console can reset the process's control handling,
-     * so this runs again after each.
-     *
-     * It only ever adds: removing an older registration first would leave a moment without one, and
-     * removing it afterwards would remove the only one whenever the handling had been reset. A
-     * second registration is harmless, since the first handler that returns TRUE ends the chain,
-     * and a stop adds at most a few hundred (MaxConsoleAttempts).
-     */
-    static bool IgnoreCtrlEvents()
-    {
-        return Native.SetConsoleCtrlHandler(null, true) && Native.SetConsoleCtrlHandler(IgnoreBreak, true);
     }
 
     /**
@@ -962,26 +924,16 @@ sealed class RunCommand
     bool ConsoleHoldsOnlyJobMembers()
     {
         uint self = Native.GetCurrentProcessId();
-        uint[] list = new uint[64];
-        while (true)
+        uint[] list = CtrlEvents.ConsoleProcesses();
+        if (list == null) return false;
+        bool anyMember = false;
+        foreach (uint pid in list)
         {
-            uint count = Native.GetConsoleProcessList(list, (uint)list.Length);
-            if (count == 0 || count > MaxConsoleProcesses) return false;
-            if (count > list.Length)
-            {
-                // More processes than room; ask again with enough, as the list may still grow.
-                list = new uint[count + 16];
-                continue;
-            }
-            bool anyMember = false;
-            for (int i = 0; i < count; i++)
-            {
-                if (list[i] == self) continue;
-                if (!IsJobMember(list[i])) return false;
-                anyMember = true;
-            }
-            return anyMember;
+            if (pid == self) continue;
+            if (!IsJobMember(pid)) return false;
+            anyMember = true;
         }
+        return anyMember;
     }
 
     bool IsJobMember(uint pid)
@@ -997,6 +949,460 @@ sealed class RunCommand
         {
             Native.CloseHandle(process);
         }
+    }
+}
+
+/**
+ * Console control events for the graceful steps (design D3, D4). The helper attaches to another
+ * process's console, sends Ctrl+Break to every process on it, and must not be ended by its own copy.
+ */
+static class CtrlEvents
+{
+    /**
+     * Most consoles one stop or `terminate` tries to attach to, so that many processes without a
+     * reachable console cannot delay the forced step noticeably.
+     */
+    public const int MaxConsoleAttempts = 64;
+    /** Most processes a console may list before it is not trusted to hold only the expected ones. */
+    public const int MaxConsoleProcesses = 1 << 16;
+    /**
+     * How long the helper stays attached after sending Ctrl+Break, waiting for its own copy of the
+     * event: once detached, the default handler would take it and end the helper (W0's probe
+     * likewise stays attached for 1 s).
+     */
+    public const int BreakDeliveryMs = 1000;
+    /** Set when IgnoreBreak has handled a Ctrl+Break, which the event sends the helper too. */
+    static readonly ManualResetEvent BreakDelivered = new ManualResetEvent(false);
+    /**
+     * Keeps Ctrl+C and Ctrl+Break from ending the helper while it is attached to another console.
+     * Held in a field so the delegate outlives the native registration. Windows calls it on a
+     * thread of its own; it must not throw, as a failing handler counts as not handling the event,
+     * and the default handler then ends the process.
+     */
+    static readonly Native.ConsoleCtrlHandler IgnoreBreak = delegate(uint ctrlType)
+    {
+        if (ctrlType == Native.CTRL_BREAK_EVENT) BreakDelivered.Set();
+        return ctrlType == Native.CTRL_C_EVENT || ctrlType == Native.CTRL_BREAK_EVENT;
+    };
+
+    /**
+     * Registers IgnoreBreak and ignores Ctrl+C (a NULL handler does not cover Ctrl+Break); `false`
+     * if either fails. Attaching to or freeing a console can reset the process's control handling,
+     * so this runs again after each.
+     *
+     * It only ever adds: removing an older registration first would leave a moment without one, and
+     * removing it afterwards would remove the only one whenever the handling had been reset. A
+     * second registration is harmless, since the first handler that returns TRUE ends the chain,
+     * and a run adds at most a few hundred (MaxConsoleAttempts).
+     */
+    public static bool Ignore()
+    {
+        return Native.SetConsoleCtrlHandler(null, true) && Native.SetConsoleCtrlHandler(IgnoreBreak, true);
+    }
+
+    /**
+     * Sends Ctrl+Break to every process on the console the helper is attached to; `false` if it
+     * could not be sent. The event reaches the helper too, each process on a thread of its own, so
+     * this waits (at most BreakDeliveryMs) until the helper has handled its copy before it returns
+     * and the caller detaches.
+     */
+    public static bool SendBreak()
+    {
+        BreakDelivered.Reset();
+        if (!Native.GenerateConsoleCtrlEvent(Native.CTRL_BREAK_EVENT, 0)) return false;
+        BreakDelivered.WaitOne(BreakDeliveryMs);
+        return true;
+    }
+
+    /** The PIDs on the console the helper is attached to; `null` if unreadable or more than MaxConsoleProcesses. */
+    public static uint[] ConsoleProcesses()
+    {
+        uint[] list = new uint[64];
+        while (true)
+        {
+            uint count = Native.GetConsoleProcessList(list, (uint)list.Length);
+            if (count == 0 || count > MaxConsoleProcesses) return null;
+            if (count > list.Length)
+            {
+                // More processes than room; ask again with enough, as the list may still grow.
+                list = new uint[count + 16];
+                continue;
+            }
+            uint[] result = new uint[count];
+            Array.Copy(list, result, (int)count);
+            return result;
+        }
+    }
+}
+
+/** A process as Veydr recorded it: its PID and creation time (design D4). */
+sealed class ProcessRef
+{
+    public readonly uint Pid;
+    public readonly long Created;
+
+    public ProcessRef(uint pid, long created)
+    {
+        Pid = pid;
+        Created = created;
+    }
+}
+
+/**
+ * `veydr-helper inspect` and `veydr-helper terminate <graceMs>`: crash recovery for processes no
+ * job of Veydr holds any more (design D4). Both read the identities from stdin and report only
+ * processes whose PID and creation time both still match, so a reused PID is never reported or
+ * ended. A process the helper cannot open cannot be verified, and is left alone.
+ */
+static class SurvivorCommands
+{
+    /** Longest accepted stdin, and most identities in it (protocol.ts: MAX_TOOL_IDENTITIES). */
+    const int MaxInputBytes = 4 * 1024 * 1024;
+    const int MaxIdentities = 65536;
+    static readonly Regex ItemPattern = new Regex("\\G\\{\"pid\":([1-9][0-9]{0,9}),\"created\":\"([1-9][0-9]{0,18})\"\\}", RegexOptions.CultureInvariant);
+    static readonly Regex GracePattern = new Regex("^(0|[1-9][0-9]{0,9})$", RegexOptions.CultureInvariant);
+    const uint ProcessTerminate = 0x1;
+
+    /** A survivor being ended: the handle, held throughout, keeps its PID from being reused. */
+    sealed class Target
+    {
+        public readonly ProcessRef Process;
+        public readonly IntPtr Handle;
+        public readonly bool CanTerminate;
+        public readonly string Image;
+        /** It was on a console that received Ctrl+Break. */
+        public bool Signalled;
+
+        public Target(ProcessRef process, IntPtr handle, bool canTerminate, string image)
+        {
+            Process = process;
+            Handle = handle;
+            CanTerminate = canTerminate;
+            Image = image;
+        }
+    }
+
+    /** `graceMs` as `terminate` takes it: a decimal from 0 to int.MaxValue, without sign or leading zeros. */
+    public static bool TryParseGrace(string text, out int graceMs)
+    {
+        graceMs = 0;
+        if (!GracePattern.IsMatch(text)) return false;
+        long value = long.Parse(text, NumberStyles.None, CultureInfo.InvariantCulture);
+        if (value > int.MaxValue) return false;
+        graceMs = (int)value;
+        return true;
+    }
+
+    /** Prints `{"type":"inspected","processes":[member...]}`: the identities that are live. */
+    public static int Inspect()
+    {
+        try
+        {
+            List<ProcessRef> identities = ReadIdentities();
+            uint self = Native.GetCurrentProcessId();
+            List<Member> live = new List<Member>();
+            foreach (ProcessRef identity in identities)
+            {
+                if (identity.Pid == self) continue;
+                // Read-only access: inspecting never changes a process.
+                IntPtr process = Native.OpenProcess(Native.PROCESS_QUERY_LIMITED_INFORMATION | Native.SYNCHRONIZE, false, identity.Pid);
+                if (process == IntPtr.Zero) continue;
+                try
+                {
+                    if (Matches(process, identity)) live.Add(new Member(identity.Pid, (ulong)identity.Created, Native.ImagePath(process)));
+                }
+                finally
+                {
+                    Native.CloseHandle(process);
+                }
+            }
+            WriteOut("{\"type\":\"inspected\",\"processes\":" + RunCommand.MembersJson(live) + "}");
+            return VeydrHelper.ExitOk;
+        }
+        catch (Exception error)
+        {
+            return Fail(error);
+        }
+    }
+
+    /**
+     * Ends the identities that are live (design D4) and prints
+     * `{"type":"terminated","graceful":"yes"|"no","forced":B,"survivors":[member...]}`:
+     *   1. each is verified and opened, and its handle is held until the end;
+     *   2. Ctrl+Break goes to each survivor's console, but only to a console on which every process
+     *      apart from the helper is a verified survivor, since the event reaches all of them;
+     *   3. the helper waits, until `graceMs` after the start, for the survivors that received it;
+     *   4. every survivor still alive is re-verified and ended with TerminateProcess, and the
+     *      helper waits up to 1 s for them to end.
+     * When no event could be sent, step 3 is skipped. `graceful` is "yes" when nothing outlived step
+     * 3; `forced` is true when step 4 called TerminateProcess; `survivors` are the processes still
+     * alive at the end. No event is sent once `graceMs` has passed, so the helper takes at most
+     * `graceMs`, one more event's delivery (BreakDeliveryMs), and the kill wait (KillWaitMs).
+     */
+    public static int Terminate(int graceMs)
+    {
+        List<Target> targets = new List<Target>();
+        try
+        {
+            List<ProcessRef> identities = ReadIdentities();
+            Stopwatch sinceStart = Stopwatch.StartNew();
+            uint self = Native.GetCurrentProcessId();
+            foreach (ProcessRef identity in identities)
+            {
+                if (identity.Pid == self) continue;
+                Target target = Open(identity);
+                if (target != null) targets.Add(target);
+            }
+
+            // Not graceful once anything outlived the graceful step; forced only if TerminateProcess
+            // was actually called (a survivor the helper may not end is reported, not forced).
+            bool graceful = true, forced = false;
+            if (targets.Count > 0)
+            {
+                if (SendBreaks(targets, graceMs, sinceStart)) WaitForExit(targets, true, graceMs - sinceStart.ElapsedMilliseconds);
+                if (AnyAlive(targets))
+                {
+                    graceful = false;
+                    foreach (Target t in targets)
+                    {
+                        if (!t.CanTerminate || !Matches(t.Handle, t.Process)) continue;
+                        forced = true;
+                        Native.TerminateProcess(t.Handle, RunCommand.KilledExitCode);
+                    }
+                    if (forced) WaitForExit(targets, false, RunCommand.KillWaitMs);
+                }
+            }
+
+            List<Member> survivors = new List<Member>();
+            foreach (Target t in targets)
+            {
+                if (Matches(t.Handle, t.Process)) survivors.Add(new Member(t.Process.Pid, (ulong)t.Process.Created, t.Image));
+            }
+            WriteOut("{\"type\":\"terminated\",\"graceful\":\"" + (graceful ? "yes" : "no") + "\",\"forced\":" + (forced ? "true" : "false") +
+                ",\"survivors\":" + RunCommand.MembersJson(survivors) + "}");
+            return VeydrHelper.ExitOk;
+        }
+        catch (Exception error)
+        {
+            return Fail(error);
+        }
+        finally
+        {
+            foreach (Target t in targets) Native.CloseHandle(t.Handle);
+        }
+    }
+
+    /** Opens `identity` if it is live and matches; `null` otherwise. */
+    static Target Open(ProcessRef identity)
+    {
+        bool canTerminate = true;
+        IntPtr process = Native.OpenProcess(Native.PROCESS_QUERY_LIMITED_INFORMATION | Native.SYNCHRONIZE | ProcessTerminate, false, identity.Pid);
+        if (process == IntPtr.Zero)
+        {
+            // It may still be verified, and is then reported as a survivor it could not end.
+            canTerminate = false;
+            process = Native.OpenProcess(Native.PROCESS_QUERY_LIMITED_INFORMATION | Native.SYNCHRONIZE, false, identity.Pid);
+            if (process == IntPtr.Zero) return null;
+        }
+        if (!Matches(process, identity))
+        {
+            Native.CloseHandle(process);
+            return null;
+        }
+        return new Target(identity, process, canTerminate, Native.ImagePath(process));
+    }
+
+    /**
+     * Sends Ctrl+Break to the consoles of the live targets (step 2 of Terminate); `true` if any
+     * event was sent. No event is sent once `graceMs` has passed, as it could not be waited for.
+     */
+    static bool SendBreaks(List<Target> targets, int graceMs, Stopwatch sinceStart)
+    {
+        if (!CtrlEvents.Ignore()) return false;
+        // The helper's own console: AttachConsole refuses a second one, and it is never needed back.
+        Native.FreeConsole();
+        CtrlEvents.Ignore();
+
+        Dictionary<uint, Target> byPid = new Dictionary<uint, Target>();
+        foreach (Target t in targets) byPid[t.Process.Pid] = t;
+        uint self = Native.GetCurrentProcessId();
+        List<IntPtr> triedConsoles = new List<IntPtr>();
+        bool sent = false;
+        int attempts = 0;
+        foreach (Target target in targets)
+        {
+            if (sinceStart.ElapsedMilliseconds >= graceMs) break;
+            if (target.Signalled || !IsAlive(target.Handle)) continue;
+            if (attempts++ == CtrlEvents.MaxConsoleAttempts) break;
+            // The handle keeps the PID from being reused, so this is the verified process's console.
+            if (!Native.AttachConsole(target.Process.Pid))
+            {
+                CtrlEvents.Ignore();
+                continue;
+            }
+            try
+            {
+                if (!CtrlEvents.Ignore()) return sent;
+                IntPtr window = Native.GetConsoleWindow();
+                // A console seen before was already handled; one without a window is checked again.
+                if (window != IntPtr.Zero)
+                {
+                    if (triedConsoles.Contains(window)) continue;
+                    triedConsoles.Add(window);
+                }
+                List<Target> onConsole = TargetsOnConsole(byPid, self);
+                if (onConsole == null) continue;
+                if (CtrlEvents.SendBreak())
+                {
+                    sent = true;
+                    foreach (Target t in onConsole) t.Signalled = true;
+                }
+            }
+            finally
+            {
+                Native.FreeConsole();
+                CtrlEvents.Ignore();
+            }
+        }
+        return sent;
+    }
+
+    /**
+     * The targets on the attached console, if every process on it apart from the helper is a live
+     * target and there is at least one; `null` otherwise. A target's handle keeps its PID from being
+     * reused, so a PID on the console that names a live target is that target.
+     */
+    static List<Target> TargetsOnConsole(Dictionary<uint, Target> byPid, uint self)
+    {
+        uint[] list = CtrlEvents.ConsoleProcesses();
+        if (list == null) return null;
+        List<Target> found = new List<Target>();
+        foreach (uint pid in list)
+        {
+            if (pid == self) continue;
+            Target target;
+            if (!byPid.TryGetValue(pid, out target) || !IsAlive(target.Handle)) return null;
+            found.Add(target);
+        }
+        return found.Count > 0 ? found : null;
+    }
+
+    /** Waits up to `timeoutMs` until no target (only the signalled ones with `signalledOnly`) is alive. */
+    static void WaitForExit(List<Target> targets, bool signalledOnly, long timeoutMs)
+    {
+        Stopwatch elapsed = Stopwatch.StartNew();
+        while (true)
+        {
+            bool waiting = false;
+            foreach (Target t in targets)
+            {
+                if ((!signalledOnly || t.Signalled) && IsAlive(t.Handle))
+                {
+                    waiting = true;
+                    break;
+                }
+            }
+            long left = timeoutMs - elapsed.ElapsedMilliseconds;
+            if (!waiting || left <= 0) return;
+            Thread.Sleep((int)Math.Min(left, 50));
+        }
+    }
+
+    static bool AnyAlive(List<Target> targets)
+    {
+        foreach (Target t in targets)
+        {
+            if (IsAlive(t.Handle)) return true;
+        }
+        return false;
+    }
+
+    static bool IsAlive(IntPtr process)
+    {
+        return Native.WaitForSingleObject(process, 0) == Native.WaitTimeout;
+    }
+
+    /** Whether `process` is alive and was created at `identity`'s creation time. */
+    static bool Matches(IntPtr process, ProcessRef identity)
+    {
+        if (!IsAlive(process)) return false;
+        long creation, exit, kernel, user;
+        return Native.GetProcessTimes(process, out creation, out exit, out kernel, out user) && creation == identity.Created;
+    }
+
+    /**
+     * The identities on stdin: one line holding a JSON array of `{"pid":P,"created":"C"}`, in
+     * exactly the form protocol.ts encodes, at most MaxIdentities of them. Duplicates count once.
+     * The line is ASCII; anything else, a UTF-8 byte order mark included, is refused.
+     */
+    static List<ProcessRef> ReadIdentities()
+    {
+        Stream stdin = Console.OpenStandardInput();
+        MemoryStream input = new MemoryStream();
+        byte[] buffer = new byte[65536];
+        while (true)
+        {
+            int read = stdin.Read(buffer, 0, buffer.Length);
+            if (read == 0) break;
+            if (input.Length + read > MaxInputBytes) throw new HelperException("the identities on stdin exceed " + MaxInputBytes + " bytes");
+            input.Write(buffer, 0, read);
+        }
+        // Anything outside ASCII becomes '?', which no identity contains.
+        string text = Encoding.ASCII.GetString(input.GetBuffer(), 0, (int)input.Length);
+        if (text.EndsWith("\n", StringComparison.Ordinal)) text = text.Substring(0, text.Length - 1);
+        if (text.EndsWith("\r", StringComparison.Ordinal)) text = text.Substring(0, text.Length - 1);
+        if (text.Length < 2 || text[0] != '[' || text[text.Length - 1] != ']') throw new HelperException("stdin does not hold one line with a list of identities");
+
+        List<ProcessRef> identities = new List<ProcessRef>();
+        Dictionary<string, bool> seen = new Dictionary<string, bool>(StringComparer.Ordinal);
+        int at = 1, end = text.Length - 1;
+        while (at < end)
+        {
+            Match item = ItemPattern.Match(text, at);
+            if (!item.Success || item.Index != at) throw new HelperException("stdin holds a malformed identity at offset " + at);
+            at += item.Length;
+            if (at < end)
+            {
+                if (text[at] != ',' || at + 1 == end) throw new HelperException("stdin holds a malformed identity list at offset " + at);
+                at++;
+            }
+            ulong pid;
+            long created;
+            if (!ulong.TryParse(item.Groups[1].Value, NumberStyles.None, CultureInfo.InvariantCulture, out pid) || pid > uint.MaxValue ||
+                !long.TryParse(item.Groups[2].Value, NumberStyles.None, CultureInfo.InvariantCulture, out created))
+                throw new HelperException("stdin holds an identity out of range: " + RunCommand.Truncate(item.Value, 200));
+            if (seen.ContainsKey(item.Value)) continue;
+            if (identities.Count == MaxIdentities) throw new HelperException("stdin holds more than " + MaxIdentities + " identities");
+            seen.Add(item.Value, true);
+            identities.Add(new ProcessRef((uint)pid, created));
+        }
+        return identities;
+    }
+
+    /** Writes the one output line as ASCII bytes, independent of any console code page. */
+    static void WriteOut(string line)
+    {
+        byte[] bytes = Encoding.ASCII.GetBytes(line + "\n");
+        Stream stdout = Console.OpenStandardOutput();
+        stdout.Write(bytes, 0, bytes.Length);
+        stdout.Flush();
+    }
+
+    static int Fail(Exception error)
+    {
+        string message = error is HelperException ? error.Message : "unexpected failure: " + error.Message;
+        try
+        {
+            byte[] bytes = Encoding.UTF8.GetBytes("veydr-helper: " + RunCommand.Truncate(message, 4000) + "\n");
+            Stream stderr = Console.OpenStandardError();
+            stderr.Write(bytes, 0, bytes.Length);
+            stderr.Flush();
+        }
+        catch (IOException)
+        {
+            // Nobody reads stderr any more; the exit code still reports the failure.
+        }
+        return VeydrHelper.ExitFailure;
     }
 }
 

@@ -154,12 +154,12 @@ On the pull request (alexnakagama/veydr#32, at 2663917), every check passed, `ci
 
 ## 5. Abnormal exit and survivors
 
-- [ ] 5.1 In the helper, terminate the job and exit when the control channel closes before `exited` (design D1). Add the `inspect` and `terminate` subcommands (design D4):
+- [x] 5.1 In the helper, terminate the job and exit when the control channel closes before `exited` (design D1). Add the `inspect` and `terminate` subcommands (design D4):
   - `inspect` reads identities on stdin and reports the live, matching ones with their image names;
   - `terminate` re-verifies each survivor and attaches to its console where it has one. It sends Ctrl+Break only if `GetConsoleProcessList` lists nothing but verified survivors; otherwise it detaches without sending. It then waits, re-verifies, and calls `TerminateProcess`.
 
   Implement `findSurvivors` and `terminateSurvivors` in `process-tree.ts` with them. Verify: unit tests for parsing their output, run through the fake helper.
-- [ ] 5.2 Add integration tests:
+- [x] 5.2 Add integration tests:
   - `[spec:process-supervision/veydr-ends-abnormally-on-windows]`: a Node host process owns a running tree through the Windows process tree, records its ledger entry, and is ended with `taskkill /F`. The test checks that no tree process remains and that `findSurvivors` on the recorded entry returns nothing.
   - `[spec:process-supervision/helper-ends-abnormally-on-windows]`: only the helper of a running command is ended with `taskkill /F`. The test checks that the tree ends and that the `ManagedProcess` reports the stop as unverified.
   - `[spec:process-supervision/reused-pid-on-windows]`: an identity with a live PID but a different creation time is neither reported nor ended.
@@ -167,6 +167,30 @@ On the pull request (alexnakagama/veydr#32, at 2663917), every check passed, `ci
   - a test where a survivor shares its console with a sentinel process that is not a survivor. No Ctrl+Break is sent, the sentinel keeps running, and the survivor is ended by `TerminateProcess`.
 
   Verify: the `windows` job passes on the pull request.
+
+Group 5 outcome (not committed yet): `npm run typecheck`, `npm run lint`, `npm test` (72 files, 1064 tests) and `npm run spec-coverage` (149 scenarios, zero unmapped) pass on Linux; `npm run test:windows` is skipped there with its reason.
+- The control-channel close of 5.1 was already implemented in group 3 (it ends the job and exits 1); it is unchanged, and the two abnormal-exit tests now cover it.
+- `inspect` and `terminate` read one ASCII line on stdin, a JSON array of `{"pid","created"}` in exactly the form `encodeIdentities` writes (at most 65,536, at most 4 MiB, parsed strictly), and print one JSON line (`inspected`, `terminated`). Exit codes are 0, 1 (failure, on stderr) and 2 (usage).
+- Added during implementation, beyond the task text:
+  - `terminate` holds a handle to each verified survivor from the first check to the end, so its PID cannot be reused; Ctrl+Break, `TerminateProcess` and the final check all act on that process. A survivor it may only query is reported, not ended.
+  - It sends no event once `graceMs` has passed, and waits only for the survivors that received one; when none did, it ends them at once.
+  - The console-event code moved from `run` into a shared `CtrlEvents` class, unchanged in behavior (confirmed by reviewer2 against group 4's code).
+  - On the TypeScript side, a helper answer that names a process it was not asked about fails the call; output is capped at 8 MiB, must be valid UTF-8, and each call has a time limit after which the helper is killed. More than 65,536 identities take several calls.
+  - The Veydr-ends-abnormally test runs a bundled host (`test/integration/support/windows-tree-host.ts`) that owns the run through the real process tree and runtime ledger.
+- The reviewer2 pass found no high items, 3 medium, 6 low, and 5 nits. All were addressed and re-reviewed with no further findings:
+  - the `terminate` time limit was capped at 2^31−1 ms, which could kill the helper during a grace period near the maximum; long delays now chain timers;
+  - the Windows tests started one PowerShell per creation time; they now read a tree's identities in one call;
+  - several `terminate` calls each got the full grace period and validated answers against all calls; the grace now counts from the first call, and each answer is checked against its own call;
+  - `forced` was reported when no `TerminateProcess` was called (a survivor the helper may not end); it is now set only when one was, and `graceful` is tracked on its own;
+  - `inspectTimeoutMs` and `stopMarginMs` are now validated;
+  - kept, with reasons accepted: a failed `inspect` or `terminate` only rejects, since the recovery and quit callers already log it, keep the runs, and check again;
+  - comments now record the ASCII-only stdin (a byte order mark is refused) and the time bound of `terminate`; the host test closes its line reader and refuses a missing stdout.
+- Also noted, not changed: processes that survivors start after Veydr's end are not ended by `terminateSurvivors`, since no job of Veydr holds them (design D4 ends only the recorded survivors).
+
+On the pull request (alexnakagama/veydr#33):
+- The first `windows` run (at 753688b) built the helper, so the new C# compiles with `/warnaserror+`. It failed one test: the Veydr-ends-abnormally test compared processes before the fixtures had written their ready files, and counted the host, whose command line carries the scenario marker in its options.
+- Fixed in the test at 19944fe: it now waits for the ready files and for the whole tree in the ledger on disk, and leaves the host out of the comparison. A console host can join the job and count as one of the two descendants the host waits for, so its `ready` alone does not mean both children are recorded. This fix changes only the test and was not re-reviewed by reviewer2.
+- At 19944fe every check passed, `ci-ok` and `windows` included. "Build Windows helper" succeeded, and the `windows` job's vitest summary for `windows-process-tree.test.ts` reads 20 passed and 2 todo, none skipped (read with `gh run view --log`). All seven group 5 tests ran and passed, including the bundled host. The remaining todos belong to group 6.
 
 ## 6. Platform composition and documentation
 

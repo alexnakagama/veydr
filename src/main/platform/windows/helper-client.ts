@@ -64,7 +64,7 @@ export const randomPipePath = (): string => `\\\\.\\pipe\\veydr-${randomBytes(16
 export const imageName = (image: string): string => image.slice(Math.max(image.lastIndexOf('\\'), image.lastIndexOf('/')) + 1)
 
 /** A job member as shown to the user; the image path stands in for the command line (design D4). */
-const procInfo = (m: HelperMember): ProcInfo => ({ pid: m.pid, name: imageName(m.image) || `PID ${m.pid}`, commandLine: m.image })
+export const procInfo = (m: HelperMember): ProcInfo => ({ pid: m.pid, name: imageName(m.image) || `PID ${m.pid}`, commandLine: m.image })
 
 /**
  * Starts `plan` through `veydr-helper.exe run` (design D1, D2) and resolves once the helper reports

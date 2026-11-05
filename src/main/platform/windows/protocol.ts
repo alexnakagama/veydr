@@ -163,6 +163,82 @@ export function encodeControlMessage(message: ControlMessage): string {
   }
 }
 
+/*
+ * Survivor subcommands (design D4). Unlike `run`, these are short-lived and talk over stdio: Veydr
+ * writes one line on stdin, a JSON array of identities exactly as `encodeIdentities` produces it
+ * (ASCII, no byte order mark), and closes stdin; the helper prints one line on stdout and exits
+ * with 0.
+ *
+ * - `veydr-helper.exe inspect` prints `{"type":"inspected","processes":[member...]}`: the live
+ *   processes whose PID and creation time both match a requested identity. Nothing is opened for
+ *   writing.
+ * - `veydr-helper.exe terminate <graceMs>` prints
+ *   `{"type":"terminated","graceful":"yes"|"no","forced":B,"survivors":[member...]}`: it ends the
+ *   requested processes that still match, Ctrl+Break first where a console holds nothing else.
+ *
+ * Every reported process must be one that was requested; anything else is a helper failure.
+ */
+
+/** Most identities in one `inspect` or `terminate` call; the helper refuses more. */
+export const MAX_TOOL_IDENTITIES = 65_536
+
+/** Longest accepted output of `inspect` or `terminate`, in bytes. */
+export const MAX_TOOL_OUTPUT_BYTES = 8 * 1024 * 1024
+
+export interface WindowsProcessRef {
+  readonly pid: number
+  readonly created: string
+}
+
+const toolMessages = {
+  inspected: z.strictObject({ type: z.literal('inspected'), processes: z.array(member) }),
+  terminated: z.strictObject({
+    type: z.literal('terminated'),
+    graceful: z.enum(['yes', 'no']),
+    forced: z.boolean(),
+    survivors: z.array(member),
+  }),
+} as const
+
+export type InspectResult = z.infer<(typeof toolMessages)['inspected']>
+export type TerminateResult = z.infer<(typeof toolMessages)['terminated']>
+
+/** The stdin line of `inspect` and `terminate`, `\n` included. */
+export function encodeIdentities(identities: readonly WindowsProcessRef[]): string {
+  if (identities.length > MAX_TOOL_IDENTITIES) throw new RangeError(`At most ${MAX_TOOL_IDENTITIES} identities per call: ${identities.length}`)
+  for (const identity of identities) {
+    if (!isWindowsPid(identity.pid) || !isFiletime(identity.created)) {
+      throw new RangeError(`Not a Windows process identity: ${JSON.stringify(identity)}`)
+    }
+  }
+  // Key order and spacing are fixed: the helper accepts exactly this form.
+  return `${JSON.stringify(identities.map(({ pid, created }) => ({ pid, created })))}\n`
+}
+
+/** The single output line of a subcommand: exactly one line, ended by `\n` (or `\r\n`). */
+function toolLine(output: string, type: keyof typeof toolMessages): Record<string, unknown> {
+  if (!output.endsWith('\n')) throw new ProtocolError('malformed', `The ${type} output is not one complete line`)
+  const line = output.slice(0, -1)
+  if (line.includes('\n')) throw new ProtocolError('malformed', `The ${type} output has more than one line`)
+  const value = parseObject(line)
+  if (value['type'] !== type) throw new ProtocolError('unknown-message', `Expected ${type}, got ${JSON.stringify(value['type'])}`)
+  return value
+}
+
+/** Parses what `veydr-helper.exe inspect` printed. */
+export function parseInspectOutput(output: string): InspectResult {
+  const result = toolMessages.inspected.safeParse(toolLine(output, 'inspected'))
+  if (!result.success) throw new ProtocolError('malformed', `Malformed inspected output: ${describeIssues(result.error)}`)
+  return result.data
+}
+
+/** Parses what `veydr-helper.exe terminate` printed. */
+export function parseTerminateOutput(output: string): TerminateResult {
+  const result = toolMessages.terminated.safeParse(toolLine(output, 'terminated'))
+  if (!result.success) throw new ProtocolError('malformed', `Malformed terminated output: ${describeIssues(result.error)}`)
+  return result.data
+}
+
 /**
  * Splits a byte stream into lines of at most `maxBytes` bytes, decoded as strict UTF-8 (a character
  * split across chunks is joined first). Throws `ProtocolError` for a longer line or invalid UTF-8;
