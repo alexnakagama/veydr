@@ -145,8 +145,10 @@ Group 4 outcome (not committed yet): `npm run typecheck`, `npm run lint`, `npm t
 - The re-review of the fixes found no further issues.
 - Noted, not changed: `exited` reports `forced: false` when the leader exits during the grace window, even if the forced step then ends the rest; `stopped.forced` carries that (unchanged since group 3).
 - Still open: a child that a tool starts with `windowsHide` has a console of its own and gets only the forced step.
+- The first Windows run (2026-11-05, before commit) failed 7 tests: the helper was ended by its own Ctrl+Break (exit code 0xC000013A), so its job closed. Attaching to a console resets the process's control handling to the default one, and the helper also detached before its own copy of the event arrived; W0's probe did neither. The helper now registers its handler again after every attach and detach, stays attached until it has handled its copy (at most 1 s), and counts that time against `graceMs`. The cooperative test also left a failed stop unhandled while it sampled windows; the stop is now handled from the start.
+- reviewer2 reviewed the fix with no high or medium findings. One low item: re-registering removed the handler before adding it, leaving a moment without one. Its suggested order (add, then remove) would delete the only registration whenever attaching had reset the list, so the helper now only adds. A duplicate is harmless, because the first handler that returns TRUE ends the chain.
 
-Not verified on Linux, and still to be checked on the pull request: that the helper compiles with `/warnaserror+`, that the four new tests run (not skipped) and pass, and the behavior under a Windows Terminal (ConPTY) default console, which the runner does not have.
+Not verified on Linux, and still to be checked by a Windows rerun and on the pull request: that the helper compiles with `/warnaserror+`, that the four new tests run (not skipped) and pass, that a cooperative stop takes well under 1 s (about 1 s every time would mean the helper never receives its own event), and the behavior under a Windows Terminal (ConPTY) default console, which the runner does not have.
 
 ## 5. Abnormal exit and survivors
 

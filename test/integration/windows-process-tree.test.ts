@@ -442,10 +442,14 @@ describe.skipIf(process.platform !== 'win32')('[windows-only: Job Objects]', () 
         // While the helper attaches to the command's hidden console, nothing may become visible.
         // Sampled until the stop settles, at least twice: the event loop runs between samples, so
         // the `stop` line has reached the helper by the second one.
+        // `stopping` is handled from the start, so a failed stop is reported by the `await` below
+        // rather than as an unhandled rejection while the samples are taken.
         let settled = false
-        const stopping = timedStop(run, LONG_GRACE_MS).finally(() => {
+        const stopping = timedStop(run, LONG_GRACE_MS)
+        const markSettled = (): void => {
           settled = true
-        })
+        }
+        stopping.then(markSettled, markSettled)
         const samples: number[][] = []
         while (!settled || samples.length < 2) {
           samples.push(visibleWindowOwners(s.marker))

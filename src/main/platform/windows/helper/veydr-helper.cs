@@ -150,11 +150,22 @@ sealed class RunCommand
     /** Most processes a console may list before it is not trusted to hold only the command's processes. */
     const int MaxConsoleProcesses = 1 << 16;
     /**
+     * How long the helper stays attached after sending Ctrl+Break, waiting for its own copy of the
+     * event: once detached, the default handler would take it and end the helper (W0's probe
+     * likewise stays attached for 1 s).
+     */
+    const int BreakDeliveryMs = 1000;
+    /** Set when IgnoreBreak has handled a Ctrl+Break, which the event sends the helper too. */
+    static readonly ManualResetEvent BreakDelivered = new ManualResetEvent(false);
+    /**
      * Keeps Ctrl+C and Ctrl+Break from ending the helper while it is attached to the command's
      * console (design D3). Held in a field so the delegate outlives the native registration.
+     * Windows calls it on a thread of its own; it must not throw, as a failing handler counts as
+     * not handling the event, and the default handler then ends the process.
      */
     static readonly Native.ConsoleCtrlHandler IgnoreBreak = delegate(uint ctrlType)
     {
+        if (ctrlType == Native.CTRL_BREAK_EVENT) BreakDelivered.Set();
         return ctrlType == Native.CTRL_C_EVENT || ctrlType == Native.CTRL_BREAK_EVENT;
     };
 
@@ -809,7 +820,9 @@ sealed class RunCommand
     {
         string graceful = "yes";
         bool forced = false;
-        if (ActiveProcesses() != 0 && !(SendCtrlBreak() && WaitForEmptyJob(graceMs)))
+        // graceMs counts from the request, so the time spent sending the event is part of it.
+        Stopwatch sinceRequest = Stopwatch.StartNew();
+        if (ActiveProcesses() != 0 && !(SendCtrlBreak() && WaitForEmptyJob((int)Math.Max(0, graceMs - sinceRequest.ElapsedMilliseconds))))
         {
             lock (gate) terminated = true;
             graceful = "no";
@@ -875,11 +888,11 @@ sealed class RunCommand
      */
     bool SendCtrlBreak()
     {
-        // Ctrl+C for good measure; a NULL handler does not cover Ctrl+Break, which IgnoreBreak does.
-        if (!Native.SetConsoleCtrlHandler(null, true) || !Native.SetConsoleCtrlHandler(IgnoreBreak, true)) return false;
+        if (!IgnoreCtrlEvents()) return false;
         // The helper's own console (Veydr's, or a hidden one of its own): AttachConsole refuses a
         // second one. The helper writes nothing to a console, so it never needs it back.
         Native.FreeConsole();
+        IgnoreCtrlEvents();
 
         // At most MaxConsoleAttempts entries, so a list is enough (and needs only mscorlib).
         List<IntPtr> triedConsoles = new List<IntPtr>();
@@ -889,9 +902,16 @@ sealed class RunCommand
             if (attempts++ == MaxConsoleAttempts) break;
             // Fails for a process without a console, such as one that called FreeConsole or a
             // console host, and for one that has exited since it was listed.
-            if (!Native.AttachConsole(member.Pid)) continue;
+            if (!Native.AttachConsole(member.Pid))
+            {
+                IgnoreCtrlEvents();
+                continue;
+            }
             try
             {
+                // Attaching gives the helper the console's default control handling again, which
+                // would end it on the event it is about to send (W0's probe registers again too).
+                if (!IgnoreCtrlEvents()) return false;
                 IntPtr window = Native.GetConsoleWindow();
                 // A console seen before was already found unfit; a console without a window
                 // cannot be told apart from another, so it is always checked.
@@ -901,14 +921,38 @@ sealed class RunCommand
                     triedConsoles.Add(window);
                 }
                 if (!ConsoleHoldsOnlyJobMembers()) continue;
-                if (Native.GenerateConsoleCtrlEvent(Native.CTRL_BREAK_EVENT, 0)) return true;
+                BreakDelivered.Reset();
+                if (Native.GenerateConsoleCtrlEvent(Native.CTRL_BREAK_EVENT, 0))
+                {
+                    // The event reaches every process on the console, the helper included, each on
+                    // a thread of its own; the helper detaches only once it has handled its copy.
+                    BreakDelivered.WaitOne(BreakDeliveryMs);
+                    return true;
+                }
             }
             finally
             {
                 Native.FreeConsole();
+                // Detaching may reset the control handling too, and an event may still be on its way.
+                IgnoreCtrlEvents();
             }
         }
         return false;
+    }
+
+    /**
+     * Registers IgnoreBreak and ignores Ctrl+C (a NULL handler does not cover Ctrl+Break); `false`
+     * if either fails. Attaching to or freeing a console can reset the process's control handling,
+     * so this runs again after each.
+     *
+     * It only ever adds: removing an older registration first would leave a moment without one, and
+     * removing it afterwards would remove the only one whenever the handling had been reset. A
+     * second registration is harmless, since the first handler that returns TRUE ends the chain,
+     * and a stop adds at most a few hundred (MaxConsoleAttempts).
+     */
+    static bool IgnoreCtrlEvents()
+    {
+        return Native.SetConsoleCtrlHandler(null, true) && Native.SetConsoleCtrlHandler(IgnoreBreak, true);
     }
 
     /**
