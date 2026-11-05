@@ -187,7 +187,10 @@ Group 5 outcome (not committed yet): `npm run typecheck`, `npm run lint`, `npm t
   - comments now record the ASCII-only stdin (a byte order mark is refused) and the time bound of `terminate`; the host test closes its line reader and refuses a missing stdout.
 - Also noted, not changed: processes that survivors start after Veydr's end are not ended by `terminateSurvivors`, since no job of Veydr holds them (design D4 ends only the recorded survivors).
 
-Not verified on Linux, and still to be checked on the pull request: that the helper compiles with `/warnaserror+` (no `csc.exe` here), and that the new Windows integration tests run and pass in the `windows` job, including the vite bundle of the host.
+On the pull request (alexnakagama/veydr#33):
+- The first `windows` run (at 753688b) built the helper, so the new C# compiles with `/warnaserror+`. It failed one test: the Veydr-ends-abnormally test compared processes before the fixtures had written their ready files, and counted the host, whose command line carries the scenario marker in its options.
+- Fixed in the test at 19944fe: it now waits for the ready files and for the whole tree in the ledger on disk, and leaves the host out of the comparison. A console host can join the job and count as one of the two descendants the host waits for, so its `ready` alone does not mean both children are recorded. This fix changes only the test and was not re-reviewed by reviewer2.
+- At 19944fe every check passed, `ci-ok` and `windows` included. "Build Windows helper" succeeded, and the `windows` job's vitest summary for `windows-process-tree.test.ts` reads 20 passed and 2 todo, none skipped (read with `gh run view --log`). All seven group 5 tests ran and passed, including the bundled host. The remaining todos belong to group 6.
 
 ## 6. Platform composition and documentation
 
