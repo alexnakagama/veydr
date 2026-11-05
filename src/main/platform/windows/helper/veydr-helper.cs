@@ -14,11 +14,13 @@
 //
 // Exit codes: 0 the command ran and its job is empty; 1 a failure, reported as an `error` line (or on
 // stderr before the pipe is connected), after which nothing of the command is left running; 2 a
-// usage error, described on stderr. Later groups add the graceful stop, `inspect` and `terminate`;
+// usage error, described on stderr. A `stop` first sends Ctrl+Break to the command's hidden console,
+// then ends the job if it has not emptied (design D3). Later groups add `inspect` and `terminate`;
 // W3 adds `ports`.
 using System;
 using System.Collections.Generic;
 using System.ComponentModel;
+using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.IO.Pipes;
@@ -140,6 +142,21 @@ sealed class RunCommand
 
     /** How long an abort waits for its `error` line to be written. */
     const int AbortReportMs = 1000;
+    /**
+     * Most consoles a graceful stop tries to attach to (design D3), so that a job of many processes
+     * without a reachable console cannot delay the forced step noticeably.
+     */
+    const int MaxConsoleAttempts = 64;
+    /** Most processes a console may list before it is not trusted to hold only the command's processes. */
+    const int MaxConsoleProcesses = 1 << 16;
+    /**
+     * Keeps Ctrl+C and Ctrl+Break from ending the helper while it is attached to the command's
+     * console (design D3). Held in a field so the delegate outlives the native registration.
+     */
+    static readonly Native.ConsoleCtrlHandler IgnoreBreak = delegate(uint ctrlType)
+    {
+        return ctrlType == Native.CTRL_C_EVENT || ctrlType == Native.CTRL_BREAK_EVENT;
+    };
 
     readonly string pipePath, file;
     readonly string[] commandArgs;
@@ -782,15 +799,17 @@ sealed class RunCommand
     }
 
     /**
-     * The stop (design D3): `TerminateJobObject`, then up to 1 s for the job to empty, then a
-     * `stopped` report naming the members still alive. A job that is already empty needed no stop.
-     * The graceful attempt before the forced step comes with task 4.1, which uses `graceMs`.
+     * The stop (design D3): Ctrl+Break to the command's console, then up to `graceMs` for the job to
+     * empty; if it has not, `TerminateJobObject` and up to 1 s more. When no event could be sent, the
+     * forced step follows at once, without waiting `graceMs`. A `stopped` report then names the
+     * members still alive; `graceful` is "yes" only when the job emptied before any forced step. A
+     * job that is already empty needed no stop.
      */
     void Stop(int graceMs)
     {
         string graceful = "yes";
         bool forced = false;
-        if (ActiveProcesses() != 0)
+        if (ActiveProcesses() != 0 && !(SendCtrlBreak() && WaitForEmptyJob(graceMs)))
         {
             lock (gate) terminated = true;
             graceful = "no";
@@ -798,7 +817,7 @@ sealed class RunCommand
             // Should this fail, what is left is reported as surviving, and the job still ends it
             // once the helper exits (KILL_ON_JOB_CLOSE).
             Native.TerminateJobObject(job, KilledExitCode);
-            for (int waited = 0; waited < KillWaitMs && ActiveProcesses() != 0; waited += 10) Thread.Sleep(10);
+            WaitForEmptyJob(KillWaitMs);
         }
         // Once the job is empty the leader has ended, but its handle may be signalled a moment later.
         if (ActiveProcesses() == 0) Native.WaitForSingleObject(leader, KillWaitMs);
@@ -825,6 +844,114 @@ sealed class RunCommand
                 ReportExited();
             }
             Send("{\"type\":\"stopped\",\"graceful\":\"" + graceful + "\",\"forced\":" + (forced ? "true" : "false") + ",\"survivors\":" + MembersJson(survivors) + "}");
+        }
+    }
+
+    /** Waits up to `timeoutMs` for the job to empty; `true` if it did. */
+    bool WaitForEmptyJob(int timeoutMs)
+    {
+        Stopwatch elapsed = Stopwatch.StartNew();
+        while (ActiveProcesses() != 0)
+        {
+            long left = timeoutMs - elapsed.ElapsedMilliseconds;
+            if (left <= 0) return false;
+            // ACTIVE_PROCESS_ZERO wakes the wait early; the count is read again either way, since
+            // completion-port notifications are not guaranteed. jobEmpty is never reset: should it
+            // be set while the job is not empty, the short sleep keeps this from spinning.
+            if (jobEmpty.WaitOne((int)Math.Min(left, 50))) Thread.Sleep((int)Math.Min(left, 10));
+        }
+        return true;
+    }
+
+    /**
+     * Sends Ctrl+Break to the command's hidden console (design D3): the console of the leader, or,
+     * once the leader has ended, of the oldest live member that has one. The event reaches every
+     * process on that console, so it is sent only to a console that holds nothing but this job's
+     * processes; Veydr and other commands have consoles of their own and are never reached. `false`
+     * when no such console could be attached to, or the event could not be sent: then no process
+     * of the command can receive it, and waiting `graceMs` would gain nothing.
+     *
+     * Only the stop thread changes the helper's console, and a run has at most one stop.
+     */
+    bool SendCtrlBreak()
+    {
+        // Ctrl+C for good measure; a NULL handler does not cover Ctrl+Break, which IgnoreBreak does.
+        if (!Native.SetConsoleCtrlHandler(null, true) || !Native.SetConsoleCtrlHandler(IgnoreBreak, true)) return false;
+        // The helper's own console (Veydr's, or a hidden one of its own): AttachConsole refuses a
+        // second one. The helper writes nothing to a console, so it never needs it back.
+        Native.FreeConsole();
+
+        // At most MaxConsoleAttempts entries, so a list is enough (and needs only mscorlib).
+        List<IntPtr> triedConsoles = new List<IntPtr>();
+        int attempts = 0;
+        foreach (Member member in Members())
+        {
+            if (attempts++ == MaxConsoleAttempts) break;
+            // Fails for a process without a console, such as one that called FreeConsole or a
+            // console host, and for one that has exited since it was listed.
+            if (!Native.AttachConsole(member.Pid)) continue;
+            try
+            {
+                IntPtr window = Native.GetConsoleWindow();
+                // A console seen before was already found unfit; a console without a window
+                // cannot be told apart from another, so it is always checked.
+                if (window != IntPtr.Zero)
+                {
+                    if (triedConsoles.Contains(window)) continue;
+                    triedConsoles.Add(window);
+                }
+                if (!ConsoleHoldsOnlyJobMembers()) continue;
+                if (Native.GenerateConsoleCtrlEvent(Native.CTRL_BREAK_EVENT, 0)) return true;
+            }
+            finally
+            {
+                Native.FreeConsole();
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Whether every process on the console the helper is attached to, apart from the helper, is in
+     * this job, and there is at least one. A process that cannot be opened counts as foreign.
+     */
+    bool ConsoleHoldsOnlyJobMembers()
+    {
+        uint self = Native.GetCurrentProcessId();
+        uint[] list = new uint[64];
+        while (true)
+        {
+            uint count = Native.GetConsoleProcessList(list, (uint)list.Length);
+            if (count == 0 || count > MaxConsoleProcesses) return false;
+            if (count > list.Length)
+            {
+                // More processes than room; ask again with enough, as the list may still grow.
+                list = new uint[count + 16];
+                continue;
+            }
+            bool anyMember = false;
+            for (int i = 0; i < count; i++)
+            {
+                if (list[i] == self) continue;
+                if (!IsJobMember(list[i])) return false;
+                anyMember = true;
+            }
+            return anyMember;
+        }
+    }
+
+    bool IsJobMember(uint pid)
+    {
+        IntPtr process = Native.OpenProcess(Native.PROCESS_QUERY_LIMITED_INFORMATION, false, pid);
+        if (process == IntPtr.Zero) return false;
+        try
+        {
+            bool inJob;
+            return Native.IsProcessInJob(process, job, out inJob) && inJob;
+        }
+        finally
+        {
+            Native.CloseHandle(process);
         }
     }
 }
@@ -875,6 +1002,10 @@ static class Native
     public const uint JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x2000;
     public const uint JOB_OBJECT_MSG_ACTIVE_PROCESS_ZERO = 4, JOB_OBJECT_MSG_NEW_PROCESS = 6;
     public const uint JOB_OBJECT_MSG_EXIT_PROCESS = 7, JOB_OBJECT_MSG_ABNORMAL_EXIT_PROCESS = 8;
+    public const uint CTRL_C_EVENT = 0, CTRL_BREAK_EVENT = 1;
+
+    /** A console control handler: `true` if it handled `ctrlType`. */
+    public delegate bool ConsoleCtrlHandler(uint ctrlType);
 
     // Interop structures: their fields are written by Windows, not by this code.
 #pragma warning disable 0649, 0169
@@ -1008,6 +1139,13 @@ static class Native
     public static extern bool QueryFullProcessImageName(IntPtr process, uint flags, StringBuilder name, ref int size);
     [DllImport("kernel32.dll", SetLastError = true)] public static extern uint WaitForSingleObject(IntPtr handle, uint milliseconds);
     [DllImport("kernel32.dll", SetLastError = true)] public static extern bool CloseHandle(IntPtr handle);
+
+    [DllImport("kernel32.dll", SetLastError = true)] public static extern bool FreeConsole();
+    [DllImport("kernel32.dll", SetLastError = true)] public static extern bool AttachConsole(uint processId);
+    [DllImport("kernel32.dll")] public static extern IntPtr GetConsoleWindow();
+    [DllImport("kernel32.dll", SetLastError = true)] public static extern bool SetConsoleCtrlHandler(ConsoleCtrlHandler handler, bool add);
+    [DllImport("kernel32.dll", SetLastError = true)] public static extern bool GenerateConsoleCtrlEvent(uint ctrlEvent, uint processGroupId);
+    [DllImport("kernel32.dll", SetLastError = true)] public static extern uint GetConsoleProcessList([Out] uint[] processList, uint processCount);
 
     /** A Win32 error as "<system message> (error <code>)". */
     public static string Describe(int code)

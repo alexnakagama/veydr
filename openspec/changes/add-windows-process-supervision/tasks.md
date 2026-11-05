@@ -114,7 +114,7 @@ On the pull request (alexnakagama/veydr#30, merged), every check passed, `ci-ok`
 
 ## 4. Graceful stop
 
-- [ ] 4.1 Implement the graceful part of `stop` in the helper (design D3). It:
+- [x] 4.1 Implement the graceful part of `stop` in the helper (design D3). It:
   - attaches to the console of the leader, or of the oldest live member;
   - ignores the event in itself, sends `CTRL_BREAK_EVENT` to group 0, and detaches;
   - waits `graceMs`, then falls back to the forced stop of 3.2;
@@ -122,13 +122,31 @@ On the pull request (alexnakagama/veydr#30, merged), every check passed, `ci-ok`
   - when `AttachConsole` fails, or no live member shares the command's console, goes straight to the forced stop without waiting `graceMs`, and reports `graceful: 'no'`.
 
   Verify: the helper builds in the `windows` job.
-- [ ] 4.2 Add integration tests:
+- [x] 4.2 Add integration tests:
   - `[spec:process-supervision/cooperative-process-on-windows]`: a Node tree that exits on `SIGBREAK` stops gracefully, and no window appears;
   - `[spec:process-supervision/batch-file-command-stopped-gracefully]`: a `.cmd` file that starts Node stops gracefully, without waiting on the batch prompt;
   - a test that Veydr's own test process and a second running command receive no event;
   - a test that a tree whose processes have all called `FreeConsole` is stopped forced, with `graceful: 'no'`, well before `graceMs` has passed.
 
   Verify: the `windows` job passes on the pull request.
+
+Group 4 outcome (not committed yet): `npm run typecheck`, `npm run lint`, `npm test` (72 files) and `npm run spec-coverage` (149 scenarios, zero unmapped) pass on Linux; `npm run test:windows` is skipped there with its reason.
+- Added during implementation, beyond the task text:
+  - Ctrl+Break is sent only to a console whose processes, apart from the helper, are all members of the job, and at least one is; a process that cannot be opened counts as foreign. This keeps Veydr, other commands, and any process that attached itself to the command's console from receiving the event.
+  - The candidates are the live members oldest first (the leader while it lives), skipping a member that has no console or whose console is unfit, with consoles told apart by their window. One event is sent, to the first fit console. At most 64 members are tried, and failed attaches count too: a job with more than 64 members without a console listed before the one with it is stopped forced only, which is safe.
+  - `SetConsoleCtrlHandler(NULL, TRUE)` covers only Ctrl+C, so the helper also registers a handler that swallows Ctrl+C and Ctrl+Break, for its whole life. It frees its own console first and never takes it back.
+  - The FreeConsole test uses a PowerShell fixture (`test/fixtures/windows/free-console.ps1`), since Node cannot call `FreeConsole`.
+- The reviewer2 pass found no high or medium items and 4 low ones, all addressed:
+  - the "no window during the stop" check ran before the helper had the `stop`; it now samples until the stop settles, at least twice;
+  - the `SIGBREAK` listener is meaningful only on a main thread; the test now asserts that it runs on one;
+  - the batch test depends on cmd.exe's prompt reading end-of-file; a comment says to check that first if it fails on CI;
+  - the 64-attempt limit counting failed attaches is recorded above.
+  - Also, as suggested, `WaitForEmptyJob` sleeps briefly if `jobEmpty` is set while the job is not empty, so it cannot spin.
+- The re-review of the fixes found no further issues.
+- Noted, not changed: `exited` reports `forced: false` when the leader exits during the grace window, even if the forced step then ends the rest; `stopped.forced` carries that (unchanged since group 3).
+- Still open: a child that a tool starts with `windowsHide` has a console of its own and gets only the forced step.
+
+Not verified on Linux, and still to be checked on the pull request: that the helper compiles with `/warnaserror+`, that the four new tests run (not skipped) and pass, and the behavior under a Windows Terminal (ConPTY) default console, which the runner does not have.
 
 ## 5. Abnormal exit and survivors
 
