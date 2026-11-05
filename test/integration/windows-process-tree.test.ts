@@ -12,7 +12,7 @@ import { HELPER_PATH } from '../../scripts/build-windows-helper.mjs'
 import type { ExitInfo, LedgerEntry, ManagedProcess, ProcessIdentity, SpawnPlan, StopResult, Survivor } from '../../src/main/platform/types'
 import { windowsIdentity } from '../../src/main/platform/windows/identity'
 import { createWindowsProcessTree } from '../../src/main/platform/windows/process-tree'
-import { createRunLedger } from '../../src/main/supervisor/ledger'
+import { createRunLedger, ledgerPath } from '../../src/main/supervisor/ledger'
 import { REPETITIONS, sleep } from '../support/proc'
 import { quietLog } from '../unit/support/config'
 import type { WindowsHostOptions } from './support/windows-tree-host'
@@ -220,6 +220,17 @@ const ledgerEntry = (leader: ProcessIdentity, descendants: readonly ProcessIdent
   sessionId: null,
   descendants,
 })
+
+/** PIDs of the leaders and descendants in the runtime ledger on disk under `configDir`; none while it is unwritten. */
+function recordedPids(configDir: string): number[] {
+  let ledger: { entries?: LedgerEntry[] }
+  try {
+    ledger = JSON.parse(readFileSync(ledgerPath(configDir), 'utf8')) as { entries?: LedgerEntry[] }
+  } catch {
+    return []
+  }
+  return (ledger.entries ?? []).flatMap((entry) => [entry.leader.pid, ...entry.descendants.map((d) => d.pid)])
+}
 
 /** Ends `pid` as `taskkill /F` does (TerminateProcess), with no chance to clean up. */
 function forceKill(pid: number): void {
@@ -678,8 +689,17 @@ describe.skipIf(process.platform !== 'win32')('[windows-only: Job Objects]', () 
           } finally {
             output.close()
           }
-          const pids = ['root', 'root.0', 'root.1'].map((role) => s.ready()[role] as number)
-          expect(sorted(marked(s.marker).map((p) => p.pid))).toEqual(sorted(pids))
+          // The host reports `ready` once its job has members, which may be before the fixtures have
+          // written their ready files, or before both children are in the ledger on disk.
+          const roles = ['root', 'root.0', 'root.1']
+          await waitUntil(() => roles.every((role) => s.ready()[role] !== undefined), `processes ${roles.join(', ')}`)
+          const pids = roles.map((role) => s.ready()[role] as number)
+          await waitUntil(() => {
+            const recorded = recordedPids(configDir)
+            return pids.every((pid) => recorded.includes(pid))
+          }, 'the whole tree to be in the ledger on disk')
+          // The host's own command line carries the marker in its options; it is not part of the tree.
+          expect(sorted(marked(s.marker).filter((p) => p.pid !== host.pid).map((p) => p.pid))).toEqual(sorted(pids))
 
           const exited = once(host, 'exit')
           forceKill(host.pid as number)
