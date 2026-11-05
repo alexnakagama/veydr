@@ -2,10 +2,11 @@ import { execFileSync, spawn, spawnSync, type ChildProcess } from 'node:child_pr
 import { randomUUID } from 'node:crypto'
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join, resolve } from 'node:path'
+import { basename, join, resolve } from 'node:path'
+import { isMainThread } from 'node:worker_threads'
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
 import { HELPER_PATH } from '../../scripts/build-windows-helper.mjs'
-import type { ExitInfo, ManagedProcess, SpawnPlan } from '../../src/main/platform/types'
+import type { ExitInfo, ManagedProcess, SpawnPlan, StopResult } from '../../src/main/platform/types'
 import { createWindowsProcessTree } from '../../src/main/platform/windows/process-tree'
 import { REPETITIONS, sleep } from '../support/proc'
 
@@ -22,6 +23,12 @@ const PROTOCOL_VERSION = '1'
 
 const TREE = resolve(__dirname, '../fixtures/windows/tree.mjs')
 const OUTPUT = resolve(__dirname, '../fixtures/windows/output.mjs')
+const FREE_CONSOLE = resolve(__dirname, '../fixtures/windows/free-console.ps1')
+const POWERSHELL = join(process.env['SystemRoot'] ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
+
+/** A `graceMs` far longer than any graceful stop takes, and the bound such a stop must stay under. */
+const LONG_GRACE_MS = 30_000
+const WELL_BEFORE_GRACE_MS = 10_000
 
 const runHelper = (...args: string[]) => spawnSync(HELPER_PATH, args, { encoding: 'utf8', windowsHide: true, timeout: 30_000 })
 
@@ -227,7 +234,7 @@ async function startSentinel(): Promise<Sentinel> {
   )
   return {
     alive: () => child.exitCode === null && child.signalCode === null,
-    events: () => (existsSync(eventsFile) ? readFileSync(eventsFile, 'utf8').split('\n').filter((line) => line !== '') : []),
+    events: () => eventsIn(eventsFile),
     stop() {
       child.kill()
       own.cleanup()
@@ -236,6 +243,16 @@ async function startSentinel(): Promise<Sentinel> {
 }
 
 const exitOf = (run: ManagedProcess): Promise<ExitInfo> => new Promise((done) => run.onExit(done))
+
+/** Stops `run` and measures how long the stop took. */
+async function timedStop(run: ManagedProcess, graceMs: number): Promise<{ result: StopResult; elapsedMs: number }> {
+  const started = performance.now()
+  const result = await run.stop({ graceMs })
+  return { result, elapsedMs: performance.now() - started }
+}
+
+/** The console events a fixture started with `--sentinel <file>` has received. */
+const eventsIn = (file: string): string[] => (existsSync(file) ? readFileSync(file, 'utf8').split('\n').filter((line) => line !== '') : [])
 
 const timeout = (perRepetitionMs: number): number => 30_000 + REPETITIONS * perRepetitionMs
 
@@ -413,10 +430,136 @@ describe.skipIf(process.platform !== 'win32')('[windows-only: Job Objects]', () 
     timeout(15_000),
   )
 
+  it(
+    '[spec:process-supervision/cooperative-process-on-windows] stops a tree that exits on Ctrl+Break gracefully, showing no window',
+    async () => {
+      await repeat(async (s) => {
+        // Node's default for Ctrl+Break (SIGBREAK) is to exit.
+        const { run } = await startTree(s, ['--depth', '1', '--fanout', '2'], ['root', 'root.0', 'root.1'])
+        const exit = exitOf(run)
+        expect(visibleWindowOwners(s.marker), 'processes showing a window before the stop').toEqual([])
+
+        // While the helper attaches to the command's hidden console, nothing may become visible.
+        // Sampled until the stop settles, at least twice: the event loop runs between samples, so
+        // the `stop` line has reached the helper by the second one.
+        // `stopping` is handled from the start, so a failed stop is reported by the `await` below
+        // rather than as an unhandled rejection while the samples are taken.
+        let settled = false
+        const stopping = timedStop(run, LONG_GRACE_MS)
+        const markSettled = (): void => {
+          settled = true
+        }
+        stopping.then(markSettled, markSettled)
+        const samples: number[][] = []
+        while (!settled || samples.length < 2) {
+          samples.push(visibleWindowOwners(s.marker))
+          await sleep(50)
+        }
+        expect(samples.flat(), 'processes showing a window during the stop').toEqual([])
+        const { result, elapsedMs } = await stopping
+        expect(result).toEqual({ graceful: 'yes', forced: false, survivors: [] })
+        expect(elapsedMs).toBeLessThan(WELL_BEFORE_GRACE_MS)
+        expect(await exit).toMatchObject({ forced: false, signal: null })
+      })
+    },
+    timeout(20_000),
+  )
+
+  it(
+    '[spec:process-supervision/batch-file-command-stopped-gracefully] stops a batch-file command without the Terminate batch job prompt',
+    async () => {
+      await repeat(async (s) => {
+        // The marker in the batch file's name puts cmd.exe among the processes checked for leaks.
+        const batch = join(s.dir, `run-${s.marker}.cmd`)
+        writeFileSync(batch, `@"${process.execPath}" "${TREE}" %*\r\n`)
+        const plan = s.plan(TREE, ['--depth', '1', '--fanout', '1'])
+        const run = await tree.spawn({ ...plan, file: batch, args: plan.args.slice(1) })
+        await waitUntil(() => ['root', 'root.0'].every((role) => s.ready()[role] !== undefined), 'processes root, root.0')
+        const node = basename(process.execPath).toLowerCase()
+        expect(marked(s.marker).map((p) => p.name.toLowerCase()).sort()).toEqual(['cmd.exe', node, node].sort())
+
+        // A batch prompt left waiting would hold the job until graceMs, and the stop would be forced.
+        // cmd.exe handles Ctrl+Break like Ctrl+C: it ends the batch file once node exits, and the
+        // "Terminate batch job (Y/N)?" prompt reads end-of-file from the NUL stdin (W0
+        // pt-ctrl-break-attach-npm). Should this fail on CI, check that prompt first.
+        const { result, elapsedMs } = await timedStop(run, LONG_GRACE_MS)
+        expect(result).toEqual({ graceful: 'yes', forced: false, survivors: [] })
+        expect(elapsedMs).toBeLessThan(WELL_BEFORE_GRACE_MS)
+      })
+    },
+    timeout(20_000),
+  )
+
+  it(
+    'sends Ctrl+Break to neither the test process nor a second running command',
+    async () => {
+      // Signals reach `process.on` only on a process's main thread; vitest's default `forks` pool runs
+      // this file there. Under a worker-threads pool the listener below would see nothing, so that
+      // is refused rather than passed vacuously. (The sentinel covers other processes on the
+      // runner's console either way; this test adds the test process and a second command.)
+      expect(isMainThread, 'the test runs on a main thread, where SIGBREAK is delivered').toBe(true)
+      const received: string[] = []
+      const onBreak = (): void => {
+        received.push('SIGBREAK')
+      }
+      // A Ctrl+Break would otherwise end the test process, which shares the runner's console.
+      process.on('SIGBREAK', onBreak)
+      try {
+        await repeat(async (s) => {
+          const other = scenario()
+          scenarios.push(other)
+          const otherEvents = join(other.dir, 'events.txt')
+          const second = await tree.spawn(other.plan(TREE, ['--sentinel', otherEvents]))
+          await waitUntil(() => other.ready()['root'] !== undefined, 'the second command')
+          const secondPid = other.ready()['root'] as number
+
+          const { run } = await startTree(s, ['--depth', '1', '--fanout', '1'], ['root', 'root.0'])
+          expect((await run.stop({ graceMs: LONG_GRACE_MS })).graceful).toBe('yes')
+          // Time for a stray event to arrive and be recorded.
+          await sleep(500)
+          expect(received, 'console events received by the test process').toEqual([])
+          expect(eventsIn(otherEvents), 'console events received by the second command').toEqual([])
+          expect(marked(other.marker).map((p) => p.pid)).toEqual([secondPid])
+
+          // The second command records Ctrl+Break and ignores it: its own stop reaches it, which
+          // shows the check above could have seen an event, and is then forced.
+          expect(await second.stop({ graceMs: 1_000 })).toEqual({ graceful: 'no', forced: true, survivors: [] })
+          expect(eventsIn(otherEvents)).toContain('SIGBREAK')
+          expect(marked(other.marker)).toEqual([])
+        })
+      } finally {
+        process.off('SIGBREAK', onBreak)
+      }
+    },
+    timeout(20_000),
+  )
+
+  it(
+    'stops a tree that has left its console at once, forced, without waiting graceMs',
+    async () => {
+      await repeat(async (s) => {
+        const plan = s.plan(TREE, [])
+        const run = await tree.spawn({
+          ...plan,
+          file: POWERSHELL,
+          args: ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', FREE_CONSOLE, '-Marker', s.marker, '-Dir', s.dir, '-Children', '1'],
+        })
+        const exit = exitOf(run)
+        await waitUntil(() => ['root', 'root.0'].every((role) => s.ready()[role] !== undefined), 'processes root, root.0 to leave their console', 60_000)
+        const pids = [s.ready()['root'] as number, s.ready()['root.0'] as number]
+        expect(sorted(marked(s.marker).map((p) => p.pid))).toEqual(sorted(pids))
+
+        const { result, elapsedMs } = await timedStop(run, LONG_GRACE_MS)
+        expect(result).toEqual({ graceful: 'no', forced: true, survivors: [] })
+        expect(elapsedMs).toBeLessThan(WELL_BEFORE_GRACE_MS)
+        expect(await exit).toMatchObject({ forced: true })
+      })
+    },
+    timeout(30_000),
+  )
+
   // The scenarios below are implemented by the group that owns them (tasks.md); the tags keep
   // `npm run spec-coverage` at zero unmapped scenarios in the meantime.
-  it.todo('[spec:process-supervision/cooperative-process-on-windows] stops a tree that exits on Ctrl+Break gracefully (group 4)')
-  it.todo('[spec:process-supervision/batch-file-command-stopped-gracefully] stops a batch-file command without the Terminate batch job prompt (group 4)')
   it.todo('[spec:process-supervision/veydr-ends-abnormally-on-windows] leaves no tree process when Veydr is killed (group 5)')
   it.todo('[spec:process-supervision/helper-ends-abnormally-on-windows] ends the tree when the helper is killed (group 5)')
   it.todo('[spec:process-supervision/reused-pid-on-windows] neither reports nor ends a process with a reused PID (group 5)')
