@@ -1,14 +1,21 @@
 import { execFileSync, spawn, spawnSync, type ChildProcess } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
+import { once } from 'node:events'
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, join, resolve } from 'node:path'
+import { createInterface } from 'node:readline'
 import { isMainThread } from 'node:worker_threads'
+import { build } from 'vite'
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
 import { HELPER_PATH } from '../../scripts/build-windows-helper.mjs'
-import type { ExitInfo, ManagedProcess, SpawnPlan, StopResult } from '../../src/main/platform/types'
+import type { ExitInfo, LedgerEntry, ManagedProcess, ProcessIdentity, SpawnPlan, StopResult, Survivor } from '../../src/main/platform/types'
+import { windowsIdentity } from '../../src/main/platform/windows/identity'
 import { createWindowsProcessTree } from '../../src/main/platform/windows/process-tree'
+import { createRunLedger } from '../../src/main/supervisor/ledger'
 import { REPETITIONS, sleep } from '../support/proc'
+import { quietLog } from '../unit/support/config'
+import type { WindowsHostOptions } from './support/windows-tree-host'
 
 // The Windows process tree against real Windows processes (add-windows-process-supervision design D7).
 // It needs Job Objects and the helper built by `node scripts/build-windows-helper.mjs`, which the
@@ -166,6 +173,59 @@ ConvertTo-Json -Compress -InputObject @([VeydrConsole]::Processes() | ForEach-Ob
 
 const sorted = (pids: readonly number[]): number[] => [...pids].sort((a, b) => a - b)
 
+/**
+ * Creation times (decimal FILETIME) of the live processes among `pids`, read with GetProcessTimes
+ * from PowerShell, independently of the helper. A PID that cannot be read is left out.
+ */
+function creationTimes(pids: readonly number[]): Map<number, string> {
+  const list = pids.map((pid) => String(Math.trunc(pid))).join(',')
+  const output = powershell(
+    `Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class VeydrTimes {
+  [DllImport("kernel32.dll", SetLastError = true)] static extern IntPtr OpenProcess(uint access, bool inherit, uint pid);
+  [DllImport("kernel32.dll", SetLastError = true)] static extern bool GetProcessTimes(IntPtr process, out long creation, out long exit, out long kernel, out long user);
+  [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr handle);
+  public static string Created(uint pid) {
+    IntPtr process = OpenProcess(0x1000, false, pid);
+    if (process == IntPtr.Zero) return "";
+    try {
+      long creation, exit, kernel, user;
+      return GetProcessTimes(process, out creation, out exit, out kernel, out user) ? creation.ToString(System.Globalization.CultureInfo.InvariantCulture) : "";
+    } finally { CloseHandle(process); }
+  }
+}
+'@
+ConvertTo-Json -Compress -InputObject @(@(${list}) | ForEach-Object { [pscustomobject]@{ pid = [int]$_; created = [VeydrTimes]::Created([uint32]$_) } } | Where-Object { $_.created -ne '' })`,
+  )
+  return new Map((parseArray(output) as { pid: number; created: string }[]).map((p) => [p.pid, p.created]))
+}
+
+/** The identities of the live processes `pids`, in order, read in one go independently of the helper. */
+function identitiesOf(pids: readonly number[]): ProcessIdentity[] {
+  const times = creationTimes(pids)
+  return pids.map((pid) => {
+    const created = times.get(pid)
+    if (created === undefined) throw new Error(`process ${pid} is not running`)
+    return windowsIdentity(pid, created)
+  })
+}
+
+/** A ledger entry for `leader` and `descendants`, as the supervisor records one. */
+const ledgerEntry = (leader: ProcessIdentity, descendants: readonly ProcessIdentity[] = []): LedgerEntry => ({
+  commandId: 'recorded-command',
+  runId: `recorded-run-${randomUUID()}`,
+  leader,
+  sessionId: null,
+  descendants,
+})
+
+/** Ends `pid` as `taskkill /F` does (TerminateProcess), with no chance to clean up. */
+function forceKill(pid: number): void {
+  execFileSync('taskkill.exe', ['/F', '/PID', String(Math.trunc(pid))], { windowsHide: true, stdio: 'ignore', timeout: 30_000 })
+}
+
 async function waitUntil(condition: () => boolean, what: string, timeoutMs = 20_000): Promise<void> {
   const deadline = Date.now() + timeoutMs
   while (!condition()) {
@@ -209,6 +269,7 @@ function scenario(): Scenario {
 }
 
 interface Sentinel {
+  readonly pid: number
   alive(): boolean
   /** Console events the sentinel received. */
   events(): string[]
@@ -233,6 +294,7 @@ async function startSentinel(): Promise<Sentinel> {
     expect.arrayContaining([process.pid, own.ready()['sentinel'] as number]),
   )
   return {
+    pid: own.ready()['sentinel'] as number,
     alive: () => child.exitCode === null && child.signalCode === null,
     events: () => eventsIn(eventsFile),
     stop() {
@@ -558,11 +620,213 @@ describe.skipIf(process.platform !== 'win32')('[windows-only: Job Objects]', () 
     timeout(30_000),
   )
 
-  // The scenarios below are implemented by the group that owns them (tasks.md); the tags keep
-  // `npm run spec-coverage` at zero unmapped scenarios in the meantime.
-  it.todo('[spec:process-supervision/veydr-ends-abnormally-on-windows] leaves no tree process when Veydr is killed (group 5)')
-  it.todo('[spec:process-supervision/helper-ends-abnormally-on-windows] ends the tree when the helper is killed (group 5)')
-  it.todo('[spec:process-supervision/reused-pid-on-windows] neither reports nor ends a process with a reused PID (group 5)')
+  describe('abnormal exit and survivors', () => {
+    let bundleDir: string
+    let hostScript: string
+    const hosts: ChildProcess[] = []
+    const direct: ChildProcess[] = []
+
+    beforeAll(async () => {
+      // The host imports the TypeScript sources; bundle it into one CommonJS file Node can run.
+      bundleDir = mkdtempSync(join(tmpdir(), 'veydr-win-host-'))
+      await build({
+        configFile: false,
+        logLevel: 'silent',
+        ssr: { noExternal: true },
+        build: {
+          ssr: join(__dirname, 'support/windows-tree-host.ts'),
+          outDir: bundleDir,
+          emptyOutDir: true,
+          minify: false,
+          rolldownOptions: { output: { format: 'cjs', entryFileNames: 'host.cjs' } },
+        },
+      })
+      hostScript = join(bundleDir, 'host.cjs')
+    }, 60_000)
+    afterAll(() => {
+      rmSync(bundleDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
+    })
+    afterEach(() => {
+      for (const child of [...hosts.splice(0), ...direct.splice(0)]) child.kill()
+    })
+
+    /**
+     * Starts a fixture tree directly from the test, outside any job of Veydr, as processes that
+     * outlived Veydr would be. `windowsHide` gives it a console of its own, without a window,
+     * which its children share; the test runner's console is not involved.
+     */
+    async function startDirect(s: Scenario, args: readonly string[], roles: readonly string[]): Promise<number[]> {
+      const child = spawn(process.execPath, [TREE, '--marker', s.marker, '--dir', s.dir, ...args], { stdio: 'ignore', windowsHide: true })
+      direct.push(child)
+      await waitUntil(() => roles.every((role) => s.ready()[role] !== undefined), `processes ${roles.join(', ')}`)
+      const ready = s.ready()
+      return roles.map((role) => ready[role] as number)
+    }
+
+    it(
+      '[spec:process-supervision/veydr-ends-abnormally-on-windows] leaves no tree process when the process owning the run is killed',
+      async () => {
+        await repeat(async (s) => {
+          const configDir = join(s.dir, 'config')
+          const options: WindowsHostOptions = { configDir, helperPath: HELPER_PATH, plan: s.plan(TREE, ['--depth', '1', '--fanout', '2']), descendants: 2 }
+          const host = spawn(process.execPath, [hostScript, JSON.stringify(options)], { stdio: ['ignore', 'pipe', 'inherit'], windowsHide: true })
+          hosts.push(host)
+          if (host.stdout === null) throw new Error('the host was started without stdout')
+          const output = createInterface({ input: host.stdout })
+          try {
+            expect((await output[Symbol.asyncIterator]().next()).value).toBe('ready')
+          } finally {
+            output.close()
+          }
+          const pids = ['root', 'root.0', 'root.1'].map((role) => s.ready()[role] as number)
+          expect(sorted(marked(s.marker).map((p) => p.pid))).toEqual(sorted(pids))
+
+          const exited = once(host, 'exit')
+          forceKill(host.pid as number)
+          await exited
+          // The helper sees its control channel close (or ends with the host), and the job ends the tree.
+          await waitUntil(() => marked(s.marker).length === 0, 'the tree to end', 10_000)
+
+          // What the next launch reads: the run is still recorded, and nothing of it survives.
+          const { entries } = await createRunLedger({ dir: configDir, log: quietLog(), directorySync: false }).load()
+          expect(entries).toHaveLength(1)
+          expect(entries[0]?.leader.pid).toBe(pids[0])
+          expect(entries[0]?.descendants.map((d) => d.pid)).toEqual(expect.arrayContaining(pids.slice(1)))
+          expect(await tree.findSurvivors(entries)).toEqual([])
+        })
+      },
+      timeout(20_000),
+    )
+
+    it(
+      '[spec:process-supervision/helper-ends-abnormally-on-windows] ends the tree and reports the stop as unverified when the helper is killed',
+      async () => {
+        await repeat(async (s) => {
+          const { run } = await startTree(s, ['--depth', '1', '--fanout', '2'], ['root', 'root.0', 'root.1'])
+          const exit = exitOf(run)
+          const helpers = marked(s.marker, { helpers: true })
+          expect(helpers, 'the run has one helper').toHaveLength(1)
+
+          forceKill(helpers[0]?.pid as number)
+          // KILL_ON_JOB_CLOSE: the helper held the only handle to the job.
+          expect(await exit).toEqual({ code: null, signal: null, forced: true })
+          await waitUntil(() => marked(s.marker).length === 0, 'the tree to end', 10_000)
+          await expect(run.stop({ graceMs: 1_000 })).rejects.toThrow(/Windows helper/)
+          await expect(run.remaining()).rejects.toThrow(/Windows helper/)
+        })
+      },
+      timeout(15_000),
+    )
+
+    it('[spec:process-supervision/reused-pid-on-windows] neither reports nor ends a live process whose creation time differs', async () => {
+      const [real] = identitiesOf([sentinel?.pid as number]) as [ProcessIdentity]
+      // The check can see the sentinel under its real identity, so its absence below is meaningful.
+      expect((await tree.findSurvivors([ledgerEntry(real)])).map((found) => found.identity)).toEqual([real])
+
+      const created = BigInt(real.token)
+      const reused = [windowsIdentity(real.pid, String(created + 1n)), windowsIdentity(real.pid, String(created - 1n))]
+      expect(await tree.findSurvivors([ledgerEntry(reused[0] as ProcessIdentity, reused.slice(1))])).toEqual([])
+      const asSurvivors: Survivor[] = reused.map((identity) => ({ commandId: 'c', runId: 'r', identity, info: { pid: identity.pid, name: 'node.exe', commandLine: '' } }))
+      expect(await createWindowsProcessTree({ helperPath: HELPER_PATH, survivorGraceMs: 1_000 }).terminateSurvivors(asSurvivors)).toEqual({
+        graceful: 'yes',
+        forced: false,
+        survivors: [],
+      })
+      await sleep(500)
+      // afterEach also checks that the sentinel received no console event.
+      expect(sentinel?.alive(), 'the sentinel is alive').toBe(true)
+    }, 60_000)
+
+    it(
+      'terminateSurvivors ends survivors outside any job of Veydr after verifying them, gracefully when they cooperate',
+      async () => {
+        const survivorsTree = createWindowsProcessTree({ helperPath: HELPER_PATH, survivorGraceMs: LONG_GRACE_MS })
+        await repeat(async (s) => {
+          const [root, child] = (await startDirect(s, ['--depth', '1', '--fanout', '1'], ['root', 'root.0'])) as [number, number]
+          const [rootIdentity, childIdentity] = identitiesOf([root, child]) as [ProcessIdentity, ProcessIdentity]
+          const found = await survivorsTree.findSurvivors([ledgerEntry(rootIdentity, [childIdentity])])
+          expect(sorted(found.map((f) => f.identity.pid))).toEqual(sorted([root, child]))
+          const node = basename(process.execPath).toLowerCase()
+          expect(found.map((f) => f.info.name.toLowerCase())).toEqual([node, node])
+
+          const started = performance.now()
+          expect(await survivorsTree.terminateSurvivors(found)).toEqual({ graceful: 'yes', forced: false, survivors: [] })
+          expect(performance.now() - started).toBeLessThan(WELL_BEFORE_GRACE_MS)
+          expect(marked(s.marker)).toEqual([])
+        })
+      },
+      timeout(20_000),
+    )
+
+    it(
+      'terminateSurvivors forcibly ends survivors that ignore Ctrl+Break after the grace period',
+      async () => {
+        const survivorsTree = createWindowsProcessTree({ helperPath: HELPER_PATH, survivorGraceMs: 1_000 })
+        await repeat(async (s) => {
+          const pids = await startDirect(s, ['--depth', '1', '--fanout', '1', '--ignore-break'], ['root', 'root.0'])
+          const [rootIdentity, ...childIdentities] = identitiesOf(pids) as [ProcessIdentity, ...ProcessIdentity[]]
+          const found = await survivorsTree.findSurvivors([ledgerEntry(rootIdentity, childIdentities)])
+          expect(found).toHaveLength(2)
+          expect(await survivorsTree.terminateSurvivors(found)).toEqual({ graceful: 'no', forced: true, survivors: [] })
+          expect(marked(s.marker)).toEqual([])
+        })
+      },
+      timeout(20_000),
+    )
+
+    it(
+      'terminateSurvivors sends no Ctrl+Break to a console it shares with a process that is not a survivor',
+      async () => {
+        const survivorsTree = createWindowsProcessTree({ helperPath: HELPER_PATH, survivorGraceMs: LONG_GRACE_MS })
+        await repeat(async (s) => {
+          // The root records every console event and keeps running; its child shares its console
+          // and would exit on Ctrl+Break. Only the child is a survivor.
+          const eventsFile = join(s.dir, 'events.txt')
+          const [root, child] = (await startDirect(s, ['--sentinel', eventsFile, '--depth', '1', '--fanout', '1'], ['root', 'root.0'])) as [number, number]
+          const found = await survivorsTree.findSurvivors([ledgerEntry(...(identitiesOf([child]) as [ProcessIdentity]))])
+          expect(found.map((f) => f.identity.pid)).toEqual([child])
+
+          const started = performance.now()
+          // No event could be sent, so the survivor is ended at once by TerminateProcess.
+          expect(await survivorsTree.terminateSurvivors(found)).toEqual({ graceful: 'no', forced: true, survivors: [] })
+          expect(performance.now() - started).toBeLessThan(WELL_BEFORE_GRACE_MS)
+          // Time for a stray event to arrive and be recorded.
+          await sleep(500)
+          expect(eventsIn(eventsFile), 'console events received by the process sharing the console').toEqual([])
+          expect(marked(s.marker).map((p) => p.pid)).toEqual([root])
+
+          for (const leftover of direct.splice(0)) leftover.kill()
+          await waitUntil(() => marked(s.marker).length === 0, 'the root to end')
+        })
+      },
+      timeout(20_000),
+    )
+
+    it('refuses malformed input to inspect and terminate, and a bad grace period', () => {
+      const cases: [string[], string, number][] = [
+        [['inspect'], 'not a list\n', 1],
+        [['inspect'], '[{"pid":4,"created":"1"},]\n', 1],
+        [['inspect'], '[{"created":"1","pid":4}]\n', 1],
+        [['inspect'], '[{"pid":4294967296,"created":"1"}]\n', 1],
+        [['terminate', '1000'], '[{"pid":4,"created":"01"}]\n', 1],
+      ]
+      for (const [args, input, status] of cases) {
+        const run = spawnSync(HELPER_PATH, args, { input, encoding: 'utf8', windowsHide: true, timeout: 30_000 })
+        expect(run.status, `${args.join(' ')} ${input}`).toBe(status)
+        expect(run.stdout, input).toBe('')
+        expect(run.stderr, input).toMatch(/^veydr-helper: /)
+      }
+      for (const args of [['inspect', 'extra'], ['terminate'], ['terminate', '-1'], ['terminate', '01'], ['terminate', '2147483648']]) {
+        const run = spawnSync(HELPER_PATH, args, { input: '[]\n', encoding: 'utf8', windowsHide: true, timeout: 30_000 })
+        expect(run.status, args.join(' ')).toBe(2)
+        expect(run.stderr, args.join(' ')).toContain('usage: veydr-helper')
+      }
+      const empty = spawnSync(HELPER_PATH, ['inspect'], { input: '[]\n', encoding: 'utf8', windowsHide: true, timeout: 30_000 })
+      expect(empty.status).toBe(0)
+      expect(JSON.parse(empty.stdout)).toEqual({ type: 'inspected', processes: [] })
+    })
+  })
+
   // Their tests land in other files in group 6, which removes these two todos.
   it.todo('[spec:process-supervision/windows-limitations-documented] documents the Windows limitations (group 6)')
   it.todo('[spec:process-supervision/windows-process-trees-verified-natively] runs the Windows process-tree tests on a Windows runner (group 6)')

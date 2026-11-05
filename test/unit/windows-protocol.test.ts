@@ -1,10 +1,14 @@
 import { describe, expect, it } from 'vitest'
 import {
   encodeControlMessage,
+  encodeIdentities,
   LineReader,
   MAX_GRACE_MS,
+  MAX_TOOL_IDENTITIES,
   parseHandshake,
   parseHelperMessage,
+  parseInspectOutput,
+  parseTerminateOutput,
   PROTOCOL_VERSION,
   ProtocolError,
   type ProtocolErrorKind,
@@ -167,5 +171,47 @@ describe('line reader', () => {
 
   it('rejects invalid UTF-8', () => {
     expectProtocolError(() => new LineReader(64).push(Buffer.from([0x7b, 0xff, 0x7d, 0x0a])), 'malformed')
+  })
+})
+
+describe('survivor subcommands', () => {
+  it('encodes identities as one line in the exact form the helper accepts', () => {
+    expect(encodeIdentities([])).toBe('[]\n')
+    // Fields beyond pid and created are not passed on, and the key order is fixed.
+    const extra = { created: CREATED, image: 'x', pid: 4248 } as { pid: number; created: string }
+    expect(encodeIdentities([extra, { pid: 0xffff_ffff, created: '1' }])).toBe(
+      `[{"pid":4248,"created":"${CREATED}"},{"pid":4294967295,"created":"1"}]\n`,
+    )
+  })
+
+  it('refuses identities the helper could not read, and too many of them', () => {
+    for (const bad of [{ pid: 0, created: CREATED }, { pid: 2 ** 32, created: CREATED }, { pid: 1.5, created: CREATED }, { pid: 4, created: '0' }, { pid: 4, created: '01' }, { pid: 4, created: '9223372036854775808' }]) {
+      expect(() => encodeIdentities([bad]), JSON.stringify(bad)).toThrow(RangeError)
+    }
+    expect(() => encodeIdentities(Array.from({ length: MAX_TOOL_IDENTITIES + 1 }, () => ({ pid: 4, created: CREATED })))).toThrow(RangeError)
+  })
+
+  it('parses the inspect and terminate output lines', () => {
+    expect(parseInspectOutput(`${line({ type: 'inspected', processes: [member] })}\n`)).toEqual({ type: 'inspected', processes: [member] })
+    expect(parseInspectOutput(`${line({ type: 'inspected', processes: [] })}\r\n`)).toEqual({ type: 'inspected', processes: [] })
+    const terminated = { type: 'terminated', graceful: 'no', forced: true, survivors: [member] }
+    expect(parseTerminateOutput(`${line(terminated)}\n`)).toEqual(terminated)
+  })
+
+  it('rejects output that is not exactly one well-formed line of the expected type', () => {
+    const inspected = line({ type: 'inspected', processes: [] })
+    const cases: [() => unknown, ProtocolErrorKind][] = [
+      [() => parseInspectOutput(''), 'malformed'],
+      [() => parseInspectOutput(inspected), 'malformed'],
+      [() => parseInspectOutput(`${inspected}\n${inspected}\n`), 'malformed'],
+      [() => parseInspectOutput('not json\n'), 'malformed'],
+      [() => parseInspectOutput(`${line({ type: 'terminated', graceful: 'yes', forced: false, survivors: [] })}\n`), 'unknown-message'],
+      [() => parseInspectOutput(`${line({ type: 'inspected', processes: [], extra: 1 })}\n`), 'malformed'],
+      [() => parseInspectOutput(`${line({ type: 'inspected', processes: [{ ...member, created: '0' }] })}\n`), 'malformed'],
+      [() => parseTerminateOutput(`${line({ type: 'terminated', graceful: 'unsupported', forced: false, survivors: [] })}\n`), 'malformed'],
+      [() => parseTerminateOutput(`${line({ type: 'terminated', graceful: 'yes', survivors: [] })}\n`), 'malformed'],
+      [() => parseTerminateOutput(`${inspected}\n`), 'unknown-message'],
+    ]
+    for (const [run, kind] of cases) expectProtocolError(run, kind)
   })
 })
