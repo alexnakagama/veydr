@@ -222,8 +222,8 @@ Not verified on Linux, and still to be checked on the pull request: that the uni
 
 ## 7. Integration check
 
-- [ ] 7.1 Run `npm run verify` on Linux, and check the `windows` CI job and `ci-ok` on the pull request. Verify: all pass, the `windows` job reports every Windows integration test as run (none skipped), and spec coverage reports zero unmapped scenarios.
-- [ ] 7.2 Check that nothing claims Windows support: `grep -rn "Windows" README.md docs/` shows only "not yet supported" statements, CI notes, the evidence document, and the "not yet available" section of `docs/processes.md`. Also check that `start-on-windows` passes and that `electron-builder.yml` and `package-lock.json` are unchanged. Verify: the checks hold, and are recorded in the pull request.
+- [x] 7.1 Run `npm run verify` on Linux, and check the `windows` CI job and `ci-ok` on the pull request. Verify: all pass, the `windows` job reports every Windows integration test as run (none skipped), and spec coverage reports zero unmapped scenarios.
+- [x] 7.2 Check that nothing claims Windows support: `grep -rn "Windows" README.md docs/` shows only "not yet supported" statements, CI notes, the evidence document, and the "not yet available" section of `docs/processes.md`. Also check that `start-on-windows` passes and that `electron-builder.yml` and `package-lock.json` are unchanged. Verify: the checks hold, and are recorded in the pull request.
 
 Group 7 outcome (on master at 75866ca, before the group 7 pull request):
 - `npm run verify` passes on Linux: typecheck, lint, unit (72 files, 1073 passed, 7 skipped), integration (8 files passed, 1 skipped, which is `windows-process-tree.test.ts` with its `[windows-only: Job Objects]` reason), and spec coverage (149 scenarios, zero unmapped).
@@ -248,6 +248,18 @@ Group 7 outcome (on master at 75866ca, before the group 7 pull request):
   - kept for W2: `helper-client.ts` passes `plan.env` as it is. W2 must merge Windows variable names that differ only in case (`Path` and `PATH`) before that.
   - The re-review of the fixes found no further issues; its one nit (the opening of the same F1 row) is applied.
   - Also confirmed, with no finding: the helper's security boundary (token on stdin, pipe server checked against its parent, the command suspended until it is in the job, batch quoting, the handle list, and identity checks before every kill), the client's limits, the build script's atomic write, and the CI pinning and step conditions.
+
+On the pull request (alexnakagama/veydr#35, at 4870b29):
+- The first `windows` run failed in "Unit tests". Six tests of `project-service.test.ts` exceeded their 5 s timeout. The pull request changes only docs and one comment.
+  - On the runner, that file took 46 s, against 1 s on `master` 30 minutes earlier.
+  - Files that write to disk or start processes were 3 to 45 times slower, while CPU-only files ran at their usual speed.
+  - `windows-probe-commands`, which starts many processes, took 69 s against 9.5 s, in a parallel worker during the same minute.
+  - This was read as a slow runner, not a defect. Only the failed jobs were re-run, and the timeouts were not raised. If it happens again, the disk-writing tests should stop running in parallel with `windows-probe-commands`.
+- In the re-run every check passed, `windows` and `ci-ok` included:
+  - "Build Windows helper" succeeded;
+  - the Windows unit tests passed: 68 files passed and 4 were skipped, 1001 tests passed and 79 were skipped, and `project-service.test.ts` took 1.25 s;
+  - "Windows integration tests" ran `windows-process-tree.test.ts` with 20 passed of 20, none skipped;
+  - all other checks passed on the first run.
 
 ## Workflow follow-up
 
