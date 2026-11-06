@@ -191,6 +191,6 @@ Further findings W2 must handle, outside the D5 rules:
 
 ### Electron in Windows CI (W1–W4)
 
-**The Windows CI lane can run Electron under Playwright.** `electron-launch`, `electron-playwright` and `ctx-electron-no-console` are `PASS`, and every `electron-smoke-*` check passes except `electron-smoke-platform`, as predicted. The existing e2e harness depends on Linux `/proc` helpers, so making it portable is W1's work.
+**The Windows CI lane can run Electron under Playwright.** `electron-launch`, `electron-playwright` and `ctx-electron-no-console` are `PASS`, and every `electron-smoke-*` check passes except `electron-smoke-platform`, as predicted. The existing e2e harness depends on Linux `/proc` helpers, so it must be made portable before e2e tests can run on Windows. W1 did not take this on: commands cannot be started on Windows until W2, so W2 makes the harness portable.
 
 W4 can build and install a per-user NSIS installer on the runner: `nsis-build` and `nsis-install` are `PASS`. Its signing and SmartScreen behavior stay unverified (`smartscreen`).
