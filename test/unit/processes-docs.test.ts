@@ -55,7 +55,8 @@ function expectEvidence(where: string, body: string): void {
 describe('docs/processes.md matches the implementation', () => {
   it('counts only declared tests as evidence, not todo or skipped ones', () => {
     expect(declaresTest("it('ends the tree', () => {})", 'ends the tree')).toBe(true)
-    expect(declaresTest("it(\n    '[spec:a/b] ends the tree',", 'ends the tree')).toBe(true)
+    // A multi-line call with a tagged title; a real scenario tag here would count in spec coverage.
+    expect(declaresTest("it(\n    '[tag] ends the tree',", 'ends the tree')).toBe(true)
     expect(declaresTest("test('x [y] (z)', () => {})", 'x [y] (z)')).toBe(true)
     expect(declaresTest("it.todo('ends the tree')", 'ends the tree')).toBe(false)
     expect(declaresTest("it.skip('ends the tree', () => {})", 'ends the tree')).toBe(false)

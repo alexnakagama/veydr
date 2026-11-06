@@ -50,8 +50,13 @@ if (!app.requestSingleInstanceLock()) {
   start()
 }
 
-/** Where the Windows helper is; read only by the Windows platform (design D5). */
-const helperPath = (): string => windowsHelperPath(app.getAppPath())
+/**
+ * Where the Windows helper is; read only by the Windows platform (design D5). A function
+ * declaration, so it is hoisted: `start()` and `startSmokeTest()` run above this point.
+ */
+function helperPath(): string {
+  return windowsHelperPath(app.getAppPath())
+}
 
 /** Settings shared by the app and the smoke test; must run before `ready`. */
 function prepareApp(log: DiagnosticLog): void {
