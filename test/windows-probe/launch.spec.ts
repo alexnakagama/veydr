@@ -2,7 +2,7 @@ import { resolve } from 'node:path'
 import { _electron as electron, expect, test } from '@playwright/test'
 
 // The electron-playwright probe (assess-windows-platform design D3): it uses only Playwright's Electron
-// launcher, since the e2e harness builds on the /proc helpers. Making that harness portable is W1's work.
+// launcher, since the e2e harness builds on the /proc helpers. Making that harness portable is W2's work.
 
 const repoRoot = resolve(__dirname, '../..')
 
