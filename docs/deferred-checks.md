@@ -44,3 +44,9 @@ Tasks 9.1, 9.4 and 9.5 in `tasks.md` reference this list.
 | Area | Outcome | Evidence |
 |---|---|---|
 | Windows and macOS | Windows behavior was observed on the `windows-2025` runner by the `windows-probe.yml` workflow, as evidence for the Windows platform work; Windows remains not yet supported. What the runner cannot show (a desktop launch, logoff and shutdown, UAC prompts, localized Windows, third-party antivirus, SmartScreen, a parent outside any Job Object, and the unapproved koffi check) is listed in [Not verifiable on the runner](windows-evidence.md#not-verifiable-on-the-runner). macOS is unchanged. | `docs/windows-evidence.md`, `test/windows-probe/summary.txt`, `test/unit/windows-evidence.test.ts` |
+
+## Windows process supervision (2026-11-06)
+
+| Area | Outcome | Evidence |
+|---|---|---|
+| Windows process supervision | Implemented and verified in CI: Windows process trees (Job Objects through `veydr-helper.exe`), the Ctrl+Break graceful stop and the forced stop, abnormal exits, and survivors are tested natively on `windows-2025` for every pull request and push to `master`. **Not reachable from the app until W2**: starting a command on Windows still fails as unsupported, and Windows remains not yet supported. Risk: the helper `.exe` is unsigned until the signing decision (G-6), so antivirus software or SmartScreen may flag or block it; W4 packages it and repeats the smoke test as a standard user. Packaging: the helper path is currently below the application path, which in a packaged app is inside `app.asar`, from which no executable can be started; W4 must ship the helper outside the archive and change that path, or a packaged app reports "Windows helper not found". What the runner cannot verify is listed in [processes.md](processes.md#not-verified-on-the-ci-runner). | `test/integration/windows-process-tree.test.ts`, `.github/workflows/ci.yml` (`windows`), `test/unit/supervisor.test.ts` › "start-on-windows" |

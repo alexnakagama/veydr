@@ -860,6 +860,37 @@ describe('ci.yml (design D4)', () => {
     expect(steps.filter((field) => field('id')?.value === 'helper')).toHaveLength(1)
   })
 
+  it('[spec:process-supervision/windows-process-trees-verified-natively] runs the Windows process-tree tests on a native Windows runner for pull requests and pushes to master', () => {
+    // The windows job runs on every pull request and push to master (no job-level condition), on a
+    // Windows runner, and its last step runs the Windows integration tests there.
+    expect(branches('pull_request')).toEqual(['master'])
+    expect(branches('push')).toEqual(['master'])
+    expect(jobField('windows', 'if')).toBeUndefined()
+    expect(jobField('windows', 'runs-on')?.value).toBe('windows-2025')
+    expect(scripts('windows').at(-1)).toBe('npm run test:windows')
+    expect(childNames(lines, childAt(lines, job('ci-ok').start, 'needs'))).toContain('windows')
+    // That script selects the Windows process-tree tests, which run only on Windows (and skip, with
+    // their reason, everywhere else), so a Linux run never stands in for them.
+    const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')) as { scripts: Record<string, string> }
+    expect(pkg.scripts['test:windows']).toBe('vitest run --project integration windows-')
+    const tests = readFileSync(join(root, 'test', 'integration', 'windows-process-tree.test.ts'), 'utf8')
+    expect(tests).toContain("describe.skipIf(process.platform !== 'win32')('[windows-only: Job Objects]'")
+    for (const scenario of [
+      'children-and-grandchildren-stopped-on-windows',
+      'orphaned-descendant-stopped-on-windows',
+      'descendant-started-immediately',
+      'uncooperative-process-on-windows',
+      'cooperative-process-on-windows',
+      'batch-file-command-stopped-gracefully',
+      'veydr-ends-abnormally-on-windows',
+      'helper-ends-abnormally-on-windows',
+      'reused-pid-on-windows',
+    ]) {
+      expect(tests, scenario).toMatch(new RegExp(String.raw`\bit\(\s*'\[spec:process-supervision/${scenario}\]`))
+    }
+    expect(tests).not.toMatch(/\bit\.(?:todo|skip)\(/)
+  })
+
   it('[spec:quality-gates/push-to-master-runs-the-same-checks] runs the same checks on pushes to master', () => {
     expect(branches('push')).toEqual(['master'])
     expect(childNames(lines, childAt(lines, on, 'push'))).toEqual(['branches'])

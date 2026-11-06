@@ -3,12 +3,32 @@ import { NotFoundError } from '../../src/main/errors'
 import { SpawnError, UnsupportedPlatformError } from '../../src/main/platform/errors'
 import { createWindowsPlatform } from '../../src/main/platform/windows'
 import type { ProcessTree } from '../../src/main/platform/types'
+import { createEnvironmentService } from '../../src/main/projects/environment'
+import { commandSpec, createPlanner } from '../../src/main/supervisor/plan'
 import { createProcessStateRegistry } from '../../src/main/supervisor/state'
 import { createSupervisor, type LaunchTarget, type OutputStream, type PlanResult } from '../../src/main/supervisor/supervisor'
 import type { ProcessStateEvent } from '../../src/shared/api'
 import type { CommandConfig } from '../../src/shared/config'
 import { cooperative, FakeProcessTree } from './support/fake-process-tree'
 import { command, project, quietLog } from './support/config'
+
+/** A process tree that records every call and starts nothing. */
+function spyProcessTree(): { readonly tree: ProcessTree; readonly calls: string[] } {
+  const calls: string[] = []
+  const refuse = (name: string): Promise<never> => {
+    calls.push(name)
+    return Promise.reject(new Error(`${name} must not be called`))
+  }
+  return {
+    calls,
+    tree: {
+      spawn: () => refuse('spawn'),
+      launchDetached: () => refuse('launchDetached'),
+      findSurvivors: () => refuse('findSurvivors'),
+      terminateSurvivors: () => refuse('terminateSurvivors'),
+    },
+  }
+}
 
 /** Lets queued microtasks and zero-delay timers run. */
 const settle = (): Promise<void> => new Promise((done) => setTimeout(done, 5))
@@ -28,7 +48,7 @@ interface Harness {
 }
 
 function harness(
-  options: { readonly command?: Partial<CommandConfig>; readonly plan?: () => Promise<PlanResult>; readonly tree?: Pick<ProcessTree, 'spawn'> } = {},
+  options: { readonly command?: Partial<CommandConfig>; readonly plan?: (target: LaunchTarget) => Promise<PlanResult>; readonly tree?: Pick<ProcessTree, 'spawn'> } = {},
 ): Harness {
   const tree = new FakeProcessTree()
   const events: ProcessStateEvent[] = []
@@ -54,7 +74,7 @@ function harness(
       lookup: (id) => (id === cmd.id ? target : null),
       plan: (t) => {
         h.plans++
-        return options.plan?.() ?? Promise.resolve({ ok: true, plan: { file: t.command.name, args: [], cwd: t.project.path, env: {} } })
+        return options.plan?.(t) ?? Promise.resolve({ ok: true, plan: { file: t.command.name, args: [], cwd: t.project.path, env: {} } })
       },
       output: {
         open: (_commandId, runId, opened) => output.push([runId, 'open', opened.id]),
@@ -286,11 +306,35 @@ describe('supervisor state machine', () => {
   })
 
   it('[spec:process-supervision/start-on-windows] fails with an unsupported-platform error and creates no process on Windows', async () => {
-    const windows = createWindowsPlatform()
-    const h = harness({ tree: windows.processTree })
-    await expect(h.supervisor.start(h.commandId)).rejects.toBeInstanceOf(UnsupportedPlatformError)
-    expect(h.statuses()).toEqual(['starting', 'failed'])
-    expect(h.events.at(-1)?.error).toMatch(/not supported on this platform/)
+    // The Windows platform as the composition root builds it; its process tree is real (W1), so a
+    // spy stands in for it to prove that nothing is spawned.
+    const windows = createWindowsPlatform({ helperPath: 'C:\\veydr\\out-helper\\veydr-helper.exe' })
+    const spy = spyProcessTree()
+    const plans = [
+      // As in the app: the Windows environment, then the Windows resolver.
+      createPlanner({
+        resolver: windows.commandResolver,
+        environment: createEnvironmentService({ provider: windows.envProvider }),
+        envNames: windows.conventions.envNames,
+      }),
+      // The resolver alone also refuses, whatever the environment.
+      createPlanner({
+        resolver: windows.commandResolver,
+        environment: { base: () => Promise.resolve({ env: { Path: 'C:\\Windows' }, warnings: [] }) },
+        envNames: windows.conventions.envNames,
+      }),
+    ]
+    for (const plan of plans) {
+      const h = harness({ tree: spy.tree, plan })
+      await expect(h.supervisor.start(h.commandId)).rejects.toBeInstanceOf(UnsupportedPlatformError)
+      expect(h.statuses()).toEqual(['starting', 'failed'])
+      expect(h.events.at(-1)?.error).toMatch(/not supported on this platform \(win32\)/)
+    }
+    await expect(windows.commandResolver.resolve(commandSpec(harness().target), {})).rejects.toMatchObject({
+      name: 'UnsupportedPlatformError',
+      operation: 'commandResolver.resolve',
+    })
+    expect(spy.calls).toEqual([])
   })
 
   it('logs and fails a start on an unexpected error', async () => {
@@ -332,6 +376,23 @@ describe('supervisor state machine', () => {
     expect(h.statuses()).toEqual(['starting', 'running', 'stopping', 'exited'])
     expect(h.events.at(-1)).toMatchObject({ exit: { code: 2 }, error: null, survivors: [] })
     expect(run.alive).toBe(false)
+  })
+
+  it('ends a run as unverified when its leader exits and the run can no longer be checked (a dead Windows helper)', async () => {
+    // A Windows run whose helper was killed: the leader is reported exited, and every later
+    // question to the helper fails (test/integration/windows-process-tree.test.ts).
+    const h = harness()
+    const gone = new Error('The Windows helper failed: the control channel closed')
+    h.tree.behavior = { ...cooperative, stopError: gone, remainingError: gone }
+    await h.supervisor.start(h.commandId)
+    h.tree.last.exit(null)
+    await settle()
+    expect(h.statuses()).toEqual(['starting', 'running', 'stopping', 'exited'])
+    expect(h.events.at(-1)).toMatchObject({
+      status: 'exited',
+      error: `Could not verify that the command stopped: ${gone.message}`,
+      survivors: [],
+    })
   })
 
   it('never leaves a command in stopping when both stop and remaining fail', async () => {
