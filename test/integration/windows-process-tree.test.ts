@@ -846,8 +846,4 @@ describe.skipIf(process.platform !== 'win32')('[windows-only: Job Objects]', () 
       expect(JSON.parse(empty.stdout)).toEqual({ type: 'inspected', processes: [] })
     })
   })
-
-  // Their tests land in other files in group 6, which removes these two todos.
-  it.todo('[spec:process-supervision/windows-limitations-documented] documents the Windows limitations (group 6)')
-  it.todo('[spec:process-supervision/windows-process-trees-verified-natively] runs the Windows process-tree tests on a Windows runner (group 6)')
 })

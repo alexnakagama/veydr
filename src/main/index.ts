@@ -18,7 +18,7 @@ import { createOperationHandlers } from './ipc/handlers'
 import { registerEventSubscriptions, registerOperations } from './ipc/operations'
 import { createIpcRegistry, originOf } from './ipc/register'
 import { createLogService } from './logs/service'
-import { selectPlatform } from './platform'
+import { selectPlatform, windowsHelperPath } from './platform'
 import { createPortService } from './ports/service'
 import { runNetworkProbe } from './probe'
 import { createDesktopActions } from './projects/desktop'
@@ -50,6 +50,14 @@ if (!app.requestSingleInstanceLock()) {
   start()
 }
 
+/**
+ * Where the Windows helper is; read only by the Windows platform (design D5). A function
+ * declaration, so it is hoisted: `start()` and `startSmokeTest()` run above this point.
+ */
+function helperPath(): string {
+  return windowsHelperPath(app.getAppPath())
+}
+
 /** Settings shared by the app and the smoke test; must run before `ready`. */
 function prepareApp(log: DiagnosticLog): void {
   app.enableSandbox()
@@ -63,7 +71,7 @@ function prepareApp(log: DiagnosticLog): void {
 
 function start(): void {
   const log = createDiagnosticLog()
-  const platform = selectPlatform(process.platform, { log, inherited: process.env })
+  const platform = selectPlatform(process.platform, { log, inherited: process.env, helperPath: helperPath() })
   // `userData` honors XDG_CONFIG_HOME on Linux (~/.config/Veydr by default). The single-instance
   // lock above makes this process the only configuration writer.
   const configDir = app.getPath('userData')
@@ -344,7 +352,7 @@ function start(): void {
  */
 function startSmokeTest(): void {
   const log = createDiagnosticLog()
-  const platform = selectPlatform(process.platform, { log, inherited: process.env })
+  const platform = selectPlatform(process.platform, { log, inherited: process.env, helperPath: helperPath() })
   const report = (result: SmokeReport): void => {
     process.stdout.write(`${formatSmokeReport(result)}\n`)
     app.exit(result.result === 'pass' ? 0 : 1)

@@ -1,6 +1,6 @@
-# Processes (Linux)
+# Processes
 
-This page describes how Veydr starts, tracks, and stops the commands you configure, and what it cannot guarantee. Veydr is Linux-only for now; Windows is not yet supported.
+This page describes how Veydr starts, tracks, and stops the commands you configure, and what it cannot guarantee. Veydr is Linux-only for now; Windows is not yet supported. Everything below describes Linux, except the [Windows (not yet available)](#windows-not-yet-available) section, which describes groundwork you cannot use from the app yet.
 
 ## Starting
 
@@ -127,3 +127,50 @@ Observed in the packaged acceptance pass (2026-10-25, `scripts/acceptance-linux.
 A process of the command that runs as another user (for example through `sudo` or a setuid program), or that is stuck in the kernel and ignores even `SIGKILL`, cannot be stopped by Veydr. It is listed as still running after the stop.
 
 Evidence: `test/unit/linux-process-tree.test.ts` › "reports a process it is not permitted to signal as a survivor"; `test/unit/linux-process-tree.test.ts` › "lists processes alive after the forced stop with PID and command name".
+
+## Windows (not yet available)
+
+**Not yet reachable from the app.** Windows is not yet supported: starting a command on Windows fails with "not supported on this platform", and no process is created, because finding executables and reading the environment on Windows are not implemented yet. The process-tree layer below is implemented and tested on a native Windows runner in CI, so that the remaining work can build on it. Everything in this section describes that layer, not something you can use today.
+
+### Containment
+
+- Each command runs through its own helper process, `veydr-helper.exe`, built from source in the repository (see [dependencies.md](dependencies.md)). That is one extra, mostly idle process per running command.
+- The helper creates a Windows **Job Object** for the command and starts the command **suspended**, assigns it to the job, and only then lets it run. Every process the command starts, from its very first instruction, is in the job, and no process can leave it. A process belongs to a command exactly when it is in the command's job; orphaned descendants included.
+- The command gets a hidden console of its own (no window appears) and starts a new process group, so Ctrl+C is turned off for it and only Ctrl+Break reaches it (see [Stopping](#stopping-1)). Standard input is not connected (`NUL`), and its standard output and error go straight to Veydr, not through the helper.
+- The program must be given by its full path, which must not contain `"` or NUL characters; nothing is looked up in the working directory.
+- A batch file (`.cmd`, `.bat`) is run explicitly through `cmd.exe /d /e:on /v:off /s /c`. Its path must not contain `%`, and its arguments must not contain `"`, `%`, line breaks, or NUL characters, or end with a backslash, because `cmd.exe` would interpret them even inside quotes; such a start is refused.
+
+### Stopping
+
+1. Veydr asks the helper to stop the command. The helper sends **Ctrl+Break** to the command's console, but only when every process on that console, apart from the helper itself, belongs to the command. Veydr and other commands never receive it.
+2. If processes of the command are still alive after the command's **stop timeout** (5 seconds by default), the helper ends the whole job at once (`TerminateJobObject`), and the result is reported as forced.
+3. It waits up to 1 second more. Any process of the command still alive then is listed as **still running after the stop**.
+
+If no process of the command is left on its console (for example, every process detached from it), no Ctrl+Break can be sent: the job is ended at once, without waiting for the stop timeout, and the stop is reported as forced. A process that a command starts with a console of its own (for example a hidden child process) does not receive the Ctrl+Break; it is ended by the forced step.
+
+### After an abnormal exit on Windows
+
+Unlike on Linux, the processes of a command do **not** keep running after an abnormal exit:
+
+- If Veydr ends abnormally, the helper sees its connection to Veydr close, ends the command's job, and exits.
+- If the helper itself ends abnormally, Windows closes the job, which ends every process in it. Veydr can then no longer check the command's processes, so the command ends as **Exited** with a message that the stop could not be verified.
+
+Runs are still recorded in `runtime/ledger.json`, as a fallback only. On Windows a process is identified by its PID and its creation time; a PID that now belongs to another process is never reported or ended. On the next launch, recorded processes that are still alive and still the same process are listed, and **Terminate** re-verifies each one and sends it Ctrl+Break only if its console holds nothing but listed processes. It waits up to the default stop timeout (5 seconds) for those that received the event, and then ends each one that is still the same process (at once when none received it). Processes that such a survivor started after Veydr ended are not in any job of Veydr and are not ended.
+
+### Differences from Linux
+
+- Where Linux shows a process's command line (the quit dialog, the crash-recovery notice, the survivors of a stop), Windows shows the full path of its executable image instead: reading another process's command line would need its memory or WMI, which is too slow during a stop.
+- Each running command has one extra process, its helper.
+
+### Not verified on the CI runner
+
+These tests run on GitHub's `windows-2025` runner, which cannot show the following. They stay unverified until a test on a real Windows installation:
+
+- a desktop session on Windows 10 or 11, including Windows Terminal as the default console;
+- logging off or shutting down Windows while commands run;
+- Veydr started with no Job Object around it, as when it is started from Explorer (the runner runs every step inside a job);
+- a standard user account: the CI job runs as the runner's administrator only.
+
+The helper is not signed yet, so antivirus software or SmartScreen may flag it (see [deferred-checks.md](deferred-checks.md#windows-process-supervision-2026-11-06)).
+
+Evidence: `test/integration/windows-process-tree.test.ts` › "[spec:process-supervision/veydr-ends-abnormally-on-windows]"; `test/integration/windows-process-tree.test.ts` › "[spec:process-supervision/helper-ends-abnormally-on-windows]"; `test/integration/windows-process-tree.test.ts` › "[spec:process-supervision/cooperative-process-on-windows]"; `test/unit/supervisor.test.ts` › "ends a run as unverified when its leader exits and the run can no longer be checked"; `test/unit/supervisor.test.ts` › "[spec:process-supervision/start-on-windows]".

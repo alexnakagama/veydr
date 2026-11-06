@@ -1,3 +1,4 @@
+import { join } from 'node:path'
 import { createLinuxPlatform } from './linux'
 import { createUnsupportedPlatform } from './unsupported'
 import { createWindowsPlatform } from './windows'
@@ -10,18 +11,43 @@ export type * from './types'
 const UNSUPPORTED_CONVENTIONS: PlatformConventions = { envNames: 'exact', defaultShell: null, directorySync: true }
 
 /**
+ * Where the Windows helper is built (`scripts/build-windows-helper.mjs`), below the application
+ * path, in development and tests (add-windows-process-supervision design D5). In a packaged app the
+ * application path is inside `app.asar`, from which no executable can be started, so W4 must move
+ * the helper out of it (e.g. below `process.resourcesPath`); until then a packaged app reports the
+ * helper as not found (docs/deferred-checks.md).
+ */
+export function windowsHelperPath(appPath: string): string {
+  return join(appPath, 'out-helper', 'veydr-helper.exe')
+}
+
+export interface SelectPlatformOptions {
+  readonly log?: PlatformLog
+  /** Veydr's own environment (Linux: the fallback and starting point of the login environment). */
+  readonly inherited?: Readonly<Record<string, string | undefined>>
+  /**
+   * Full path of the Windows helper, `veydr-helper.exe`, from the composition root. Without it,
+   * every Windows process-tree operation that needs the helper rejects; nothing is guessed.
+   */
+  readonly helperPath?: string
+}
+
+/**
  * Selects the platform implementation. Together with the composition root,
  * this is the only module allowed to read `process.platform`.
  */
-export function selectPlatform(
-  os: NodeJS.Platform = process.platform,
-  options: { readonly log?: PlatformLog; readonly inherited?: Readonly<Record<string, string | undefined>> } = {},
-): Platform {
+export function selectPlatform(os: NodeJS.Platform = process.platform, options: SelectPlatformOptions = {}): Platform {
+  const { helperPath, ...linuxOptions } = options
   switch (os) {
     case 'linux':
-      return createLinuxPlatform(options)
+      return createLinuxPlatform(linuxOptions)
     case 'win32':
-      return createWindowsPlatform()
+      // A composition mistake: shown at startup, not only at the first operation that needs the helper.
+      if (helperPath === undefined) options.log?.record('error', 'platform.windows-helper-unconfigured')
+      return createWindowsPlatform({
+        helperPath: helperPath ?? '',
+        ...(options.log === undefined ? {} : { log: options.log }),
+      })
     default:
       return createUnsupportedPlatform('unsupported', os, UNSUPPORTED_CONVENTIONS)
   }

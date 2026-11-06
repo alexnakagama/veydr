@@ -194,15 +194,31 @@ On the pull request (alexnakagama/veydr#33):
 
 ## 6. Platform composition and documentation
 
-- [ ] 6.1 Change `createWindowsPlatform(options)` to take `helperPath` and `log`, and to return the real `processTree` (with `launchDetached` still unsupported) together with `supported: false` and the unsupported resolver, environment, and port inspector (design D6). The composition root and `selectPlatform` pass `<app path>/out-helper/veydr-helper.exe`. Verify: `npm run typecheck`, `npm run lint` (only the composition root and `platform/index.ts` read `process.platform`), and `npm test` pass.
-- [ ] 6.2 Rewrite `supervisor.test.ts` › `[spec:process-supervision/start-on-windows]` to use the Windows platform's resolver and a spy process tree, and to assert that the start fails with `UnsupportedPlatformError` and that `spawn` was never called. Tag the CI test that runs the Windows integration step with `[spec:process-supervision/windows-process-trees-verified-natively]`. Verify: `npm test` passes on Linux and Windows.
-- [ ] 6.3 Add a "Windows (not yet available)" section to `docs/processes.md`. It covers:
+- [x] 6.1 Change `createWindowsPlatform(options)` to take `helperPath` and `log`, and to return the real `processTree` (with `launchDetached` still unsupported) together with `supported: false` and the unsupported resolver, environment, and port inspector (design D6). The composition root and `selectPlatform` pass `<app path>/out-helper/veydr-helper.exe`. Verify: `npm run typecheck`, `npm run lint` (only the composition root and `platform/index.ts` read `process.platform`), and `npm test` pass.
+- [x] 6.2 Rewrite `supervisor.test.ts` › `[spec:process-supervision/start-on-windows]` to use the Windows platform's resolver and a spy process tree, and to assert that the start fails with `UnsupportedPlatformError` and that `spawn` was never called. Tag the CI test that runs the Windows integration step with `[spec:process-supervision/windows-process-trees-verified-natively]`. Verify: `npm test` passes on Linux and Windows.
+- [x] 6.3 Add a "Windows (not yet available)" section to `docs/processes.md`. It covers:
   - Job Object containment, the Ctrl+Break graceful stop, and the forced stop;
   - an abnormal exit that ends the tree, and survivors only as a fallback;
   - the image path shown instead of the command line, and one helper process per command;
   - what the runner could not verify: a desktop session, logoff and shutdown, a parent outside any Job Object, and a CI job that runs as administrator only.
 
   Extend the existing documentation test with `[spec:process-supervision/windows-limitations-documented]`, and make sure `[spec:process-supervision/limitation-documented]` still passes. In `docs/deferred-checks.md`, add a "Windows process supervision" row: implemented and verified in CI, not reachable from the app until W2, with the unsigned-helper and antivirus risk. Verify: `npm test` passes.
+
+
+Group 6 outcome (not committed yet): `npm run typecheck`, `npm run lint`, `npm test` (72 files, 1073 tests), `npm run spec-coverage` (149 scenarios, zero unmapped) and `npm run build` pass on Linux; `npm run test:windows` is skipped there with its reason.
+- Added during implementation, beyond the task text:
+  - `selectPlatform` takes an optional `helperPath`. Without it, every Windows operation that needs the helper rejects with "The Windows helper path is not configured", and the selection logs `platform.windows-helper-unconfigured`.
+  - `windowsHelperPath(appPath)` in `platform/index.ts` builds the path; the composition root uses it for the app and for `--smoke-test`.
+  - `start-on-windows` runs the real planner twice: once with the Windows environment and resolver, as in the app, and once with the resolver alone. A spy process tree asserts that no process-tree operation is called.
+  - The `windows-process-trees-verified-natively` test in `workflow-policy.test.ts` also checks that the Windows integration file has no `it.todo` or `it.skip`, and that it declares each Windows scenario.
+- The reviewer2 pass found no high or medium items, 4 low and 4 nits; 7 were fixed and 1 was kept, and the re-review approved them with no further findings:
+  - the packaged app's helper path is inside `app.asar`, from which no `.exe` can start; this is recorded for W4 in the code and in `docs/deferred-checks.md`;
+  - the docs called the stop after a helper crash "forced", but the supervisor records `forced: false` with "Could not verify that the command stopped"; the wording is fixed, and a supervisor unit test now covers that path and is cited as evidence;
+  - the docs evidence check accepted any substring; it now requires a declared `it(`/`test(` (todo, skip and only do not count);
+  - an unconfigured helper path is now logged at selection;
+  - nits: the new process group (Ctrl+C off), the full-path rule for programs, the shared `helperPath()` in the composition root, and (from the re-review) the title `# Processes` instead of `# Processes (Linux)`; kept: the explicit `launchDetached` delegation.
+
+Not verified on Linux, and still to be checked on the pull request: that the unit tests pass on Windows and that the `windows` job reports every Windows integration test as run.
 
 ## 7. Integration check
 

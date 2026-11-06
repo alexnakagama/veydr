@@ -84,6 +84,7 @@ export function createWindowsProcessTree(options: WindowsProcessTreeOptions): Pi
 
   async function checkHelper(): Promise<void> {
     const { helperPath } = options
+    if (helperPath === '') throw new SpawnError('other', 'The Windows helper path is not configured')
     // A bare name would be looked up on PATH.
     if (!isFullyQualified(helperPath)) throw new SpawnError('other', `The Windows helper path must be absolute: ${helperPath}`)
     let key: string

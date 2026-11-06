@@ -215,7 +215,7 @@ describe('ports view', () => {
       trustedOrigin: 'app://veydr',
       log: createDiagnosticLog(() => undefined),
     })
-    const service = createPortService({ inspector: createWindowsPlatform().portInspector, attribution: () => Promise.resolve([]) })
+    const service = createPortService({ inspector: createWindowsPlatform({ helperPath: 'C:\\veydr\\out-helper\\veydr-helper.exe' }).portInspector, attribution: () => Promise.resolve([]) })
     registry.handle(channels.ports.list, contract.ports.list.request, contract.ports.list.response, () => service.list())
     const sender = { id: 1, isDestroyed: () => false, send: () => undefined }
     const result = (await listeners.get(channels.ports.list)?.({ senderFrame: frame, sender })) as ApiResult<PortSnapshot>
