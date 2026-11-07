@@ -106,3 +106,6 @@ test.describe('offline runner', () => {
     }
   })
 })
+
+// add-windows-environment-and-commands group 7 (design D7) implements this on the Linux-only guards.
+test.fixme('[spec:quality-gates/linux-only-end-to-end-test-on-windows] Linux-only end-to-end tests are skipped on Windows with the facility named', () => {})

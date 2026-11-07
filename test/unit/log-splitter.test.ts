@@ -178,3 +178,8 @@ describe('line splitter', () => {
     expect(lines.at(-1)).toEqual(['sec', false])
   })
 })
+
+// add-windows-environment-and-commands group 5 (design D5) implements these.
+describe('line splitter with an ANSI fallback (Windows)', () => {
+  it.todo('[spec:process-logs/ansi-output-on-windows] decodes a windows-1252 line with the fallback and the lines around it as UTF-8')
+})

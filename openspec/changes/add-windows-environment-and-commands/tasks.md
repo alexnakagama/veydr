@@ -31,7 +31,7 @@ Plan review (2026-11-06): reviewer2 found 2 high, 5 medium, 5 low and 3 nits in 
 
 ## 1. Windows command lines and scenario mapping
 
-- [ ] 1.1 Add `src/main/platform/windows/command-line.ts` (design D1), with:
+- [x] 1.1 Add `src/main/platform/windows/command-line.ts` (design D1), with:
   - `quoteArgument` (the `CommandLineToArgvW` rules);
   - `batchCommandLine(cmdExe, file, args)`: simple arguments (`^[A-Za-z0-9_+\-.:/\\@]+$`) pass bare, and every other argument is quoted and escaped as `cmd-quote.mjs` does, with its refusals and the 8191-character and `SHIM_LINE_RESERVE` limits;
   - `shellCommandLine(cmdExe, script)`: `cmd.exe /d /v:off /s /c "<script>"`, verbatim, refusing an empty or blank script, a line break or NUL, and a full line beyond 8191 characters including the prefix and the closing quote.
@@ -41,12 +41,22 @@ Plan review (2026-11-06): reviewer2 found 2 high, 5 medium, 5 low and 3 nits in 
   - `quoteArgument` round-trips through a `CommandLineToArgvW` reference parser written in the test;
   - a script of exactly the longest allowed length passes, and one character more is refused;
   - every refusal is covered, tagged `[spec:project-registry/unrepresentable-argument-refused]` and `[spec:project-registry/multi-line-script-refused-on-windows]`.
-- [ ] 1.2 Map every new scenario of this change:
+- [x] 1.2 Map every new scenario of this change:
   - add one tagged `it.todo` per scenario a later group implements, in the file where its test will live;
   - `windows-process-trees-verified-natively` keeps its existing test;
   - `start-on-windows` keeps its test until group 6, since its requirement is removed only there.
 
   Verify: `npm run spec-coverage` reports zero unmapped scenarios, `test-platform-policy.test.ts` passes, and `openspec validate add-windows-environment-and-commands --strict` passes.
+
+Group 1 review (2026-11-07): reviewer2 found no high items, 1 medium, 3 low and 3 nits, and no injection path in the quoting. The re-review confirmed all fixed.
+- medium: the seeded random generator lost precision, so most argument lengths were never drawn. It is now mulberry32, with a test that all lengths occur, and five mutations of the quoting are each caught.
+- low:
+  - a model of `cmd.exe`'s two caret and quote parses now checks bare and quoted arguments side by side (percent expansion is left to corpus parity and the group 2 Windows tests);
+  - the corpus check accepts a case with no arguments;
+  - unpaired surrogates are refused before the helper, naming the position, not the text.
+- nits: the error-message comment is precise about paths, `\\.\` and `\\?\` paths are refused, and the batch file's type is noted as the resolver's job.
+- Recorded on task 2.2: its placeholders move out of `windows-commands.test.ts` and become real tests.
+- Verified on Linux: typecheck, lint, `npm test` (1096 passed, 8 todo), spec coverage 167/167, `openspec validate --strict`. Windows CI runs on the pull request.
 
 ## 2. Helper protocol version 2 and the UTF-8 console
 
@@ -76,6 +86,8 @@ Plan review (2026-11-06): reviewer2 found 2 high, 5 medium, 5 low and 3 nits in 
   - **A plain batch file:** `build.bat release C:\out\`, which tests `if "%1"=="release"` and echoes `%~2` (`[spec:project-registry/simple-batch-arguments-reach-the-batch-file-as-written]`).
   - **The batch-file refusal:** the helper refuses a batch-file application.
   - **A long line:** a direct-mode line of 32,000 characters starts.
+
+  The `it.todo` placeholders for the shim corpus and the plain batch file sit in `test/integration/windows-commands.test.ts` (group 1), since `workflow-policy.test.ts` forbids `it.todo` in `windows-process-tree.test.ts`. Remove them there when these tests land; they must become real tests, never skips. Task 4.3 does the same for `batch-file-editor-on-windows`.
 
   Verify: on the pull request, the `windows` job reports every Windows integration test as run, with the W1 scenarios still passing.
 - [ ] 2.3 In the helper, set the command's console to output code page 65001 (design D5). Free the helper's own console first and re-register its Ctrl handling. After the suspended `CreateProcess`, attach to the leader's console, call `SetConsoleOutputCP(65001)`, re-register the Ctrl handler, detach, and resume. `started.utf8Console` reports the result, and a failure is logged as `process.windows-console-not-utf8`. Add a Windows integration test showing that `started.utf8Console` is `true`, and that `cmd /c echo` of a non-ASCII string writes its UTF-8 bytes. Verify on the `windows` job. **If `utf8Console` is `false` on the runner, pause and report it**, with the attach error and a recommendation between design D5's fallbacks (attach after the resume, or a console-owning wrapper). Group 2 does not merge until that is decided: group 5's decoding depends on it.
