@@ -7,6 +7,8 @@
 //                                                 controlled over the named pipe <pipe> (design D2)
 //   veydr-helper.exe inspect                      reports which identities on stdin are live (design D4)
 //   veydr-helper.exe terminate <graceMs>          ends the identities on stdin that still match (design D4)
+//   veydr-helper.exe console                      internal: the UTF-8 console a `run` command gets
+//                                                 (add-windows-environment-and-commands design D5)
 //
 // `run` reads a one-time token as one line on stdin, connects to <pipe>, which must be served by the
 // process that started the helper, and proves itself with the token. Only then does it read the run
@@ -71,6 +73,8 @@ static class VeydrHelper
             return ExitOk;
         }
         if (args.Length == 2 && args[0] == "run") return new RunCommand(args[1]).Execute();
+        // Internal: started by `run` only (ConsoleHost).
+        if (args.Length == 1 && args[0] == "console") return ConsoleHost.Run();
         if (args.Length == 1 && args[0] == "inspect") return SurvivorCommands.Inspect();
         int graceMs;
         if (args.Length == 2 && args[0] == "terminate" && SurvivorCommands.TryParseGrace(args[1], out graceMs)) return SurvivorCommands.Terminate(graceMs);
@@ -431,18 +435,22 @@ sealed class RunCommand
     // ---- Job and command ------------------------------------------------------------------------
 
     /**
-     * Starts the command suspended in a new console of its own, hidden, assigns it to a new job with
-     * KILL_ON_JOB_CLOSE and no breakaway, sets its console's output code page to UTF-8, and only then
-     * resumes it, so every process it starts is in the job from its first instruction on (design D1),
-     * and writes to a UTF-8 console (add-windows-environment-and-commands design D5). The command
-     * inherits exactly the helper's stdout and stderr and a NUL stdin (design D2). `consoleError` is
-     * null when the console is UTF-8, and says why otherwise; the command runs either way.
+     * Starts the command suspended, assigns it to a new job with KILL_ON_JOB_CLOSE and no breakaway,
+     * and only then resumes it, so every process it starts is in the job from its first instruction
+     * on (design D1). The command inherits exactly the helper's stdout and stderr and a NUL stdin
+     * (design D2).
+     *
+     * Its console is hidden and holds only the command's processes. It is set to UTF-8 before the
+     * command runs (add-windows-environment-and-commands design D5, fallback b): a console host
+     * (`veydr-helper console`, see ConsoleHost) creates a new console and sets its output code page
+     * to 65001; the helper attaches to that console only while it creates the suspended command,
+     * which inherits it, and detaches before the command runs; the host then exits. A suspended
+     * process created with a console of its own cannot be attached to (W2 CI: error 6), since its
+     * console exists only once it runs. Should any step fail, the command gets a new console of its
+     * own, as in W1, and `consoleError` says why; it is null when the console is UTF-8.
      */
     void StartCommand(RunRequest request, out uint leaderPid, out ulong created, out string consoleError)
     {
-        // The helper's own console (Veydr's, or a hidden one of its own): AttachConsole refuses a
-        // second one, and the helper writes nothing to a console, so it never needs it back. Freeing
-        // it may reset the control handling, which is registered again (W1 group 4's rule).
         // The command's output handles, read before the console is freed: freeing it would close them
         // if they were console handles. Veydr always gives pipes; a console is refused rather than
         // passed on closed.
@@ -453,6 +461,9 @@ sealed class RunCommand
         if (Native.GetFileType(stdout) == Native.FILE_TYPE_CHAR || Native.GetFileType(stderr) == Native.FILE_TYPE_CHAR)
             throw new HelperException("the helper's stdout and stderr must be pipes or files, not a console or another character device");
 
+        // The helper's own console (Veydr's, or a hidden one of its own): AttachConsole refuses a
+        // second one, and the helper writes nothing to a console, so it never needs it back. Freeing
+        // it may reset the control handling, which is registered again (W1 group 4's rule).
         bool ctrlIgnored = CtrlEvents.Ignore();
         Native.FreeConsole();
         ctrlIgnored = CtrlEvents.Ignore() && ctrlIgnored;
@@ -484,55 +495,44 @@ sealed class RunCommand
         IntPtr nul = Native.CreateFile("NUL", Native.GENERIC_READ, Native.FILE_SHARE_READ | Native.FILE_SHARE_WRITE, ref inheritable, Native.OPEN_EXISTING, 0, IntPtr.Zero);
         if (nul == Native.InvalidHandle) throw HelperException.LastError("could not open NUL for the command's stdin");
 
-        IntPtr handles = IntPtr.Zero, attributes = IntPtr.Zero;
-        bool attributesReady = false;
-        Native.PROCESS_INFORMATION process = new Native.PROCESS_INFORMATION();
+        ConsoleHost host = null;
+        bool attached = false;
+        Native.PROCESS_INFORMATION process;
         try
         {
-            IntPtr[] list = stdout == stderr ? new IntPtr[] { nul, stdout } : new IntPtr[] { nul, stdout, stderr };
-            handles = Marshal.AllocHGlobal(IntPtr.Size * list.Length);
-            Marshal.Copy(list, 0, handles, list.Length);
-
-            IntPtr size = IntPtr.Zero;
-            Native.InitializeProcThreadAttributeList(IntPtr.Zero, 1, 0, ref size);
-            if (size == IntPtr.Zero) throw HelperException.LastError("could not size the process attributes");
-            attributes = Marshal.AllocHGlobal(size);
-            if (!Native.InitializeProcThreadAttributeList(attributes, 1, 0, ref size)) throw HelperException.LastError("could not create the process attributes");
-            attributesReady = true;
-            if (!Native.UpdateProcThreadAttribute(attributes, 0, (IntPtr)Native.PROC_THREAD_ATTRIBUTE_HANDLE_LIST, handles, (IntPtr)(IntPtr.Size * list.Length), IntPtr.Zero, IntPtr.Zero))
-                throw HelperException.LastError("could not limit the inherited handles");
-
-            Native.STARTUPINFOEX startup = new Native.STARTUPINFOEX();
-            startup.StartupInfo.cb = Marshal.SizeOf(typeof(Native.STARTUPINFOEX));
-            startup.StartupInfo.dwFlags = Native.STARTF_USESTDHANDLES | Native.STARTF_USESHOWWINDOW;
-            startup.StartupInfo.wShowWindow = Native.SW_HIDE;
-            startup.StartupInfo.hStdInput = nul;
-            startup.StartupInfo.hStdOutput = stdout;
-            startup.StartupInfo.hStdError = stderr;
-            startup.lpAttributeList = attributes;
-
-            // The working directory and environment are the helper's own, which Veydr set (design D2).
-            uint flags = Native.CREATE_SUSPENDED | Native.CREATE_NEW_CONSOLE | Native.CREATE_NEW_PROCESS_GROUP | Native.CREATE_UNICODE_ENVIRONMENT | Native.EXTENDED_STARTUPINFO_PRESENT;
-            // Both exactly as Veydr built them (design D1); RunRequest has checked them.
-            if (!Native.CreateProcess(request.Application, new StringBuilder(request.CommandLine), IntPtr.Zero, IntPtr.Zero, true, flags, IntPtr.Zero, null, ref startup, out process))
+            if (!ctrlIgnored)
             {
-                int code = Marshal.GetLastWin32Error();
-                throw new HelperException(Native.Describe(code));
+                consoleError = "could not ignore console control events, so no console is attached to";
             }
+            else
+            {
+                host = ConsoleHost.Start(out consoleError);
+                if (host != null) attached = AttachTo(host, out consoleError);
+            }
+
+            // Attached: the command inherits the host's UTF-8 console. Otherwise it gets one of its own.
+            // The working directory and environment are the helper's own, which Veydr set (design D2).
+            uint flags = Native.CREATE_SUSPENDED | Native.CREATE_NEW_PROCESS_GROUP | Native.CREATE_UNICODE_ENVIRONMENT | (attached ? 0 : Native.CREATE_NEW_CONSOLE);
+            // Both exactly as Veydr built them (design D1); RunRequest has checked them.
+            process = Spawn(request.Application, request.CommandLine, flags, nul, stdout, stderr);
         }
         finally
         {
-            if (attributesReady) Native.DeleteProcThreadAttributeList(attributes);
-            if (attributes != IntPtr.Zero) Marshal.FreeHGlobal(attributes);
-            if (handles != IntPtr.Zero) Marshal.FreeHGlobal(handles);
+            // The helper is a member of the command's console only while the command is suspended.
+            if (attached)
+            {
+                Native.FreeConsole();
+                CtrlEvents.Ignore();
+            }
             Native.CloseHandle(nul);
+            // The host waits until the command is on its console, then exits.
+            if (host != null) host.Release();
         }
 
         leader = process.hProcess;
         try
         {
             if (!Native.AssignProcessToJobObject(job, process.hProcess)) throw HelperException.LastError("could not put the command in its job");
-            consoleError = ctrlIgnored ? SetUtf8Console(process.dwProcessId) : "could not ignore console control events before attaching to the command's console";
             if (Native.ResumeThread(process.hThread) == uint.MaxValue) throw HelperException.LastError("could not resume the command");
         }
         catch
@@ -552,34 +552,78 @@ sealed class RunCommand
     }
 
     /**
-     * Sets the output code page of the console of `pid`, the suspended leader, to UTF-8 (65001); null
-     * if that worked, the reason otherwise (design D5). The helper attaches to that console, which
-     * gives it the console's default control handling again, so its own is registered at once; it
-     * detaches before the command runs. Called before any other thread of the helper starts, so no
-     * stop can attach meanwhile.
+     * Attaches the helper to the host's console, with its own control handling registered again
+     * (attaching resets it); `false` with the reason otherwise, the helper then on no console.
+     * Called before any other thread of the helper starts, so no stop can attach meanwhile.
      */
-    static string SetUtf8Console(uint pid)
+    static bool AttachTo(ConsoleHost host, out string error)
     {
-        if (!Native.AttachConsole(pid))
+        if (!Native.AttachConsole(host.Pid))
         {
-            string reason = "could not attach to the command's console: " + Native.Describe(Marshal.GetLastWin32Error());
+            error = "could not attach to the console host's console: " + Native.Describe(Marshal.GetLastWin32Error());
             CtrlEvents.Ignore();
-            return reason;
+            return false;
         }
+        if (!CtrlEvents.Ignore())
+        {
+            error = "could not ignore console control events: " + Native.Describe(Marshal.GetLastWin32Error());
+            Native.FreeConsole();
+            CtrlEvents.Ignore();
+            return false;
+        }
+        error = null;
+        return true;
+    }
+
+    /**
+     * CreateProcess with the helper's working directory and environment, stdio set to the given
+     * handles, and only those inherited, hidden. Throws a HelperException; one for CreateProcess
+     * itself carries just the system's reason (e.g. "The system cannot find the file specified").
+     */
+    public static Native.PROCESS_INFORMATION Spawn(string application, string commandLine, uint flags, IntPtr stdin, IntPtr stdout, IntPtr stderr)
+    {
+        List<IntPtr> list = new List<IntPtr>();
+        foreach (IntPtr handle in new IntPtr[] { stdin, stdout, stderr })
+        {
+            if (!list.Contains(handle)) list.Add(handle);
+        }
+        IntPtr handles = IntPtr.Zero, attributes = IntPtr.Zero;
+        bool attributesReady = false;
         try
         {
-            if (!CtrlEvents.Ignore()) return "could not ignore console control events: " + Native.Describe(Marshal.GetLastWin32Error());
-            if (!Native.SetConsoleOutputCP(Utf8CodePage)) return "could not set the console's output code page: " + Native.Describe(Marshal.GetLastWin32Error());
-            return null;
+            handles = Marshal.AllocHGlobal(IntPtr.Size * list.Count);
+            Marshal.Copy(list.ToArray(), 0, handles, list.Count);
+
+            IntPtr size = IntPtr.Zero;
+            Native.InitializeProcThreadAttributeList(IntPtr.Zero, 1, 0, ref size);
+            if (size == IntPtr.Zero) throw HelperException.LastError("could not size the process attributes");
+            attributes = Marshal.AllocHGlobal(size);
+            if (!Native.InitializeProcThreadAttributeList(attributes, 1, 0, ref size)) throw HelperException.LastError("could not create the process attributes");
+            attributesReady = true;
+            if (!Native.UpdateProcThreadAttribute(attributes, 0, (IntPtr)Native.PROC_THREAD_ATTRIBUTE_HANDLE_LIST, handles, (IntPtr)(IntPtr.Size * list.Count), IntPtr.Zero, IntPtr.Zero))
+                throw HelperException.LastError("could not limit the inherited handles");
+
+            Native.STARTUPINFOEX startup = new Native.STARTUPINFOEX();
+            startup.StartupInfo.cb = Marshal.SizeOf(typeof(Native.STARTUPINFOEX));
+            startup.StartupInfo.dwFlags = Native.STARTF_USESTDHANDLES | Native.STARTF_USESHOWWINDOW;
+            startup.StartupInfo.wShowWindow = Native.SW_HIDE;
+            startup.StartupInfo.hStdInput = stdin;
+            startup.StartupInfo.hStdOutput = stdout;
+            startup.StartupInfo.hStdError = stderr;
+            startup.lpAttributeList = attributes;
+
+            Native.PROCESS_INFORMATION process;
+            if (!Native.CreateProcess(application, new StringBuilder(commandLine), IntPtr.Zero, IntPtr.Zero, true, flags | Native.EXTENDED_STARTUPINFO_PRESENT, IntPtr.Zero, null, ref startup, out process))
+                throw new HelperException(Native.Describe(Marshal.GetLastWin32Error()));
+            return process;
         }
         finally
         {
-            Native.FreeConsole();
-            CtrlEvents.Ignore();
+            if (attributesReady) Native.DeleteProcThreadAttributeList(attributes);
+            if (attributes != IntPtr.Zero) Marshal.FreeHGlobal(attributes);
+            if (handles != IntPtr.Zero) Marshal.FreeHGlobal(handles);
         }
     }
-
-    const uint Utf8CodePage = 65001;
 
     uint ActiveProcesses()
     {
@@ -1148,6 +1192,194 @@ sealed class RunRequest
         int separator = Math.Max(path.LastIndexOf('\\'), path.LastIndexOf('/'));
         string name = path.Substring(separator + 1).TrimEnd(' ', '.');
         return name.EndsWith(".bat", StringComparison.OrdinalIgnoreCase) || name.EndsWith(".cmd", StringComparison.OrdinalIgnoreCase);
+    }
+}
+
+/**
+ * The console a command runs on (add-windows-environment-and-commands design D5, fallback b):
+ * `veydr-helper console`, started by `run` in a new hidden console of its own and outside the
+ * command's job. It sets that console's output code page to UTF-8 (65001), which works because the
+ * console exists once the host runs, and answers `ok` (or the reason it could not) as one ASCII
+ * line on its stdout, a pipe to `run`. It then waits for its stdin, a pipe from `run`, to close:
+ * `run` closes it once it has created the command on this console. The host stays until the
+ * command is on the console, so the console cannot end before the command connects, at most
+ * AttachWaitMs, and exits. It never runs anything itself, and it is never a member of the job.
+ */
+sealed class ConsoleHost
+{
+    /** How long `run` waits for the host's answer before it gives the command a console of its own. */
+    const int AnswerTimeoutMs = 10000;
+    /** How long the host waits, once released, for the command to appear on its console. */
+    const int AttachWaitMs = 2000;
+    const uint Utf8CodePage = 65001;
+    const int MaxAnswerBytes = 512;
+
+    readonly IntPtr process;
+    IntPtr input;
+    public readonly uint Pid;
+
+    ConsoleHost(IntPtr process, IntPtr input, uint pid)
+    {
+        this.process = process;
+        this.input = input;
+        Pid = pid;
+    }
+
+    /** Starts the host and waits for its answer; null with the reason when it cannot give a UTF-8 console. */
+    public static ConsoleHost Start(out string error)
+    {
+        string self = Native.ModulePath();
+        if (self == null)
+        {
+            error = "could not find the helper's own path to start the console host: " + Native.Describe(Marshal.GetLastWin32Error());
+            return null;
+        }
+        Native.SECURITY_ATTRIBUTES inheritable = new Native.SECURITY_ATTRIBUTES();
+        inheritable.nLength = Marshal.SizeOf(typeof(Native.SECURITY_ATTRIBUTES));
+        inheritable.bInheritHandle = true;
+        IntPtr inRead, inWrite, outRead, outWrite;
+        if (!Native.CreatePipe(out inRead, out inWrite, ref inheritable, 0))
+        {
+            error = "could not create the console host's pipes: " + Native.Describe(Marshal.GetLastWin32Error());
+            return null;
+        }
+        if (!Native.CreatePipe(out outRead, out outWrite, ref inheritable, 0))
+        {
+            error = "could not create the console host's pipes: " + Native.Describe(Marshal.GetLastWin32Error());
+            Native.CloseHandle(inRead);
+            Native.CloseHandle(inWrite);
+            return null;
+        }
+        Native.PROCESS_INFORMATION info;
+        try
+        {
+            // The helper's ends stay with the helper: the host must see its stdin end when `run` closes it.
+            if (!Native.SetHandleInformation(inWrite, Native.HANDLE_FLAG_INHERIT, 0) || !Native.SetHandleInformation(outRead, Native.HANDLE_FLAG_INHERIT, 0))
+                throw HelperException.LastError("could not keep the console host's pipes to the helper");
+            info = RunCommand.Spawn(self, "\"" + self + "\" console", Native.CREATE_NEW_CONSOLE | Native.CREATE_NEW_PROCESS_GROUP, inRead, outWrite, outWrite);
+        }
+        catch (HelperException failure)
+        {
+            error = "could not start the console host: " + failure.Message;
+            Native.CloseHandle(inWrite);
+            Native.CloseHandle(outRead);
+            return null;
+        }
+        finally
+        {
+            // The host's ends: once it exits, reading its answer ends too.
+            Native.CloseHandle(inRead);
+            Native.CloseHandle(outWrite);
+        }
+        Native.CloseHandle(info.hThread);
+        ConsoleHost host = new ConsoleHost(info.hProcess, inWrite, info.dwProcessId);
+
+        string answer = ReadAnswer(outRead, host);
+        if (answer == "ok")
+        {
+            error = null;
+            return host;
+        }
+        error = answer == null ? "the console host did not answer within " + AnswerTimeoutMs + " ms" : "the console host could not set the console to UTF-8: " + answer;
+        host.Release();
+        return null;
+    }
+
+    /** The host's one answer line, or null if it gave none in time (it is then ended). Closes `output`. */
+    static string ReadAnswer(IntPtr output, ConsoleHost host)
+    {
+        string answer = null;
+        Thread reader = new Thread(delegate()
+        {
+            try
+            {
+                using (FileStream stream = new FileStream(new Microsoft.Win32.SafeHandles.SafeFileHandle(output, true), FileAccess.Read, 1))
+                {
+                    MemoryStream line = new MemoryStream();
+                    while (line.Length < MaxAnswerBytes)
+                    {
+                        int next = stream.ReadByte();
+                        if (next == -1 || next == '\n') break;
+                        line.WriteByte((byte)next);
+                    }
+                    string text = Encoding.ASCII.GetString(line.ToArray());
+                    answer = text.EndsWith("\r", StringComparison.Ordinal) ? text.Substring(0, text.Length - 1) : text;
+                }
+            }
+            catch (IOException)
+            {
+                // The host ended without answering.
+            }
+        });
+        reader.IsBackground = true;
+        reader.Start();
+        if (!reader.Join(AnswerTimeoutMs))
+        {
+            // Ending the host closes its end of the pipe, which ends the read.
+            Native.TerminateProcess(host.process, 1);
+            reader.Join(AnswerTimeoutMs);
+            return null;
+        }
+        return answer == "" ? null : answer;
+    }
+
+    /** Lets the host go: it exits once the command is on its console, or after AttachWaitMs. */
+    public void Release()
+    {
+        if (input != IntPtr.Zero)
+        {
+            Native.CloseHandle(input);
+            input = IntPtr.Zero;
+        }
+        Native.CloseHandle(process);
+    }
+
+    /**
+     * `veydr-helper console`, the host itself. It refuses a console that other processes share,
+     * such as a terminal it was started from by hand, so it never changes anyone else's console.
+     */
+    public static int Run()
+    {
+        // A console event must not end the host while the helper is setting up.
+        CtrlEvents.Ignore();
+        string answer;
+        uint[] processes = CtrlEvents.ConsoleProcesses();
+        if (processes == null) answer = "it has no console of its own";
+        else if (processes.Length != 1) answer = "its console is shared with " + (processes.Length - 1) + " other processes";
+        else if (!Native.SetConsoleOutputCP(Utf8CodePage)) answer = "could not set the output code page: " + Native.Describe(Marshal.GetLastWin32Error());
+        else answer = "ok";
+        try
+        {
+            byte[] bytes = Encoding.ASCII.GetBytes(RunCommand.Truncate(answer, MaxAnswerBytes - 2) + "\n");
+            Stream stdout = Console.OpenStandardOutput();
+            stdout.Write(bytes, 0, bytes.Length);
+            stdout.Flush();
+        }
+        catch (IOException)
+        {
+            return VeydrHelper.ExitFailure;
+        }
+        if (answer != "ok") return VeydrHelper.ExitFailure;
+
+        // `run` closes stdin once the command is created on this console (or if it fails).
+        try
+        {
+            Stream stdin = Console.OpenStandardInput();
+            byte[] buffer = new byte[64];
+            while (stdin.Read(buffer, 0, buffer.Length) > 0) { }
+        }
+        catch (IOException)
+        {
+            // A broken pipe: `run` is gone.
+        }
+        Stopwatch waited = Stopwatch.StartNew();
+        while (waited.ElapsedMilliseconds < AttachWaitMs)
+        {
+            uint[] now = CtrlEvents.ConsoleProcesses();
+            if (now == null || now.Length > 1) break;
+            Thread.Sleep(5);
+        }
+        return VeydrHelper.ExitOk;
     }
 }
 
@@ -1799,6 +2031,10 @@ static class Native
     [DllImport("kernel32.dll", SetLastError = true)] public static extern uint GetConsoleProcessList([Out] uint[] processList, uint processCount);
     [DllImport("kernel32.dll", SetLastError = true)] public static extern bool SetConsoleOutputCP(uint codePage);
     [DllImport("kernel32.dll")] public static extern uint GetACP();
+    [DllImport("kernel32.dll", SetLastError = true)]
+    public static extern bool CreatePipe(out IntPtr readPipe, out IntPtr writePipe, ref SECURITY_ATTRIBUTES attributes, uint size);
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    public static extern uint GetModuleFileName(IntPtr module, StringBuilder name, int size);
 
     /** A Win32 error as "<system message> (error <code>)". */
     public static string Describe(int code)
@@ -1823,6 +2059,14 @@ static class Native
         {
             LocalFree(argv);
         }
+    }
+
+    /** The full path of the helper's own executable, or null if it cannot be read. */
+    public static string ModulePath()
+    {
+        StringBuilder name = new StringBuilder(32768);
+        uint length = GetModuleFileName(IntPtr.Zero, name, name.Capacity);
+        return length == 0 || length >= name.Capacity ? null : name.ToString(0, (int)length);
     }
 
     /** The PID of the process that created this one. */

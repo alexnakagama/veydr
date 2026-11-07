@@ -180,6 +180,14 @@ A batch-file editor (`code.cmd`) is resolved by D2 into `cmd.exe` with a `batchC
 
 The pause report gives the attach error and recommends one of them.
 
+**Decision (2026-11-07).** On the runner, `AttachConsole` on the suspended leader failed with "The handle is invalid (error 6)" in every run: a console created for a process exists only once that process runs. The user chose fallback (b), built so that the leader stays the command itself:
+- `run` starts `veydr-helper console`, the same binary, in a new hidden console of its own, outside the command's job. The host refuses a console it shares with other processes, sets its output code page to 65001, and answers `ok` over a pipe.
+- The helper attaches to the host's console only while it creates the suspended command without `CREATE_NEW_CONSOLE`, so the command inherits that console, and detaches before resuming it. That is the same window in which the original design attached, so the helper is still never on the command's console while the command runs.
+- The helper then closes the host's stdin. The host waits until the command is on its console (at most 2 s) and exits, so the console holds only the command's processes, as W1's stop requires.
+- If any step fails, the command gets a console of its own as in W1, with `utf8Console: false` and the reason in `consoleError`.
+
+The cost is one short-lived process per run. The protocol, the leader, the job, the stop and crash recovery are unchanged.
+
 **The fallback decoder.** `ManagedProcess` gains `outputFallbackEncoding: string | null`, which is `null` on Linux. On Windows it is a WHATWG label:
 - when `utf8Console` is true: the ANSI code page's label:
   - `windows-874` and `windows-1250` through `windows-1258`;

@@ -451,6 +451,16 @@ describe.skipIf(process.platform !== 'win32')('[windows-only: Job Objects]', () 
     }
   })
 
+  it("the console host refuses a console it shares, and leaves that console's code page alone", () => {
+    // Without windowsHide the host inherits the runner's console, which the runner shares.
+    const codePage = (): string => execFileSync('cmd.exe', ['/d', '/c', 'chcp'], { encoding: 'utf8', timeout: 30_000 }).trim()
+    const before = codePage()
+    const run = spawnSync(HELPER_PATH, ['console'], { encoding: 'utf8', input: '', timeout: 30_000 })
+    expect(run.status).toBe(1)
+    expect(run.stdout).toMatch(/^its console is shared with \d+ other processes\r?\n$/)
+    expect(codePage()).toBe(before)
+  })
+
   it(
     '[spec:process-supervision/children-and-grandchildren-stopped-on-windows] ends every process of the tree',
     async () => {
@@ -1144,8 +1154,8 @@ describe.skipIf(process.platform !== 'win32')('[windows-only: Job Objects]', () 
       const run = await logged.spawn({ file: CMD_EXE, args: [], commandLine: shellCommandLine(CMD_EXE, `echo ${text}`), cwd: s.dir, env })
       const [stdout, exit] = await Promise.all([collect(run.stdout), exitOf(run)])
       expect(exit).toEqual({ code: 0, signal: null, forced: false })
-      // If this fails, the change pauses for a decision between design D5's fallbacks (task 2.3);
-      // the logged reason is the attach error to report.
+      // The console host (design D5, fallback b) sets the console before the command starts; the
+      // logged reason says which step failed if it did not.
       expect(run.console.utf8, `utf8Console is false: ${JSON.stringify(events)}`).toBe(true)
       expect(events.filter((e) => e.event === 'process.windows-console-not-utf8')).toEqual([])
       expect(run.console.ansiCodePage).toBeGreaterThan(0)
