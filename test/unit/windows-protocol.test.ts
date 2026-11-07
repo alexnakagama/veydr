@@ -2,8 +2,10 @@ import { describe, expect, it } from 'vitest'
 import {
   encodeControlMessage,
   encodeIdentities,
+  encodeRunRequest,
   LineReader,
   MAX_GRACE_MS,
+  MAX_RUN_REQUEST_BYTES,
   MAX_TOOL_IDENTITIES,
   parseHandshake,
   parseHelperMessage,
@@ -14,11 +16,15 @@ import {
   type ProtocolErrorKind,
 } from '../../src/main/platform/windows/protocol'
 
-// Version 1 of the helper control protocol (add-windows-process-supervision design D2).
+// Version 2 of the helper control protocol (add-windows-process-supervision design D2,
+// add-windows-environment-and-commands designs D1 and D5).
 
 const TOKEN = 'a'.repeat(64)
 const CREATED = '134067012345678901'
 const member = { pid: 4248, created: CREATED, image: 'C:\\Program Files\\nodejs\\node.exe' }
+
+const CONSOLE = { utf8Console: true, ansiCodePage: 1252 }
+const started = { type: 'started', pid: 4244, created: CREATED, ...CONSOLE }
 
 const line = (value: unknown): string => JSON.stringify(value)
 
@@ -36,7 +42,9 @@ function expectProtocolError(run: () => unknown, kind: ProtocolErrorKind): void 
 describe('helper messages', () => {
   it('parses every message the helper sends', () => {
     const messages = [
-      { type: 'started', pid: 4244, created: CREATED },
+      started,
+      { ...started, utf8Console: false, ansiCodePage: 932, consoleError: 'could not attach to the command\'s console: The handle is invalid. (error 6)' },
+      { ...started, ansiCodePage: 65001 },
       { type: 'members', answer: false, members: [member] },
       { type: 'members', answer: true, members: [] },
       { type: 'exited', code: 0, forced: false },
@@ -68,14 +76,26 @@ describe('helper messages', () => {
 
   it('rejects missing, extra, and out-of-range fields', () => {
     const bad = [
-      { type: 'started', pid: 4244 },
-      { type: 'started', pid: 4244, created: CREATED, extra: true },
-      { type: 'started', pid: 0, created: CREATED },
-      { type: 'started', pid: 4244.5, created: CREATED },
-      { type: 'started', pid: 0x1_0000_0000, created: CREATED },
-      { type: 'started', pid: '4244', created: CREATED },
-      { type: 'started', pid: 4244, created: 134067012345678901 },
-      { type: 'started', pid: 4244, created: '0134067012345678901' },
+      { type: 'started', pid: 4244, ...CONSOLE },
+      // Version 1's started line, without the console fields.
+      { type: 'started', pid: 4244, created: CREATED },
+      { ...started, extra: true },
+      { ...started, pid: 0 },
+      { ...started, pid: 4244.5 },
+      { ...started, pid: 0x1_0000_0000 },
+      { ...started, pid: '4244' },
+      { ...started, created: 134067012345678901 },
+      { ...started, created: '0134067012345678901' },
+      { ...started, utf8Console: 'true' },
+      { ...started, utf8Console: undefined },
+      { ...started, ansiCodePage: 0 },
+      { ...started, ansiCodePage: 0x1_0000 },
+      { ...started, ansiCodePage: 1252.5 },
+      { ...started, ansiCodePage: undefined },
+      // The reason comes exactly with a console that is not UTF-8.
+      { ...started, consoleError: 'unexpected' },
+      { ...started, utf8Console: false },
+      { ...started, utf8Console: false, consoleError: 'x'.repeat(4097) },
       { type: 'members', members: [member] },
       { type: 'members', answer: 'yes', members: [member] },
       { type: 'members', answer: false, members: [{ ...member, image: undefined }] },
@@ -118,10 +138,14 @@ describe('handshake', () => {
   })
 
   it('reports another protocol version only for the right token', () => {
-    expectProtocolError(() => parseHandshake(line({ ...ready, version: 2 }), TOKEN), 'version-mismatch')
-    expectProtocolError(() => parseHandshake(line({ ...ready, version: '1' }), TOKEN), 'version-mismatch')
+    expect(PROTOCOL_VERSION).toBe(2)
+    // A version 1 helper (W1) is refused, by name, as any other version is.
+    expect(() => parseHandshake(line({ ...ready, version: 1 }), TOKEN)).toThrow('The Windows helper speaks protocol version 1, but Veydr needs version 2')
+    expectProtocolError(() => parseHandshake(line({ ...ready, version: 1 }), TOKEN), 'version-mismatch')
+    expectProtocolError(() => parseHandshake(line({ ...ready, version: 3 }), TOKEN), 'version-mismatch')
+    expectProtocolError(() => parseHandshake(line({ ...ready, version: '2' }), TOKEN), 'version-mismatch')
     expectProtocolError(() => parseHandshake(line({ ...ready, version: undefined }), TOKEN), 'version-mismatch')
-    expectProtocolError(() => parseHandshake(line({ ...ready, version: 2, token: 'c'.repeat(64) }), TOKEN), 'bad-token')
+    expectProtocolError(() => parseHandshake(line({ ...ready, version: 1, token: 'c'.repeat(64) }), TOKEN), 'bad-token')
   })
 
   it('rejects a malformed ready line from the right helper', () => {
@@ -142,6 +166,45 @@ describe('control messages', () => {
       expect(() => encodeControlMessage({ type: 'stop', graceMs }), String(graceMs)).toThrow(RangeError)
     }
     expect(encodeControlMessage({ type: 'stop', graceMs: MAX_GRACE_MS })).toContain(String(MAX_GRACE_MS))
+  })
+})
+
+describe('run request', () => {
+  const application = 'C:\\Program Files\\nodejs\\node.exe'
+
+  it('is one line with the two fields in a fixed order and no whitespace', () => {
+    expect(encodeRunRequest({ application: 'C:\\a.exe', commandLine: '"C:\\a.exe" x' })).toBe('{"application":"C:\\\\a.exe","commandLine":"\\"C:\\\\a.exe\\" x"}\n')
+    // Fields beyond the two are not passed on.
+    const extra = { commandLine: 'b', application: 'a', secret: 'x' } as { application: string; commandLine: string }
+    expect(encodeRunRequest(extra)).toBe('{"application":"a","commandLine":"b"}\n')
+  })
+
+  it('escapes quotes, backslashes and every control character, and writes other characters as UTF-8', () => {
+    const controls = Array.from({ length: 0x20 }, (_, i) => String.fromCharCode(i)).filter((c) => c !== '\0').join('')
+    const commandLine = `"${application}" "a \\"b\\" c\\\\" ${controls} \u007f é € 😀 \u2028`
+    const encoded = encodeRunRequest({ application, commandLine })
+    expect(encoded.endsWith('\n')).toBe(true)
+    expect(encoded.slice(0, -1)).not.toMatch(/[\u0000-\u001f]/)
+    // The escapes the helper's parser reads; a non-BMP character stays one UTF-8 sequence.
+    expect(encoded).toContain('\\b\\t\\n\\u000b\\f\\r')
+    expect(encoded).toContain('😀')
+    expect(Buffer.from(encoded, 'utf8').includes(Buffer.from([0xf0, 0x9f, 0x98, 0x80]))).toBe(true)
+    expect(JSON.parse(encoded)).toEqual({ application, commandLine })
+  })
+
+  it('refuses NUL and lone surrogates, which the helper refuses too', () => {
+    for (const bad of ['a\0b', 'a\ud800b', 'a\udc00', '\ud83d']) {
+      expect(() => encodeRunRequest({ application, commandLine: bad }), JSON.stringify(bad)).toThrow(RangeError)
+      expect(() => encodeRunRequest({ application: bad, commandLine: 'x' }), JSON.stringify(bad)).toThrow(RangeError)
+    }
+  })
+
+  it('refuses a request beyond the helper\'s limit, counted in UTF-8 bytes', () => {
+    const fits = 'x'.repeat(MAX_RUN_REQUEST_BYTES - '{"application":"a","commandLine":""}'.length)
+    expect(Buffer.byteLength(encodeRunRequest({ application: 'a', commandLine: fits })) - 1).toBe(MAX_RUN_REQUEST_BYTES)
+    expect(() => encodeRunRequest({ application: 'a', commandLine: `${fits}x` })).toThrow(/more than the 1048576/)
+    // Escaped control characters take six bytes each.
+    expect(() => encodeRunRequest({ application: 'a', commandLine: '\u0001'.repeat(MAX_RUN_REQUEST_BYTES / 6 + 1) })).toThrow(RangeError)
   })
 })
 

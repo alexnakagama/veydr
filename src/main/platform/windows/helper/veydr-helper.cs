@@ -3,16 +3,22 @@
 // binary. Subcommands:
 //
 //   veydr-helper.exe version                      prints the control protocol version on one line
-//   veydr-helper.exe run <pipe> <file> [<arg>...]  runs <file> in a Job Object of its own (design D1),
+//   veydr-helper.exe run <pipe>                   runs a command in a Job Object of its own (design D1),
 //                                                 controlled over the named pipe <pipe> (design D2)
 //   veydr-helper.exe inspect                      reports which identities on stdin are live (design D4)
 //   veydr-helper.exe terminate <graceMs>          ends the identities on stdin that still match (design D4)
+//   veydr-helper.exe console                      internal: the UTF-8 console a `run` command gets
+//                                                 (add-windows-environment-and-commands design D5)
 //
 // `run` reads a one-time token as one line on stdin, connects to <pipe>, which must be served by the
-// process that started the helper, and proves itself with the token. It then starts <file>, with the
-// helper's own working directory and environment, in a new Job Object, and reports over the pipe in
-// the JSON lines of protocol version 1 (src/main/platform/windows/protocol.ts). Its stdout and stderr
-// belong to the command: the helper never writes to them after it has connected.
+// process that started the helper, and proves itself with the token. Only then does it read the run
+// request, the second line on stdin: `{"application":"<program>","commandLine":"<command line>"}`
+// (add-windows-environment-and-commands design D1). Veydr builds the complete command line; the
+// helper checks it and passes both to CreateProcess unchanged, with the helper's own working
+// directory and environment, in a new Job Object, and reports over the pipe in the JSON lines of
+// protocol version 2 (src/main/platform/windows/protocol.ts). Its stdout and stderr belong to the
+// command: the helper never writes to them after it has connected, and a refused request is
+// reported as an `error` line on the pipe.
 //
 // Exit codes: 0 the command ran and its job is empty; 1 a failure, reported as an `error` line (or on
 // stderr before the pipe is connected), after which nothing of the command is left running; 2 a
@@ -39,13 +45,14 @@ using System.Threading;
 
 static class VeydrHelper
 {
-    // Version 1 of the JSON-line control protocol (design D2). The TypeScript client refuses a helper
-    // whose number differs from its own, so change both together.
-    public const int ProtocolVersion = 1;
+    // Version 2 of the JSON-line control protocol (design D2; add-windows-environment-and-commands
+    // design D1). The TypeScript client refuses a helper whose number differs from its own, so change
+    // both together.
+    public const int ProtocolVersion = 2;
 
     public const int ExitOk = 0, ExitFailure = 1, ExitUsage = 2;
 
-    const string Usage = "usage: veydr-helper version | veydr-helper run <pipe> <file> [<arg>...] | veydr-helper inspect | veydr-helper terminate <graceMs>";
+    const string Usage = "usage: veydr-helper version | veydr-helper run <pipe> | veydr-helper inspect | veydr-helper terminate <graceMs>";
 
     static int Main()
     {
@@ -65,12 +72,9 @@ static class VeydrHelper
             Console.Out.WriteLine(ProtocolVersion.ToString(CultureInfo.InvariantCulture));
             return ExitOk;
         }
-        if (args.Length >= 3 && args[0] == "run")
-        {
-            string[] commandArgs = new string[args.Length - 3];
-            Array.Copy(args, 3, commandArgs, 0, commandArgs.Length);
-            return new RunCommand(args[1], args[2], commandArgs).Execute();
-        }
+        if (args.Length == 2 && args[0] == "run") return new RunCommand(args[1]).Execute();
+        // Internal: started by `run` only (ConsoleHost).
+        if (args.Length == 1 && args[0] == "console") return ConsoleHost.Run();
         if (args.Length == 1 && args[0] == "inspect") return SurvivorCommands.Inspect();
         int graceMs;
         if (args.Length == 2 && args[0] == "terminate" && SurvivorCommands.TryParseGrace(args[1], out graceMs)) return SurvivorCommands.Terminate(graceMs);
@@ -139,22 +143,10 @@ sealed class RunCommand
      * would still exceed the limit; Veydr then treats the helper as failed, which ends the job.
      */
     const int MaxMembersLineChars = 900 * 1024;
-    /**
-     * Arguments of a batch file are read by cmd.exe, not by the C runtime. These pass through bare;
-     * any other argument is quoted, which makes cmd.exe take `&`, `|`, `<`, `>`, `(`, `)`, `^`,
-     * spaces, `=`, `,` and `;` literally (with /v:off, `!` too). What quoting cannot protect is
-     * refused: `"` and `%` (expanded even inside quotes), line breaks, NUL, and a trailing backslash,
-     * which the program the batch file starts would read as escaping the closing quote. A batch file
-     * that turns delayed expansion on itself (`setlocal enabledelayedexpansion`) expands `!` in its
-     * arguments again; that is the batch file's own doing, as it would be from any shell.
-     */
-    static readonly Regex BareBatchArgumentPattern = new Regex("^[A-Za-z0-9_+\\-.:/\\\\@]+$", RegexOptions.CultureInvariant);
-
     /** How long an abort waits for its `error` line to be written. */
     const int AbortReportMs = 1000;
 
-    readonly string pipePath, file;
-    readonly string[] commandArgs;
+    readonly string pipePath;
     readonly object gate = new object();
     NamedPipeClientStream channel;
     /** The channel can no longer be written: Veydr is gone, or the helper is ending. */
@@ -167,19 +159,19 @@ sealed class RunCommand
     string lastEventMembers;
     readonly ManualResetEvent jobEmpty = new ManualResetEvent(false);
 
-    public RunCommand(string pipePath, string file, string[] commandArgs)
+    public RunCommand(string pipePath)
     {
         this.pipePath = pipePath;
-        this.file = file;
-        this.commandArgs = commandArgs;
     }
 
     public int Execute()
     {
+        Stream stdin;
         string token;
         try
         {
-            token = ReadToken();
+            stdin = Console.OpenStandardInput();
+            token = ReadToken(stdin);
             Connect();
         }
         catch (Exception error)
@@ -193,10 +185,16 @@ sealed class RunCommand
         {
             Send("{\"type\":\"ready\",\"version\":" + VeydrHelper.ProtocolVersion.ToString(CultureInfo.InvariantCulture) +
                 ",\"token\":" + Json.Quote(token) + ",\"pid\":" + Native.GetCurrentProcessId().ToString(CultureInfo.InvariantCulture) + "}");
+            // Read only now, so that every refusal is an `error` line on the pipe (design D1).
+            RunRequest request = RunRequest.Read(stdin);
             uint leaderPid;
             ulong created;
-            StartCommand(out leaderPid, out created);
-            Send("{\"type\":\"started\",\"pid\":" + Json.Number(leaderPid) + ",\"created\":\"" + Json.Number(created) + "\"}");
+            string consoleError;
+            StartCommand(request, out leaderPid, out created, out consoleError);
+            Send("{\"type\":\"started\",\"pid\":" + Json.Number(leaderPid) + ",\"created\":\"" + Json.Number(created) + "\"" +
+                ",\"utf8Console\":" + (consoleError == null ? "true" : "false") +
+                ",\"ansiCodePage\":" + Json.Number(Native.GetACP()) +
+                (consoleError == null ? "" : ",\"consoleError\":" + Json.Quote(Truncate(consoleError, 4000))) + "}");
 
             StartThread(ReadControl, "control");
             StartThread(WatchJob, "job");
@@ -279,10 +277,12 @@ sealed class RunCommand
 
     // ---- Control channel ------------------------------------------------------------------------
 
-    /** The token Veydr wrote as one line on stdin (design D2): it never appears on a command line. */
-    static string ReadToken()
+    /**
+     * The token Veydr wrote as the first line on stdin (design D2): it never appears on a command
+     * line. Read a byte at a time, so nothing of the run request after it is consumed.
+     */
+    static string ReadToken(Stream stdin)
     {
-        Stream stdin = Console.OpenStandardInput();
         byte[] bytes = new byte[MaxTokenBytes];
         int length = 0;
         while (true)
@@ -435,15 +435,38 @@ sealed class RunCommand
     // ---- Job and command ------------------------------------------------------------------------
 
     /**
-     * Starts the command suspended in a new console of its own, hidden, assigns it to a new job with
-     * KILL_ON_JOB_CLOSE and no breakaway, and only then resumes it, so every process it starts is in
-     * the job from its first instruction on (design D1). The command inherits exactly the helper's
-     * stdout and stderr and a NUL stdin (design D2).
+     * Starts the command suspended, assigns it to a new job with KILL_ON_JOB_CLOSE and no breakaway,
+     * and only then resumes it, so every process it starts is in the job from its first instruction
+     * on (design D1). The command inherits exactly the helper's stdout and stderr and a NUL stdin
+     * (design D2).
+     *
+     * Its console is hidden and holds only the command's processes. It is set to UTF-8 before the
+     * command runs (add-windows-environment-and-commands design D5, fallback b): a console host
+     * (`veydr-helper console`, see ConsoleHost) creates a new console and sets its output code page
+     * to 65001; the helper attaches to that console only while it creates the suspended command,
+     * which inherits it, and detaches before the command runs; the host then exits. A suspended
+     * process created with a console of its own cannot be attached to (W2 CI: error 6), since its
+     * console exists only once it runs. Should any step fail, the command gets a new console of its
+     * own, as in W1, and `consoleError` says why; it is null when the console is UTF-8.
      */
-    void StartCommand(out uint leaderPid, out ulong created)
+    void StartCommand(RunRequest request, out uint leaderPid, out ulong created, out string consoleError)
     {
-        string application, commandLine;
-        BuildCommandLine(out application, out commandLine);
+        // The command's output handles, read before the console is freed: freeing it would close them
+        // if they were console handles. Veydr always gives pipes; a console is refused rather than
+        // passed on closed.
+        IntPtr stdout = Native.GetStdHandle(Native.STD_OUTPUT_HANDLE);
+        IntPtr stderr = Native.GetStdHandle(Native.STD_ERROR_HANDLE);
+        if (stdout == IntPtr.Zero || stdout == Native.InvalidHandle || stderr == IntPtr.Zero || stderr == Native.InvalidHandle)
+            throw new HelperException("the helper has no stdout or stderr to give the command");
+        if (Native.GetFileType(stdout) == Native.FILE_TYPE_CHAR || Native.GetFileType(stderr) == Native.FILE_TYPE_CHAR)
+            throw new HelperException("the helper's stdout and stderr must be pipes or files, not a console or another character device");
+
+        // The helper's own console (Veydr's, or a hidden one of its own): AttachConsole refuses a
+        // second one, and the helper writes nothing to a console, so it never needs it back. Freeing
+        // it may reset the control handling, which is registered again (W1 group 4's rule).
+        bool ctrlIgnored = CtrlEvents.Ignore();
+        Native.FreeConsole();
+        ctrlIgnored = CtrlEvents.Ignore() && ctrlIgnored;
 
         job = Native.CreateJobObject(IntPtr.Zero, null);
         if (job == IntPtr.Zero) throw HelperException.LastError("could not create the job");
@@ -461,10 +484,6 @@ sealed class RunCommand
         if (!Native.SetInformationJobObject(job, Native.JobObjectAssociateCompletionPortInformation, ref association, Marshal.SizeOf(typeof(Native.JOBOBJECT_ASSOCIATE_COMPLETION_PORT))))
             throw HelperException.LastError("could not watch the job");
 
-        IntPtr stdout = Native.GetStdHandle(Native.STD_OUTPUT_HANDLE);
-        IntPtr stderr = Native.GetStdHandle(Native.STD_ERROR_HANDLE);
-        if (stdout == IntPtr.Zero || stdout == Native.InvalidHandle || stderr == IntPtr.Zero || stderr == Native.InvalidHandle)
-            throw new HelperException("the helper has no stdout or stderr to give the command");
         // Only inheritable handles may be listed; nothing else is inherited.
         if (!Native.SetHandleInformation(stdout, Native.HANDLE_FLAG_INHERIT, Native.HANDLE_FLAG_INHERIT) ||
             !Native.SetHandleInformation(stderr, Native.HANDLE_FLAG_INHERIT, Native.HANDLE_FLAG_INHERIT))
@@ -476,46 +495,46 @@ sealed class RunCommand
         IntPtr nul = Native.CreateFile("NUL", Native.GENERIC_READ, Native.FILE_SHARE_READ | Native.FILE_SHARE_WRITE, ref inheritable, Native.OPEN_EXISTING, 0, IntPtr.Zero);
         if (nul == Native.InvalidHandle) throw HelperException.LastError("could not open NUL for the command's stdin");
 
-        IntPtr handles = IntPtr.Zero, attributes = IntPtr.Zero;
-        bool attributesReady = false;
-        Native.PROCESS_INFORMATION process = new Native.PROCESS_INFORMATION();
+        ConsoleHost host = null;
+        bool attached = false;
+        Native.PROCESS_INFORMATION process;
         try
         {
-            IntPtr[] list = stdout == stderr ? new IntPtr[] { nul, stdout } : new IntPtr[] { nul, stdout, stderr };
-            handles = Marshal.AllocHGlobal(IntPtr.Size * list.Length);
-            Marshal.Copy(list, 0, handles, list.Length);
-
-            IntPtr size = IntPtr.Zero;
-            Native.InitializeProcThreadAttributeList(IntPtr.Zero, 1, 0, ref size);
-            if (size == IntPtr.Zero) throw HelperException.LastError("could not size the process attributes");
-            attributes = Marshal.AllocHGlobal(size);
-            if (!Native.InitializeProcThreadAttributeList(attributes, 1, 0, ref size)) throw HelperException.LastError("could not create the process attributes");
-            attributesReady = true;
-            if (!Native.UpdateProcThreadAttribute(attributes, 0, (IntPtr)Native.PROC_THREAD_ATTRIBUTE_HANDLE_LIST, handles, (IntPtr)(IntPtr.Size * list.Length), IntPtr.Zero, IntPtr.Zero))
-                throw HelperException.LastError("could not limit the inherited handles");
-
-            Native.STARTUPINFOEX startup = new Native.STARTUPINFOEX();
-            startup.StartupInfo.cb = Marshal.SizeOf(typeof(Native.STARTUPINFOEX));
-            startup.StartupInfo.dwFlags = Native.STARTF_USESTDHANDLES | Native.STARTF_USESHOWWINDOW;
-            startup.StartupInfo.wShowWindow = Native.SW_HIDE;
-            startup.StartupInfo.hStdInput = nul;
-            startup.StartupInfo.hStdOutput = stdout;
-            startup.StartupInfo.hStdError = stderr;
-            startup.lpAttributeList = attributes;
-
-            // The working directory and environment are the helper's own, which Veydr set (design D2).
-            uint flags = Native.CREATE_SUSPENDED | Native.CREATE_NEW_CONSOLE | Native.CREATE_NEW_PROCESS_GROUP | Native.CREATE_UNICODE_ENVIRONMENT | Native.EXTENDED_STARTUPINFO_PRESENT;
-            if (!Native.CreateProcess(application, new StringBuilder(commandLine), IntPtr.Zero, IntPtr.Zero, true, flags, IntPtr.Zero, null, ref startup, out process))
+            if (!ctrlIgnored)
             {
-                int code = Marshal.GetLastWin32Error();
-                throw new HelperException(Native.Describe(code));
+                consoleError = "could not ignore console control events, so no console is attached to";
             }
+            else
+            {
+                host = ConsoleHost.Start(out consoleError);
+                if (host != null) attached = AttachTo(host, out consoleError);
+                if (host != null && !attached)
+                {
+                    // Of no use now: the command gets a console of its own, which the host is not on.
+                    host.Abandon();
+                    host = null;
+                }
+            }
+
+            // Attached: the command inherits the host's UTF-8 console. Otherwise it gets one of its own.
+            // The working directory and environment are the helper's own, which Veydr set (design D2).
+            uint flags = Native.CREATE_SUSPENDED | Native.CREATE_NEW_PROCESS_GROUP | Native.CREATE_UNICODE_ENVIRONMENT | (attached ? 0 : Native.CREATE_NEW_CONSOLE);
+            // Both exactly as Veydr built them (design D1); RunRequest has checked them.
+            process = Spawn(request.Application, request.CommandLine, flags, nul, stdout, stderr);
+        }
+        catch
+        {
+            if (host != null) host.Abandon();
+            throw;
         }
         finally
         {
-            if (attributesReady) Native.DeleteProcThreadAttributeList(attributes);
-            if (attributes != IntPtr.Zero) Marshal.FreeHGlobal(attributes);
-            if (handles != IntPtr.Zero) Marshal.FreeHGlobal(handles);
+            // The helper is a member of the command's console only while the command is suspended.
+            if (attached)
+            {
+                Native.FreeConsole();
+                CtrlEvents.Ignore();
+            }
             Native.CloseHandle(nul);
         }
 
@@ -534,6 +553,10 @@ sealed class RunCommand
         finally
         {
             Native.CloseHandle(process.hThread);
+            // Only now, with the command running: the console must outlive the host until the command
+            // has connected to it, which it does as it starts. Once `started` is sent the host is gone,
+            // so the console holds only the command's processes when a stop sends Ctrl+Break.
+            if (host != null) host.Finish();
         }
         long creation, exit, kernel, user;
         if (!Native.GetProcessTimes(process.hProcess, out creation, out exit, out kernel, out user)) throw HelperException.LastError("could not read the command's creation time");
@@ -542,91 +565,77 @@ sealed class RunCommand
     }
 
     /**
-     * The program to start and its command line, quoted for CommandLineToArgvW and the C runtime
-     * (the rules libuv quotes the helper's own arguments by). A batch file runs under cmd.exe, which
-     * CreateProcess would otherwise start implicitly with arguments it does not quote safely.
+     * Attaches the helper to the host's console, with its own control handling registered again
+     * (attaching resets it); `false` with the reason otherwise, the helper then on no console.
+     * Called before any other thread of the helper starts, so no stop can attach meanwhile.
      */
-    void BuildCommandLine(out string application, out string commandLine)
+    static bool AttachTo(ConsoleHost host, out string error)
     {
-        if (!IsFullyQualified(file)) throw new HelperException("the program must be given by its full path: " + file);
-        if (file.IndexOf('"') >= 0 || file.IndexOf('\0') >= 0) throw new HelperException("the program path contains a character that is not allowed: " + file);
-        StringBuilder line = new StringBuilder();
-        if (IsBatchFile(file))
+        if (!Native.AttachConsole(host.Pid))
         {
-            // cmd.exe expands %variables% even inside quotes, so such a path is refused.
-            if (file.IndexOf('%') >= 0) throw new HelperException("a batch file path must not contain %: " + file);
-            application = Path.Combine(Environment.SystemDirectory, "cmd.exe");
-            // /d: no AutoRun commands; /v:off: no !delayed! expansion; /s /c "...": the outer quotes are stripped.
-            line.Append("cmd.exe /d /e:on /v:off /s /c \"\"").Append(file).Append('"');
-            foreach (string arg in commandArgs) line.Append(' ').Append(BatchArgument(arg));
-            line.Append('"');
+            error = "could not attach to the console host's console: " + Native.Describe(Marshal.GetLastWin32Error());
+            CtrlEvents.Ignore();
+            return false;
         }
-        else
+        if (!CtrlEvents.Ignore())
         {
-            application = file;
-            // argv[0] is read up to its closing quote, without escapes; the path contains no quote.
-            line.Append('"').Append(file).Append('"');
-            foreach (string arg in commandArgs)
-            {
-                if (arg.IndexOf('\0') >= 0) throw new HelperException("an argument contains a NUL character");
-                line.Append(' ');
-                AppendQuoted(line, arg);
-            }
+            error = "could not ignore console control events: " + Native.Describe(Marshal.GetLastWin32Error());
+            Native.FreeConsole();
+            CtrlEvents.Ignore();
+            return false;
         }
-        // CreateProcess limits the command line to 32767 characters, its terminating NUL included.
-        if (line.Length >= 32767) throw new HelperException("the command line is too long (" + line.Length + " characters)");
-        commandLine = line.ToString();
+        error = null;
+        return true;
     }
 
-    /** `arg` as cmd.exe passes it on literally, quoted where needed (see BareBatchArgumentPattern). */
-    static string BatchArgument(string arg)
+    /**
+     * CreateProcess with the helper's working directory and environment, stdio set to the given
+     * handles, and only those inherited, hidden. Throws a HelperException; one for CreateProcess
+     * itself carries just the system's reason (e.g. "The system cannot find the file specified").
+     */
+    public static Native.PROCESS_INFORMATION Spawn(string application, string commandLine, uint flags, IntPtr stdin, IntPtr stdout, IntPtr stderr)
     {
-        if (BareBatchArgumentPattern.IsMatch(arg)) return arg;
-        if (arg.IndexOfAny(new char[] { '"', '%', '\r', '\n', '\0' }) >= 0 || arg.EndsWith("\\", StringComparison.Ordinal))
-            throw new HelperException("a batch file argument contains a character cmd.exe cannot be given safely (\", %, a line break, or a trailing \\): " + Truncate(arg, 200));
-        return "\"" + arg + "\"";
-    }
-
-    static bool IsFullyQualified(string path)
-    {
-        if (path.Length >= 3 && char.IsLetter(path[0]) && path[1] == ':' && (path[2] == '\\' || path[2] == '/')) return true;
-        return path.Length >= 3 && (path[0] == '\\' || path[0] == '/') && (path[1] == '\\' || path[1] == '/');
-    }
-
-    static bool IsBatchFile(string path)
-    {
-        int separator = Math.Max(path.LastIndexOf('\\'), path.LastIndexOf('/'));
-        string name = path.Substring(separator + 1).TrimEnd(' ', '.');
-        return name.EndsWith(".bat", StringComparison.OrdinalIgnoreCase) || name.EndsWith(".cmd", StringComparison.OrdinalIgnoreCase);
-    }
-
-    /** Appends `arg` so that CommandLineToArgvW and the C runtime read it back unchanged. */
-    static void AppendQuoted(StringBuilder line, string arg)
-    {
-        if (arg.Length > 0 && arg.IndexOfAny(new char[] { ' ', '\t', '\n', '\v', '"' }) < 0)
+        List<IntPtr> list = new List<IntPtr>();
+        foreach (IntPtr handle in new IntPtr[] { stdin, stdout, stderr })
         {
-            line.Append(arg);
-            return;
+            if (!list.Contains(handle)) list.Add(handle);
         }
-        line.Append('"');
-        for (int i = 0; ; i++)
+        IntPtr handles = IntPtr.Zero, attributes = IntPtr.Zero;
+        bool attributesReady = false;
+        try
         {
-            int backslashes = 0;
-            while (i < arg.Length && arg[i] == '\\')
-            {
-                i++;
-                backslashes++;
-            }
-            if (i == arg.Length)
-            {
-                // Doubled, so the closing quote stays a quote.
-                line.Append('\\', backslashes * 2);
-                break;
-            }
-            if (arg[i] == '"') line.Append('\\', backslashes * 2 + 1).Append('"');
-            else line.Append('\\', backslashes).Append(arg[i]);
+            handles = Marshal.AllocHGlobal(IntPtr.Size * list.Count);
+            Marshal.Copy(list.ToArray(), 0, handles, list.Count);
+
+            IntPtr size = IntPtr.Zero;
+            Native.InitializeProcThreadAttributeList(IntPtr.Zero, 1, 0, ref size);
+            if (size == IntPtr.Zero) throw HelperException.LastError("could not size the process attributes");
+            attributes = Marshal.AllocHGlobal(size);
+            if (!Native.InitializeProcThreadAttributeList(attributes, 1, 0, ref size)) throw HelperException.LastError("could not create the process attributes");
+            attributesReady = true;
+            if (!Native.UpdateProcThreadAttribute(attributes, 0, (IntPtr)Native.PROC_THREAD_ATTRIBUTE_HANDLE_LIST, handles, (IntPtr)(IntPtr.Size * list.Count), IntPtr.Zero, IntPtr.Zero))
+                throw HelperException.LastError("could not limit the inherited handles");
+
+            Native.STARTUPINFOEX startup = new Native.STARTUPINFOEX();
+            startup.StartupInfo.cb = Marshal.SizeOf(typeof(Native.STARTUPINFOEX));
+            startup.StartupInfo.dwFlags = Native.STARTF_USESTDHANDLES | Native.STARTF_USESHOWWINDOW;
+            startup.StartupInfo.wShowWindow = Native.SW_HIDE;
+            startup.StartupInfo.hStdInput = stdin;
+            startup.StartupInfo.hStdOutput = stdout;
+            startup.StartupInfo.hStdError = stderr;
+            startup.lpAttributeList = attributes;
+
+            Native.PROCESS_INFORMATION process;
+            if (!Native.CreateProcess(application, new StringBuilder(commandLine), IntPtr.Zero, IntPtr.Zero, true, flags | Native.EXTENDED_STARTUPINFO_PRESENT, IntPtr.Zero, null, ref startup, out process))
+                throw new HelperException(Native.Describe(Marshal.GetLastWin32Error()));
+            return process;
         }
-        line.Append('"');
+        finally
+        {
+            if (attributesReady) Native.DeleteProcThreadAttributeList(attributes);
+            if (attributes != IntPtr.Zero) Marshal.FreeHGlobal(attributes);
+            if (handles != IntPtr.Zero) Marshal.FreeHGlobal(handles);
+        }
     }
 
     uint ActiveProcesses()
@@ -868,7 +877,8 @@ sealed class RunCommand
      * when no such console could be attached to, or the event could not be sent: then no process
      * of the command can receive it, and waiting `graceMs` would gain nothing.
      *
-     * Only the stop thread changes the helper's console, and a run has at most one stop.
+     * Only the stop thread changes the helper's console once the command runs (StartCommand does
+     * before, while no other thread exists), and a run has at most one stop.
      */
     bool SendCtrlBreak()
     {
@@ -949,6 +959,464 @@ sealed class RunCommand
         {
             Native.CloseHandle(process);
         }
+    }
+}
+
+/**
+ * The run request (add-windows-environment-and-commands design D1): what `run` starts, read from
+ * stdin after the token and only once the helper has sent `ready`. It is exactly one line,
+ * `{"application":"<program>","commandLine":"<command line>"}`, the form protocol.ts's
+ * `encodeRunRequest` writes, followed by the end of stdin. C# 5 has no JSON parser without further
+ * references, so it is parsed here by hand, strictly: the two string fields in that order, no
+ * whitespace, the JSON string escapes, and nothing else. Every refusal names an offset or a limit,
+ * never the text, which may hold a secret.
+ */
+sealed class RunRequest
+{
+    /** Longest accepted request line in bytes, `\n` excluded (protocol.ts: MAX_RUN_REQUEST_BYTES). */
+    public const int MaxBytes = 1024 * 1024;
+    /** CreateProcess limits the command line to 32,767 characters, its terminating NUL included. */
+    public const int MaxCommandLineChars = 32766;
+
+    public readonly string Application, CommandLine;
+
+    RunRequest(string application, string commandLine)
+    {
+        Application = application;
+        CommandLine = commandLine;
+    }
+
+    /** Reads, parses and checks the request; a HelperException says why it is refused. */
+    public static RunRequest Read(Stream stdin)
+    {
+        string text;
+        try
+        {
+            // Strict: an invalid byte sequence, an encoded surrogate included, throws.
+            text = new UTF8Encoding(false, true).GetString(ReadLine(stdin));
+        }
+        catch (ArgumentException)
+        {
+            throw new HelperException("the run request on stdin is not valid UTF-8");
+        }
+        RunRequest request = Parse(text);
+        request.Check();
+        return request;
+    }
+
+    /** The rest of stdin, which must be one line ended by `\n` and nothing after it, without the `\n`. */
+    static byte[] ReadLine(Stream stdin)
+    {
+        MemoryStream input = new MemoryStream();
+        byte[] buffer = new byte[65536];
+        while (true)
+        {
+            int read = stdin.Read(buffer, 0, buffer.Length);
+            if (read == 0) break;
+            // Room for the line and its `\n`.
+            if (input.Length + read > MaxBytes + 1) throw new HelperException("the run request on stdin exceeds " + MaxBytes + " bytes");
+            input.Write(buffer, 0, read);
+        }
+        byte[] bytes = input.ToArray();
+        int length = bytes.Length;
+        if (length == 0 || bytes[length - 1] != '\n') throw new HelperException("stdin does not hold a complete run request line");
+        // encodeRunRequest ends the line with `\n` alone; a `\r` before it is text after the object.
+        length--;
+        if (Array.IndexOf(bytes, (byte)'\n', 0, length) >= 0) throw new HelperException("stdin holds more than one line after the token");
+        if (length > MaxBytes) throw new HelperException("the run request on stdin exceeds " + MaxBytes + " bytes");
+        byte[] line = new byte[length];
+        Array.Copy(bytes, line, length);
+        return line;
+    }
+
+    public static RunRequest Parse(string text)
+    {
+        int at = 0;
+        string application = null, commandLine = null;
+        Expect(text, ref at, '{');
+        while (true)
+        {
+            int keyAt = at;
+            string key = ParseString(text, ref at);
+            Expect(text, ref at, ':');
+            if (at >= text.Length || text[at] != '"') throw new HelperException("the run request's value at offset " + at + " is not a string");
+            string value = ParseString(text, ref at);
+            if (key == "application")
+            {
+                if (application != null) throw new HelperException("the run request repeats the key \"application\" at offset " + keyAt);
+                if (commandLine != null) throw new HelperException("the run request has \"application\" after \"commandLine\"");
+                application = value;
+            }
+            else if (key == "commandLine")
+            {
+                if (commandLine != null) throw new HelperException("the run request repeats the key \"commandLine\" at offset " + keyAt);
+                if (application == null) throw new HelperException("the run request has \"commandLine\" before \"application\"");
+                commandLine = value;
+            }
+            else
+            {
+                throw new HelperException("the run request has an unknown key at offset " + keyAt);
+            }
+            if (at < text.Length && text[at] == ',')
+            {
+                at++;
+                continue;
+            }
+            Expect(text, ref at, '}');
+            break;
+        }
+        if (at != text.Length) throw new HelperException("the run request has text after its end, at offset " + at);
+        if (application == null || commandLine == null) throw new HelperException("the run request needs both \"application\" and \"commandLine\"");
+        return new RunRequest(application, commandLine);
+    }
+
+    static void Expect(string text, ref int at, char expected)
+    {
+        if (at >= text.Length || text[at] != expected) throw new HelperException("the run request is malformed at offset " + at + ": expected '" + expected + "'");
+        at++;
+    }
+
+    /** A JSON string starting at `at`, which is moved past its closing quote. */
+    static string ParseString(string text, ref int at)
+    {
+        int start = at;
+        Expect(text, ref at, '"');
+        StringBuilder value = new StringBuilder();
+        while (true)
+        {
+            if (at >= text.Length) throw new HelperException("the run request has an unterminated string at offset " + start);
+            char c = text[at++];
+            if (c == '"') break;
+            if (c < 0x20) throw new HelperException("the run request has an unescaped control character at offset " + (at - 1));
+            if (c != '\\')
+            {
+                value.Append(c);
+                continue;
+            }
+            if (at >= text.Length) throw new HelperException("the run request has an unterminated string at offset " + start);
+            char escape = text[at++];
+            switch (escape)
+            {
+                case '"': value.Append('"'); break;
+                case '\\': value.Append('\\'); break;
+                case '/': value.Append('/'); break;
+                case 'b': value.Append('\b'); break;
+                case 'f': value.Append('\f'); break;
+                case 'n': value.Append('\n'); break;
+                case 'r': value.Append('\r'); break;
+                case 't': value.Append('\t'); break;
+                case 'u':
+                    int code = 0;
+                    for (int i = 0; i < 4; i++, at++)
+                    {
+                        int digit = at < text.Length ? HexDigit(text[at]) : -1;
+                        if (digit < 0) throw new HelperException("the run request has a malformed \\u escape at offset " + (at - 2 - i));
+                        code = code * 16 + digit;
+                    }
+                    value.Append((char)code);
+                    break;
+                default:
+                    throw new HelperException("the run request has an unknown escape at offset " + (at - 2));
+            }
+        }
+        string result = value.ToString();
+        // A \uXXXX escape can name half of a pair; the command line must be valid UTF-16.
+        for (int i = 0; i < result.Length; i++)
+        {
+            if (char.IsHighSurrogate(result[i]) && i + 1 < result.Length && char.IsLowSurrogate(result[i + 1])) i++;
+            else if (char.IsSurrogate(result[i])) throw new HelperException("the run request has an unpaired surrogate in the string at offset " + start);
+        }
+        return result;
+    }
+
+    static int HexDigit(char c)
+    {
+        if (c >= '0' && c <= '9') return c - '0';
+        if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+        if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+        return -1;
+    }
+
+    /**
+     * The helper's own checks (design D1), whatever Veydr checked: NUL, a program that is not given
+     * by its full drive or UNC path (or is a device path, or names a data stream), a batch-file
+     * program, and an empty or too long command line. CreateProcess would otherwise run a batch file
+     * through cmd.exe implicitly, with its own unsafe quoting; a batch file runs only as part of a
+     * cmd.exe command line, whose program is cmd.exe.
+     */
+    void Check()
+    {
+        if (Application.IndexOf('\0') >= 0) throw new HelperException("the program path contains a NUL character");
+        if (CommandLine.IndexOf('\0') >= 0) throw new HelperException("the command line contains a NUL character");
+        if (!IsFullyQualified(Application)) throw new HelperException("the program must be given by its full path: " + RunCommand.Truncate(Application, 300));
+        if (IsDevicePath(Application)) throw new HelperException("the program must be an ordinary drive or UNC path: " + RunCommand.Truncate(Application, 300));
+        if (Application.IndexOfAny(new char[] { '"', '\r', '\n' }) >= 0) throw new HelperException("the program path contains a double quote or a line break: " + RunCommand.Truncate(Application, 300));
+        // `C:\tool.bat\.` is `C:\tool.bat` once normalized, but its last segment is no batch file name.
+        if (HasDotSegment(Application)) throw new HelperException("the program path has an empty, '.' or '..' segment, or one of only dots and spaces: " + RunCommand.Truncate(Application, 300));
+        if (Application.IndexOf(':', 2) >= 0) throw new HelperException("the program path contains ':' after the drive: " + RunCommand.Truncate(Application, 300));
+        if (IsBatchFile(Application)) throw new HelperException("the program is a batch file, which runs only as part of a cmd.exe command line: " + RunCommand.Truncate(Application, 300));
+        if (CommandLine.Length == 0) throw new HelperException("the command line is empty");
+        // argv[0] is what the program reads as its own path; it must be the program started.
+        string program = "\"" + Application + "\"";
+        if (!(CommandLine == program || CommandLine.StartsWith(program + " ", StringComparison.Ordinal)))
+            throw new HelperException("the command line does not start with the quoted program");
+        if (CommandLine.Length > MaxCommandLineChars)
+            throw new HelperException("the command line has " + CommandLine.Length + " characters, more than the " + MaxCommandLineChars + " Windows accepts");
+    }
+
+    /** `C:\...` or a UNC path: nothing depends on a current drive or directory. */
+    static bool IsFullyQualified(string path)
+    {
+        bool asciiLetter = path.Length > 0 && ((path[0] >= 'A' && path[0] <= 'Z') || (path[0] >= 'a' && path[0] <= 'z'));
+        if (path.Length >= 3 && asciiLetter && path[1] == ':' && IsSeparator(path[2])) return true;
+        return path.Length >= 3 && IsSeparator(path[0]) && IsSeparator(path[1]) && !IsSeparator(path[2]);
+    }
+
+    /**
+     * Whether a full path has a segment Windows removes or resolves when it normalizes the path: an
+     * empty one, `.`, `..`, or one of only dots and spaces (command-line.ts: hasDotSegment). The
+     * drive or the UNC prefix is not a segment.
+     */
+    static bool HasDotSegment(string path)
+    {
+        int start = path.Length >= 3 && path[1] == ':' ? 3 : 2;
+        string[] segments = path.Substring(start).Split('\\', '/');
+        foreach (string segment in segments)
+        {
+            if (segment.Trim('.', ' ').Length == 0) return true;
+        }
+        return false;
+    }
+
+    /** `\\.\...` or `\\?\...`, in either slash. */
+    static bool IsDevicePath(string path)
+    {
+        return path.Length >= 4 && IsSeparator(path[0]) && IsSeparator(path[1]) && (path[2] == '.' || path[2] == '?') && IsSeparator(path[3]);
+    }
+
+    static bool IsSeparator(char c)
+    {
+        return c == '\\' || c == '/';
+    }
+
+    /** A `.bat` or `.cmd` file name, in any case, once trailing dots and spaces are removed (command-line.ts: isBatchFile). */
+    public static bool IsBatchFile(string path)
+    {
+        int separator = Math.Max(path.LastIndexOf('\\'), path.LastIndexOf('/'));
+        string name = path.Substring(separator + 1).TrimEnd(' ', '.');
+        return name.EndsWith(".bat", StringComparison.OrdinalIgnoreCase) || name.EndsWith(".cmd", StringComparison.OrdinalIgnoreCase);
+    }
+}
+
+/**
+ * The console a command runs on (add-windows-environment-and-commands design D5, fallback b):
+ * `veydr-helper console`, started by `run` in a new hidden console of its own and outside the
+ * command's job. It sets that console's output code page to UTF-8 (65001), which works because the
+ * console exists once the host runs, and answers `ok` (or the reason it could not) as one ASCII
+ * line on its stdout, a pipe to `run`. It then waits for its stdin, a pipe from `run`, to close:
+ * `run` closes it once the command runs on this console, and waits for the host to exit before it
+ * reports `started`. The host stays until the
+ * command is on the console, so the console cannot end before the command connects, at most
+ * AttachWaitMs, and exits. It never runs anything itself, and it is never a member of the job.
+ */
+sealed class ConsoleHost
+{
+    /**
+     * How long `run` waits for the host's answer before it gives the command a console of its own;
+     * the host normally answers within a fraction of a second (one more .NET process start).
+     */
+    const int AnswerTimeoutMs = 5000;
+    /** How long the host waits, once released, for the command to appear on its console. */
+    const int AttachWaitMs = 2000;
+    /** How much longer than AttachWaitMs `run` waits for the host to exit. */
+    const int ExitMarginMs = 500;
+    const uint Utf8CodePage = 65001;
+    const int MaxAnswerBytes = 512;
+
+    readonly IntPtr process;
+    IntPtr input;
+    public readonly uint Pid;
+
+    ConsoleHost(IntPtr process, IntPtr input, uint pid)
+    {
+        this.process = process;
+        this.input = input;
+        Pid = pid;
+    }
+
+    /** Starts the host and waits for its answer; null with the reason when it cannot give a UTF-8 console. */
+    public static ConsoleHost Start(out string error)
+    {
+        string self = Native.ModulePath();
+        if (self == null)
+        {
+            error = "could not find the helper's own path to start the console host: " + Native.Describe(Marshal.GetLastWin32Error());
+            return null;
+        }
+        Native.SECURITY_ATTRIBUTES inheritable = new Native.SECURITY_ATTRIBUTES();
+        inheritable.nLength = Marshal.SizeOf(typeof(Native.SECURITY_ATTRIBUTES));
+        inheritable.bInheritHandle = true;
+        IntPtr inRead, inWrite, outRead, outWrite;
+        if (!Native.CreatePipe(out inRead, out inWrite, ref inheritable, 0))
+        {
+            error = "could not create the console host's pipes: " + Native.Describe(Marshal.GetLastWin32Error());
+            return null;
+        }
+        if (!Native.CreatePipe(out outRead, out outWrite, ref inheritable, 0))
+        {
+            error = "could not create the console host's pipes: " + Native.Describe(Marshal.GetLastWin32Error());
+            Native.CloseHandle(inRead);
+            Native.CloseHandle(inWrite);
+            return null;
+        }
+        Native.PROCESS_INFORMATION info;
+        try
+        {
+            // The helper's ends stay with the helper: the host must see its stdin end when `run` closes it.
+            if (!Native.SetHandleInformation(inWrite, Native.HANDLE_FLAG_INHERIT, 0) || !Native.SetHandleInformation(outRead, Native.HANDLE_FLAG_INHERIT, 0))
+                throw HelperException.LastError("could not keep the console host's pipes to the helper");
+            info = RunCommand.Spawn(self, "\"" + self + "\" console", Native.CREATE_NEW_CONSOLE | Native.CREATE_NEW_PROCESS_GROUP, inRead, outWrite, outWrite);
+        }
+        catch (HelperException failure)
+        {
+            error = "could not start the console host: " + failure.Message;
+            Native.CloseHandle(inWrite);
+            Native.CloseHandle(outRead);
+            return null;
+        }
+        finally
+        {
+            // The host's ends: once it exits, reading its answer ends too.
+            Native.CloseHandle(inRead);
+            Native.CloseHandle(outWrite);
+        }
+        Native.CloseHandle(info.hThread);
+        ConsoleHost host = new ConsoleHost(info.hProcess, inWrite, info.dwProcessId);
+
+        string answer = ReadAnswer(outRead, host);
+        if (answer == "ok")
+        {
+            error = null;
+            return host;
+        }
+        error = answer == null ? "the console host did not answer within " + AnswerTimeoutMs + " ms" : "the console host could not set the console to UTF-8: " + answer;
+        host.Abandon();
+        return null;
+    }
+
+    /** The host's one answer line, or null if it gave none in time (it is then ended). Closes `output`. */
+    static string ReadAnswer(IntPtr output, ConsoleHost host)
+    {
+        string answer = null;
+        Thread reader = new Thread(delegate()
+        {
+            try
+            {
+                using (FileStream stream = new FileStream(new Microsoft.Win32.SafeHandles.SafeFileHandle(output, true), FileAccess.Read, 1))
+                {
+                    MemoryStream line = new MemoryStream();
+                    while (line.Length < MaxAnswerBytes)
+                    {
+                        int next = stream.ReadByte();
+                        if (next == -1 || next == '\n') break;
+                        line.WriteByte((byte)next);
+                    }
+                    string text = Encoding.ASCII.GetString(line.ToArray());
+                    answer = text.EndsWith("\r", StringComparison.Ordinal) ? text.Substring(0, text.Length - 1) : text;
+                }
+            }
+            catch (Exception)
+            {
+                // The host ended without answering, or its pipe could not be read: no answer, so the
+                // command gets a console of its own. Nothing may escape this thread, or the helper ends.
+            }
+        });
+        reader.IsBackground = true;
+        reader.Start();
+        if (!reader.Join(AnswerTimeoutMs))
+        {
+            // Ending the host closes its end of the pipe, which ends the read.
+            Native.TerminateProcess(host.process, 1);
+            reader.Join(AnswerTimeoutMs);
+            return null;
+        }
+        return answer == "" ? null : answer;
+    }
+
+    /**
+     * Lets the host go once the command runs on its console, and waits until it has exited: it stays
+     * only until the command is on the console. A host still there after AttachWaitMs and a margin
+     * is ended, so that it never shares the command's console after `started`.
+     */
+    public void Finish()
+    {
+        CloseInput();
+        if (Native.WaitForSingleObject(process, AttachWaitMs + ExitMarginMs) != Native.WaitObject0) Native.TerminateProcess(process, 1);
+        Native.CloseHandle(process);
+    }
+
+    /** Lets the host go without waiting: it is on no console the command uses, and exits by itself. */
+    public void Abandon()
+    {
+        CloseInput();
+        Native.CloseHandle(process);
+    }
+
+    void CloseInput()
+    {
+        if (input != IntPtr.Zero)
+        {
+            Native.CloseHandle(input);
+            input = IntPtr.Zero;
+        }
+    }
+
+    /**
+     * `veydr-helper console`, the host itself. It refuses a console that other processes share,
+     * such as a terminal it was started from by hand, so it never changes anyone else's console.
+     */
+    public static int Run()
+    {
+        // A console event must not end the host while the helper is setting up.
+        CtrlEvents.Ignore();
+        string answer;
+        uint[] processes = CtrlEvents.ConsoleProcesses();
+        if (processes == null) answer = "it has no console of its own";
+        else if (processes.Length != 1) answer = "its console is shared with " + (processes.Length - 1) + " other processes";
+        else if (!Native.SetConsoleOutputCP(Utf8CodePage)) answer = "could not set the output code page: " + Native.Describe(Marshal.GetLastWin32Error());
+        else answer = "ok";
+        try
+        {
+            byte[] bytes = Encoding.ASCII.GetBytes(RunCommand.Truncate(answer, MaxAnswerBytes - 2) + "\n");
+            Stream stdout = Console.OpenStandardOutput();
+            stdout.Write(bytes, 0, bytes.Length);
+            stdout.Flush();
+        }
+        catch (IOException)
+        {
+            return VeydrHelper.ExitFailure;
+        }
+        if (answer != "ok") return VeydrHelper.ExitFailure;
+
+        // `run` closes stdin once the command runs on this console (or if it fails).
+        try
+        {
+            Stream stdin = Console.OpenStandardInput();
+            byte[] buffer = new byte[64];
+            while (stdin.Read(buffer, 0, buffer.Length) > 0) { }
+        }
+        catch (IOException)
+        {
+            // A broken pipe: `run` is gone.
+        }
+        Stopwatch waited = Stopwatch.StartNew();
+        while (waited.ElapsedMilliseconds < AttachWaitMs)
+        {
+            uint[] now = CtrlEvents.ConsoleProcesses();
+            if (now == null || now.Length > 1) break;
+            Thread.Sleep(5);
+        }
+        return VeydrHelper.ExitOk;
     }
 }
 
@@ -1445,6 +1913,7 @@ static class Native
     public const int STD_OUTPUT_HANDLE = -11, STD_ERROR_HANDLE = -12;
     public const uint HANDLE_FLAG_INHERIT = 0x1;
     public const uint GENERIC_READ = 0x80000000, FILE_SHARE_READ = 0x1, FILE_SHARE_WRITE = 0x2, OPEN_EXISTING = 3;
+    public const uint FILE_TYPE_CHAR = 0x2;
     public const uint PROCESS_QUERY_LIMITED_INFORMATION = 0x1000, SYNCHRONIZE = 0x100000;
 
     public const int JobObjectBasicAccountingInformation = 1, JobObjectBasicProcessIdList = 3;
@@ -1568,6 +2037,7 @@ static class Native
 
     [DllImport("kernel32.dll", SetLastError = true)] public static extern IntPtr GetStdHandle(int which);
     [DllImport("kernel32.dll", SetLastError = true)] public static extern bool SetHandleInformation(IntPtr handle, uint mask, uint flags);
+    [DllImport("kernel32.dll", SetLastError = true)] public static extern uint GetFileType(IntPtr file);
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     public static extern IntPtr CreateFile(string name, uint access, uint share, ref SECURITY_ATTRIBUTES attributes, uint disposition, uint flags, IntPtr template);
     [DllImport("kernel32.dll", SetLastError = true)]
@@ -1596,6 +2066,12 @@ static class Native
     [DllImport("kernel32.dll", SetLastError = true)] public static extern bool SetConsoleCtrlHandler(ConsoleCtrlHandler handler, bool add);
     [DllImport("kernel32.dll", SetLastError = true)] public static extern bool GenerateConsoleCtrlEvent(uint ctrlEvent, uint processGroupId);
     [DllImport("kernel32.dll", SetLastError = true)] public static extern uint GetConsoleProcessList([Out] uint[] processList, uint processCount);
+    [DllImport("kernel32.dll", SetLastError = true)] public static extern bool SetConsoleOutputCP(uint codePage);
+    [DllImport("kernel32.dll")] public static extern uint GetACP();
+    [DllImport("kernel32.dll", SetLastError = true)]
+    public static extern bool CreatePipe(out IntPtr readPipe, out IntPtr writePipe, ref SECURITY_ATTRIBUTES attributes, uint size);
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    public static extern uint GetModuleFileName(IntPtr module, StringBuilder name, int size);
 
     /** A Win32 error as "<system message> (error <code>)". */
     public static string Describe(int code)
@@ -1620,6 +2096,14 @@ static class Native
         {
             LocalFree(argv);
         }
+    }
+
+    /** The full path of the helper's own executable, or null if it cannot be read. */
+    public static string ModulePath()
+    {
+        StringBuilder name = new StringBuilder(32768);
+        uint length = GetModuleFileName(IntPtr.Zero, name, name.Capacity);
+        return length == 0 || length >= name.Capacity ? null : name.ToString(0, (int)length);
     }
 
     /** The PID of the process that created this one. */

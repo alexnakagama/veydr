@@ -1,10 +1,18 @@
 import { execFile, spawn as spawnChild } from 'node:child_process'
 import { stat } from 'node:fs/promises'
-import { sep } from 'node:path'
 import { DEFAULT_STOP_TIMEOUT_MS } from '../../../shared/config'
 import { SpawnError } from '../errors'
-import type { LedgerEntry, ManagedProcess, ProcessIdentity, ProcessTree, SpawnPlan, StopResult, Survivor } from '../types'
-import { HELPER_KILL_WAIT_MS, procInfo, startHelperRun, STOP_MARGIN_MS, type HelperClientOptions, type SpawnHelper } from './helper-client'
+import type { LedgerEntry, ProcessIdentity, ProcessTree, SpawnPlan, StopResult, Survivor } from '../types'
+import { helperLaunch, isFullyQualified } from './command-line'
+import {
+  HELPER_KILL_WAIT_MS,
+  procInfo,
+  startHelperRun,
+  STOP_MARGIN_MS,
+  type HelperClientOptions,
+  type SpawnHelper,
+  type WindowsManagedProcess,
+} from './helper-client'
 import { parseWindowsIdentity, windowsIdentity } from './identity'
 import {
   encodeIdentities,
@@ -33,6 +41,11 @@ export interface WindowsProcessTreeOptions extends HelperClientOptions {
   readonly selfPid?: number
 }
 
+/** The Windows process tree; its runs also report the console the helper gave them. */
+export interface WindowsProcessTree extends Pick<ProcessTree, 'findSurvivors' | 'terminateSurvivors'> {
+  spawn(plan: SpawnPlan): Promise<WindowsManagedProcess>
+}
+
 /** How long `veydr-helper.exe version` may take. */
 export const VERSION_TIMEOUT_MS = 10_000
 
@@ -45,13 +58,7 @@ const MAX_TOOL_STDERR_BYTES = 4096
 const errnoOf = (error: unknown): string | undefined => (error as NodeJS.ErrnoException | null)?.code
 const messageOf = (error: unknown): string => (error instanceof Error ? error.message : String(error))
 
-/**
- * Whether `path` names a file without depending on a current drive or directory: `C:\…` or a UNC
- * path, the rule the helper applies to the program (a root-relative `\…` is not enough). Where
- * paths are POSIX, which only tests reach, an absolute path is enough.
- */
-export const isFullyQualified = (path: string): boolean =>
-  /^[A-Za-z]:[\\/]/.test(path) || /^[\\/]{2}[^\\/]/.test(path) || (sep === '/' && path.startsWith('/'))
+export { isFullyQualified }
 
 /** Runs `<helper> version`, hidden, and resolves with its stdout. */
 export const runHelperVersion: ReadHelperVersion = (helperPath) =>
@@ -70,7 +77,7 @@ export const runHelperVersion: ReadHelperVersion = (helperPath) =>
  * process of the command exists, a helper that is missing or speaks another protocol version
  * (design D5). The helper's version is read once per helper file, and again after it changes.
  */
-export function createWindowsProcessTree(options: WindowsProcessTreeOptions): Pick<ProcessTree, 'spawn' | 'findSurvivors' | 'terminateSurvivors'> {
+export function createWindowsProcessTree(options: WindowsProcessTreeOptions): WindowsProcessTree {
   const selfPid = options.selfPid ?? process.pid
   const survivorGraceMs = options.survivorGraceMs ?? DEFAULT_STOP_TIMEOUT_MS
   const inspectTimeoutMs = options.inspectTimeoutMs ?? INSPECT_TIMEOUT_MS
@@ -149,9 +156,11 @@ export function createWindowsProcessTree(options: WindowsProcessTreeOptions): Pi
   }
 
   return {
-    async spawn(plan: SpawnPlan): Promise<ManagedProcess> {
+    async spawn(plan: SpawnPlan): Promise<WindowsManagedProcess> {
+      // What the plan alone shows is refused before the helper's version is even read.
+      checkPlanText(plan)
       await checkHelper()
-      await checkPlan(plan)
+      await checkPlanFiles(plan)
       return startHelperRun(plan, options)
     },
 
@@ -325,15 +334,22 @@ async function verifyVersion(helperPath: string, readVersion: ReadHelperVersion)
 /**
  * What the helper cannot report precisely: Node fails to start the helper itself for a missing
  * working directory, and that must not read as a missing helper. The helper also refuses a program
- * that is not given by its full path, so that nothing is looked up in the working directory.
+ * that is not given by its full path, so that nothing is looked up in the working directory, and a
+ * command line it would refuse (`helperLaunch`).
  */
-async function checkPlan(plan: SpawnPlan): Promise<void> {
+function checkPlanText(plan: SpawnPlan): void {
   const hasNul = (text: string): boolean => text.includes('\0')
-  if (hasNul(plan.file) || hasNul(plan.cwd) || plan.args.some(hasNul)) {
+  if (hasNul(plan.file) || hasNul(plan.cwd) || plan.args.some(hasNul) || (plan.commandLine !== undefined && hasNul(plan.commandLine))) {
     throw new SpawnError('other', `Could not start ${plan.file.replaceAll('\0', '\\0')}: the command contains a NUL character`)
   }
   if (!isFullyQualified(plan.file)) throw new SpawnError('executable-not-found', `Executable not found: ${plan.file} (a full path is needed)`)
+  // The command line, before anything is read from disk: a batch file without one built for
+  // cmd.exe, for one, is refused whether or not it exists (design D1).
+  helperLaunch(plan)
+}
 
+/** The working directory and the program, as they are on disk. */
+async function checkPlanFiles(plan: SpawnPlan): Promise<void> {
   let cwd
   try {
     cwd = await stat(plan.cwd)

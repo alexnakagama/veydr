@@ -7,6 +7,7 @@ import { PassThrough } from 'node:stream'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { SpawnError } from '../../src/main/platform/errors'
 import type { LedgerEntry, ProcessIdentity, SpawnPlan, Survivor } from '../../src/main/platform/types'
+import { CommandLineError } from '../../src/main/platform/windows/command-line'
 import { createWindowsProcessTree, isFullyQualified, runHelperVersion, type WindowsProcessTreeOptions } from '../../src/main/platform/windows/process-tree'
 import { MAX_GRACE_MS, MAX_TOOL_IDENTITIES, MAX_TOOL_OUTPUT_BYTES, PROTOCOL_VERSION } from '../../src/main/platform/windows/protocol'
 import { localSockets } from '../support/local-socket'
@@ -114,12 +115,19 @@ describe('full paths', () => {
 
 describe('the helper\'s protocol version', () => {
   it('rejects a helper that speaks another version, and starts no run', async () => {
-    const error = await spawnError(createWindowsProcessTree(options('2\n')).spawn(plan()))
+    const error = await spawnError(createWindowsProcessTree(options('3\n')).spawn(plan()))
     expect(error).toMatchObject({
       reason: 'other',
-      message: `The Windows helper ${helperPath} speaks protocol version 2, but Veydr needs version ${PROTOCOL_VERSION}`,
+      message: `The Windows helper ${helperPath} speaks protocol version 3, but Veydr needs version ${PROTOCOL_VERSION}`,
     })
     expect(versionReads).toEqual([helperPath])
+    expect(spawned).toEqual([])
+  })
+
+  it('rejects a stale version 1 helper by name, and starts no run', async () => {
+    expect(PROTOCOL_VERSION).toBe(2)
+    const error = await spawnError(createWindowsProcessTree(options('1\r\n')).spawn(plan()))
+    expect(error).toMatchObject({ reason: 'other', message: `The Windows helper ${helperPath} speaks protocol version 1, but Veydr needs version 2` })
     expect(spawned).toEqual([])
   })
 
@@ -145,7 +153,9 @@ describe('the helper\'s protocol version', () => {
     expect(error.message).toBe(`Could not start the Windows helper ${helperPath}: spawn failed in the test`)
     expect(spawned).toHaveLength(1)
     expect(spawned[0]?.file).toBe(helperPath)
-    expect(spawned[0]?.args.slice(2)).toEqual([process.execPath, 'server.js'])
+    // Version 2: only the pipe is an argument; the command goes over stdin (design D1).
+    expect(spawned[0]?.args).toHaveLength(2)
+    expect(spawned[0]?.args[0]).toBe('run')
   })
 
   it('reads the version once per helper file, and again after the file changes', async () => {
@@ -198,6 +208,29 @@ describe('the command', () => {
 
   it('may not contain a NUL character', async () => {
     expect(await failure({ args: ['a\0b'] })).toMatchObject({ reason: 'other', message: `Could not start ${process.execPath}: the command contains a NUL character` })
+    expect(await failure({ commandLine: `"${process.execPath}" a\0b` })).toMatchObject({ reason: 'other', message: `Could not start ${process.execPath}: the command contains a NUL character` })
+  })
+
+  it('refuses a batch file without a command line built for cmd.exe, as the helper does', async () => {
+    // Refused before the file system is read: none of these exists.
+    for (const name of ['build.bat', 'npm.CMD', 'run.cmd. .']) {
+      const error = await failure({ file: join(dir, name) })
+      expect(error, name).toBeInstanceOf(CommandLineError)
+      expect((error as CommandLineError).refusal, name).toBe('batch-file-program')
+      expect(error.message, name).toContain('can only run through cmd.exe')
+    }
+  })
+
+  it('refuses what the plan alone shows before reading the helper\'s version', async () => {
+    await failure({ file: join(dir, 'build.bat') })
+    await failure({ args: ['a\0b'] })
+    await failure({ file: 'node.exe' })
+    expect(versionReads).toEqual([])
+  })
+
+  it('refuses a planned command line that does not start with the program', async () => {
+    const error = await failure({ commandLine: '"C:\\Windows\\System32\\cmd.exe" /c whoami' })
+    expect((error as CommandLineError).refusal).toBe('command-line-mismatch')
   })
 })
 
@@ -369,10 +402,10 @@ describe('survivors', () => {
       )
       writeFileSync(helperPath, 'a helper')
       await expect(
-        createWindowsProcessTree(survivorOptions(() => ({ stdout: inspected() }), { readHelperVersion: () => Promise.resolve('2\n') })).findSurvivors([
+        createWindowsProcessTree(survivorOptions(() => ({ stdout: inspected() }), { readHelperVersion: () => Promise.resolve('3\n') })).findSurvivors([
           entry(identity(LEADER)),
         ]),
-      ).rejects.toThrow(/speaks protocol version 2/)
+      ).rejects.toThrow(/speaks protocol version 3/)
       expect(calls).toEqual([])
     })
   })

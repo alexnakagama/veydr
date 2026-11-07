@@ -4,7 +4,8 @@ import { connect, createServer, type Socket } from 'node:net'
 import { PassThrough } from 'node:stream'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { SpawnError } from '../../src/main/platform/errors'
-import { MAX_PENDING_CONNECTIONS, startHelperRun, type HelperClientOptions } from '../../src/main/platform/windows/helper-client'
+import { CommandLineError, shellCommandLine } from '../../src/main/platform/windows/command-line'
+import { MAX_PENDING_CONNECTIONS, startHelperRun, type HelperClientOptions, type WindowsManagedProcess } from '../../src/main/platform/windows/helper-client'
 import { MAX_GRACE_MS, MAX_HANDSHAKE_BYTES, PROTOCOL_VERSION, ProtocolError } from '../../src/main/platform/windows/protocol'
 import type { ExitInfo, ManagedProcess, PlatformLog, SpawnPlan } from '../../src/main/platform/types'
 import { localSockets } from '../support/local-socket'
@@ -17,6 +18,8 @@ const HELPER_PID = 4240
 const LEADER = { pid: 4244, created: '134067012345678901', image: 'C:\\Program Files\\nodejs\\node.exe' }
 const CHILD = { pid: 4248, created: '134067012345678999', image: 'C:\\Windows\\System32\\cmd.exe' }
 const GRANDCHILD = { pid: 4252, created: '134067012345679100', image: 'C:\\tools\\esbuild.exe' }
+/** The `started` fields of protocol version 2 for a console set to UTF-8 (design D5). */
+const CONSOLE = { utf8Console: true, ansiCodePage: 1252 } as const
 const plan: SpawnPlan = { file: 'C:\\Program Files\\nodejs\\node.exe', args: ['server.js', '--port', '3000'], cwd: 'C:\\work\\app', env: { Path: 'C:\\Windows', SECRET: 'x' } }
 
 type Message = Record<string, unknown>
@@ -47,10 +50,20 @@ class FakeHelper extends EventEmitter {
     return this.args[1] ?? ''
   }
 
-  /** The token Veydr wrote on stdin, once stdin was closed. */
-  async token(): Promise<string> {
+  /** Everything Veydr wrote on stdin, once stdin was closed. */
+  async stdinContent(): Promise<string> {
     await this.stdinEnded
-    return this.stdinText.replace(/\n$/, '')
+    return this.stdinText
+  }
+
+  /** The token Veydr wrote as the first line on stdin. */
+  async token(): Promise<string> {
+    return (await this.stdinContent()).split('\n')[0] ?? ''
+  }
+
+  /** The run request Veydr wrote as the second line on stdin. */
+  async request(): Promise<unknown> {
+    return JSON.parse((await this.stdinContent()).split('\n')[1] ?? '') as unknown
   }
 
   /** Connects to the control pipe; `first` is the handshake line (the real one by default). */
@@ -160,7 +173,7 @@ async function startedRun(extra: Partial<HelperClientOptions> = {}): Promise<{ r
   const pending = start(harness.options(extra))
   const helper = await waitForHelper()
   await helper.connect()
-  helper.send({ type: 'started', pid: LEADER.pid, created: LEADER.created })
+  helper.send({ type: 'started', pid: LEADER.pid, created: LEADER.created, ...CONSOLE })
   return { run: await pending, helper }
 }
 
@@ -193,12 +206,17 @@ describe('starting the helper', () => {
     const { run, helper } = await startedRun()
     const [call] = harness.spawnCalls
     expect(call?.file).toBe(HELPER)
-    expect(call?.args).toEqual(['run', helper.pipe, plan.file, ...plan.args])
+    // Only the pipe is on the helper's command line; the command goes over stdin (design D1).
+    expect(call?.args).toEqual(['run', helper.pipe])
     expect(call?.options).toMatchObject({ cwd: plan.cwd, env: plan.env, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true, detached: false, shell: false })
     const token = await helper.token()
     expect(token).toMatch(/^[0-9a-f]{64}$/)
     expect(call?.args.join(' ')).not.toContain(token)
     expect(helper.stdin.writableEnded).toBe(true)
+    // Exactly two lines: the token, then the request with the complete command line.
+    const commandLine = `"${plan.file}" "server.js" "--port" "3000"`
+    expect(await helper.stdinContent()).toBe(`${token}\n${JSON.stringify({ application: plan.file, commandLine })}\n`)
+    expect(await helper.request()).toEqual({ application: plan.file, commandLine })
 
     expect(run.pid).toBe(LEADER.pid)
     expect(run.identity).toEqual({ pid: LEADER.pid, token: LEADER.created })
@@ -212,7 +230,7 @@ describe('starting the helper', () => {
     const pending = start(harness.options())
     const second = await waitForHelper(1)
     await second.connect()
-    second.send({ type: 'started', pid: 5000, created: LEADER.created })
+    second.send({ type: 'started', pid: 5000, created: LEADER.created, ...CONSOLE })
     await pending
     expect(second.pipe).not.toBe(first.helper.pipe)
     expect(await second.token()).not.toBe(await first.helper.token())
@@ -238,7 +256,7 @@ describe('starting the helper', () => {
     const helper = await waitForHelper()
     for (const first of [
       JSON.stringify({ type: 'ready', version: PROTOCOL_VERSION, token: 'f'.repeat(64), pid: HELPER_PID }),
-      JSON.stringify({ type: 'started', pid: 1, created: '1' }),
+      JSON.stringify({ type: 'started', pid: 1, created: '1', ...CONSOLE }),
       'hello',
     ]) {
       const intruder = connect(helper.pipe)
@@ -250,7 +268,7 @@ describe('starting the helper', () => {
       await once(intruder, 'close')
     }
     await helper.connect()
-    helper.send({ type: 'started', pid: LEADER.pid, created: LEADER.created })
+    helper.send({ type: 'started', pid: LEADER.pid, created: LEADER.created, ...CONSOLE })
     await expect(pending).resolves.toMatchObject({ pid: LEADER.pid })
     expect(harness.log.events.filter((e) => e.event === 'process.helper-connection-refused')).toHaveLength(3)
   })
@@ -264,7 +282,7 @@ describe('starting the helper', () => {
     intruder.write('x'.repeat(MAX_HANDSHAKE_BYTES + 1))
     await once(intruder, 'close')
     await helper.connect()
-    helper.send({ type: 'started', pid: LEADER.pid, created: LEADER.created })
+    helper.send({ type: 'started', pid: LEADER.pid, created: LEADER.created, ...CONSOLE })
     await expect(pending).resolves.toBeDefined()
   })
 
@@ -273,7 +291,7 @@ describe('starting the helper', () => {
     const helper = await waitForHelper()
     const many = Array.from({ length: 200 }, (_, i) => ({ pid: 8000 + 4 * i, created: GRANDCHILD.created, image: GRANDCHILD.image }))
     const ready = JSON.stringify({ type: 'ready', version: PROTOCOL_VERSION, token: await helper.token(), pid: HELPER_PID })
-    const started = JSON.stringify({ type: 'started', pid: LEADER.pid, created: LEADER.created })
+    const started = JSON.stringify({ type: 'started', pid: LEADER.pid, created: LEADER.created, ...CONSOLE })
     const members = JSON.stringify({ type: 'members', answer: false, members: [LEADER, ...many] })
     await helper.connect(`${ready}\n${started}\n${members}`)
     const run = await pending
@@ -289,7 +307,7 @@ describe('starting the helper', () => {
     await once(idle, 'connect')
     await once(idle, 'close')
     await helper.connect()
-    helper.send({ type: 'started', pid: LEADER.pid, created: LEADER.created })
+    helper.send({ type: 'started', pid: LEADER.pid, created: LEADER.created, ...CONSOLE })
     await expect(pending).resolves.toBeDefined()
     expect(harness.log.events.find((e) => e.event === 'process.helper-connection-refused')?.detail?.['reason']).toMatch(/no first line within 50 ms/)
   })
@@ -307,7 +325,7 @@ describe('starting the helper', () => {
       idle.push(socket)
     }
     await helper.connect()
-    helper.send({ type: 'started', pid: LEADER.pid, created: LEADER.created })
+    helper.send({ type: 'started', pid: LEADER.pid, created: LEADER.created, ...CONSOLE })
     await expect(pending).resolves.toBeDefined()
     // The helper's connection displaced the oldest idle one; the rest closed once it was accepted.
     expect(harness.log.events.filter((e) => e.detail?.['reason'] === 'too many connections are waiting to identify themselves')).toHaveLength(1)
@@ -323,7 +341,7 @@ describe('starting the helper', () => {
     intruder.write(Buffer.from([0x7b, 0xff, 0x7d, 0x0a]))
     await once(intruder, 'close')
     await helper.connect()
-    helper.send({ type: 'started', pid: LEADER.pid, created: LEADER.created })
+    helper.send({ type: 'started', pid: LEADER.pid, created: LEADER.created, ...CONSOLE })
     await expect(pending).resolves.toBeDefined()
     expect(harness.log.events.find((e) => e.event === 'process.helper-connection-refused')?.detail?.['reason']).toMatch(/not valid UTF-8/)
   })
@@ -332,7 +350,7 @@ describe('starting the helper', () => {
     const pending = start(harness.options())
     const helper = await waitForHelper()
     await helper.connect(JSON.stringify({ type: 'ready', version: PROTOCOL_VERSION + 1, token: await helper.token(), pid: HELPER_PID }))
-    const error = await expectSpawnError(pending, /protocol version 2.*needs version 1/)
+    const error = await expectSpawnError(pending, /protocol version 3.*needs version 2/)
     expect(error.reason).toBe('other')
     expect(helper.kills).toEqual(['SIGKILL'])
     expect(helper.stdout.destroyed).toBe(true)
@@ -353,6 +371,16 @@ describe('starting the helper', () => {
     helper.send({ type: 'error', message: 'CreateProcess failed: the system cannot find the file specified' })
     await helper.exit(1)
     await expectSpawnError(pending, `Could not start ${plan.file}: CreateProcess failed: the system cannot find the file specified`)
+  })
+
+  it('reports a refused run request, which the helper sends as an error line after ready', async () => {
+    const pending = start(harness.options())
+    const helper = await waitForHelper()
+    await helper.connect()
+    helper.send({ type: 'error', message: 'the run request has an unknown key at offset 1' })
+    await helper.exit(1)
+    await expectSpawnError(pending, `Could not start ${plan.file}: the run request has an unknown key at offset 1`)
+    expect(harness.log.events.filter((e) => e.event === 'process.helper-failed')).toHaveLength(1)
   })
 
   it('keeps the helper error that arrived just before the helper exited', async () => {
@@ -621,7 +649,7 @@ describe('helper failures', () => {
     ['a malformed line', (h) => h.sendRaw('{"type":"members"\n'), /Not a JSON line/],
     ['an unknown message', (h) => h.send({ type: 'progress', percent: 50 }), /Unknown message type "progress"/],
     ['an invalid field', (h) => h.send({ type: 'members', answer: false, members: [{ ...CHILD, pid: -1 }] }), /Malformed members message/],
-    ['a second started', (h) => h.send({ type: 'started', pid: LEADER.pid, created: LEADER.created }), /unexpected started message/],
+    ['a second started', (h) => h.send({ type: 'started', pid: LEADER.pid, created: LEADER.created, ...CONSOLE }), /unexpected started message/],
     ['an answer without a request', (h) => h.send({ type: 'members', answer: true, members: [] }), /unexpected members message/],
     ['a stop result without a stop', (h) => h.send({ type: 'stopped', graceful: 'yes', forced: false, survivors: [] }), /unexpected stopped message/],
     ['a line beyond the size limit', (h) => h.sendRaw('x'.repeat(1024 * 1024 + 1)), /exceeds/],
@@ -697,21 +725,72 @@ describe('helper failures', () => {
   })
 })
 
+describe('the run request (protocol version 2)', () => {
+  const CMD = 'C:\\Windows\\System32\\cmd.exe'
+
+  it('refuses a batch file without a planned command line before creating the pipe or the helper', async () => {
+    let pipes = 0
+    const options = harness.options({ pipePath: () => (pipes++, harness.nextPipe()) })
+    const pending = startHelperRun({ ...plan, file: 'C:\\tools\\build.bat', args: ['release'] }, options)
+    const refused = await expectSpawnError(pending, 'The batch file "C:\\\\tools\\\\build.bat" can only run through cmd.exe, with a command line built for it')
+    expect(refused).toBeInstanceOf(CommandLineError)
+    expect(pipes).toBe(0)
+    expect(harness.spawnCalls).toEqual([])
+  })
+
+  it('sends a planned command line unchanged, with the program it starts', async () => {
+    const commandLine = shellCommandLine(CMD, 'npm run dev && echo %USERNAME% ^& done')
+    const pending = startHelperRun({ ...plan, file: CMD, args: [], commandLine }, harness.options())
+    const helper = await waitForHelper()
+    expect(await helper.request()).toEqual({ application: CMD, commandLine })
+    await helper.connect()
+    helper.send({ type: 'started', pid: LEADER.pid, created: LEADER.created, ...CONSOLE })
+    await expect(pending).resolves.toBeDefined()
+  })
+
+  it('reports the console the command was given, and logs one that is not UTF-8', async () => {
+    const { run } = await startedRun()
+    expect((run as WindowsManagedProcess).console).toEqual({ utf8: true, ansiCodePage: 1252 })
+    expect(harness.log.events.find((e) => e.event === 'process.windows-console-not-utf8')).toBeUndefined()
+
+    const pending = start(harness.options())
+    const helper = await waitForHelper(1)
+    await helper.connect()
+    const reason = "could not attach to the command's console: The handle is invalid. (error 6)"
+    helper.send({ type: 'started', pid: 5000, created: LEADER.created, utf8Console: false, ansiCodePage: 932, consoleError: reason })
+    const second = (await pending) as WindowsManagedProcess
+    expect(second.console).toEqual({ utf8: false, ansiCodePage: 932 })
+    expect(harness.log.events.filter((e) => e.event === 'process.windows-console-not-utf8')).toEqual([
+      { level: 'warn', event: 'process.windows-console-not-utf8', detail: { leader: 5000, ansiCodePage: 932, reason } },
+    ])
+  })
+
+  it('fails the start on a started line without the console fields, as a version 1 helper would send', async () => {
+    const pending = start(harness.options())
+    const helper = await waitForHelper()
+    await helper.connect()
+    helper.send({ type: 'started', pid: LEADER.pid, created: LEADER.created })
+    await expectSpawnError(pending, /Malformed started message/)
+    expect(helper.kills).toEqual(['SIGKILL'])
+  })
+})
+
 describe('with a real helper process', () => {
   // A Node stand-in for the helper, to check the token travels over a real stdin and the run ends
   // cleanly once the helper exits with 0.
   const script = `
     const net = require('node:net')
-    const [pipe, , ...rest] = process.argv.slice(1)
-    let token = ''
+    const [pipe] = process.argv.slice(1)
+    let input = ''
     process.stdin.setEncoding('utf8')
-    process.stdin.on('data', (d) => (token += d))
+    process.stdin.on('data', (d) => (input += d))
     process.stdin.on('end', () => {
+      const [token, request] = input.split('\\n')
       const s = net.connect(pipe, () => {
         const send = (m) => s.write(JSON.stringify(m) + '\\n')
-        send({ type: 'ready', version: 1, token: token.trim(), pid: process.pid })
-        send({ type: 'started', pid: process.pid, created: '134067012345678901' })
-        process.stdout.write('args:' + JSON.stringify(rest) + ' cwd-env:' + process.env.VEYDR_TEST_MARK + '\\n')
+        send({ type: 'ready', version: 2, token, pid: process.pid })
+        send({ type: 'started', pid: process.pid, created: '134067012345678901', utf8Console: false, ansiCodePage: 1252, consoleError: 'no console in the test' })
+        process.stdout.write('request:' + request + ' cwd-env:' + process.env.VEYDR_TEST_MARK + '\\n')
         send({ type: 'members', answer: false, members: [] })
         send({ type: 'exited', code: 0, forced: false })
         s.end(() => process.exit(0))
@@ -720,13 +799,15 @@ describe('with a real helper process', () => {
   `
 
   it('completes a run end to end', async () => {
+    const log = harness.log
     const run = await startHelperRun(
-      { file: 'leader', args: ['a b', '"q"'], cwd: process.cwd(), env: { ...process.env, VEYDR_TEST_MARK: 'marked' } },
+      { file: process.execPath, args: ['a b', '"q"'], cwd: process.cwd(), env: { ...process.env, VEYDR_TEST_MARK: 'marked' } },
       {
         helperPath: process.execPath,
         pipePath: () => sockets.next(),
         // `run` is the first argument; the stand-in skips it and reads the pipe after it.
         spawnHelper: (file, args, options) => spawn(file, ['-e', script, '--', ...args.slice(1)], options),
+        log,
       },
     )
     let output = ''
@@ -735,6 +816,13 @@ describe('with a real helper process', () => {
     await expect(exitOf(run)).resolves.toEqual({ code: 0, signal: null, forced: false })
     await vi.waitFor(async () => expect(await run.remaining()).toEqual([]))
     await expect(run.stop({ graceMs: 1000 })).resolves.toEqual({ graceful: 'yes', forced: false, survivors: [] })
-    expect(output).toBe('args:["a b","\\"q\\""] cwd-env:marked\n')
+    const commandLine = `"${process.execPath}" "a b" "\\"q\\""`
+    expect(output).toBe(`request:${JSON.stringify({ application: process.execPath, commandLine })} cwd-env:marked\n`)
+    expect(run.console).toEqual({ utf8: false, ansiCodePage: 1252 })
+    expect(log.events.find((e) => e.event === 'process.windows-console-not-utf8')).toEqual({
+      level: 'warn',
+      event: 'process.windows-console-not-utf8',
+      detail: { leader: run.pid, ansiCodePage: 1252, reason: 'no console in the test' },
+    })
   })
 })

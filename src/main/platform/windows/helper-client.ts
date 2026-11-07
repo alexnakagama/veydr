@@ -5,9 +5,11 @@ import { createServer, type Server, type Socket } from 'node:net'
 import type { Readable, Writable } from 'node:stream'
 import { SpawnError } from '../errors'
 import type { ExitInfo, ManagedProcess, PlatformLog, ProcInfo, ProcessIdentity, SpawnPlan, StopResult } from '../types'
+import { helperLaunch } from './command-line'
 import { windowsIdentity } from './identity'
 import {
   encodeControlMessage,
+  encodeRunRequest,
   LineReader,
   MAX_HANDSHAKE_BYTES,
   MAX_LINE_BYTES,
@@ -66,12 +68,28 @@ export const imageName = (image: string): string => image.slice(Math.max(image.l
 /** A job member as shown to the user; the image path stands in for the command line (design D4). */
 export const procInfo = (m: HelperMember): ProcInfo => ({ pid: m.pid, name: imageName(m.image) || `PID ${m.pid}`, commandLine: m.image })
 
+/** The console the helper gave the command (add-windows-environment-and-commands design D5). */
+export interface WindowsConsole {
+  /** Whether the console's output code page was set to UTF-8 (65001) before the command ran. */
+  readonly utf8: boolean
+  /** The system's ANSI code page, `GetACP()`. */
+  readonly ansiCodePage: number
+}
+
+/** A command started through the helper. */
+export interface WindowsManagedProcess extends ManagedProcess {
+  readonly console: WindowsConsole
+}
+
 /**
  * Starts `plan` through `veydr-helper.exe run` (design D1, D2) and resolves once the helper reports
  * the started command. Rejects with `SpawnError` if the command was not started; every resource of
- * the attempt (the pipe, the helper) is released first.
+ * the attempt (the pipe, the helper) is released first. A plan whose command line cannot be built
+ * (`helperLaunch`) is refused before anything is created.
  */
-export async function startHelperRun(plan: SpawnPlan, options: HelperClientOptions): Promise<ManagedProcess> {
+export async function startHelperRun(plan: SpawnPlan, options: HelperClientOptions): Promise<WindowsManagedProcess> {
+  // Veydr builds the whole command line, and the helper passes it on unchanged (design D1).
+  const request = runRequest(plan)
   const token = randomBytes(32).toString('hex')
   const pipe = (options.pipePath ?? randomPipePath)()
   const server = createServer({ pauseOnConnect: false })
@@ -92,7 +110,8 @@ export async function startHelperRun(plan: SpawnPlan, options: HelperClientOptio
   try {
     // The helper starts the command with its own working directory and environment (design D2).
     // Hidden, and never detached: libuv's job ends the helper if Veydr dies (design D1).
-    child = (options.spawnHelper ?? spawnChild)(options.helperPath, ['run', pipe, plan.file, ...plan.args], {
+    // Only the pipe name is on the helper's command line; the command goes over stdin (design D1).
+    child = (options.spawnHelper ?? spawnChild)(options.helperPath, ['run', pipe], {
       cwd: plan.cwd,
       env: { ...plan.env },
       stdio: ['pipe', 'pipe', 'pipe'],
@@ -117,7 +136,17 @@ export async function startHelperRun(plan: SpawnPlan, options: HelperClientOptio
     server.close()
     throw new SpawnError('other', `Could not start the Windows helper ${options.helperPath}: it was started without pipes`)
   }
-  return new HelperRun(child, { stdin: child.stdin, stdout: child.stdout, stderr: child.stderr }, server, token, plan.file, options).started
+  return new HelperRun(child, { stdin: child.stdin, stdout: child.stdout, stderr: child.stderr }, server, token, request, plan.file, options).started
+}
+
+/** The run request line for `plan`; a `SpawnError` (`CommandLineError`) if it cannot be built. */
+function runRequest(plan: SpawnPlan): string {
+  const launch = helperLaunch(plan)
+  try {
+    return encodeRunRequest(launch)
+  } catch (error) {
+    throw new SpawnError('other', `Could not start ${plan.file}: ${messageOf(error)}`)
+  }
 }
 
 type Phase = 'starting' | 'running' | 'ended' | 'failed'
@@ -128,15 +157,16 @@ interface Waiter<T> {
 }
 
 /** One run: the helper process, its authenticated control connection, and the command it reports. */
-class HelperRun implements ManagedProcess {
+class HelperRun implements WindowsManagedProcess {
   /** Resolves with this run once the helper reports `started`; rejects with `SpawnError` otherwise. */
-  readonly started: Promise<ManagedProcess>
+  readonly started: Promise<WindowsManagedProcess>
   readonly stdout: Readable
   readonly stderr: Readable
   readonly sessionId = null
   private phase: Phase = 'starting'
   private leader: ProcessIdentity | null = null
-  private settleStart!: Waiter<ManagedProcess>
+  private startedConsole: WindowsConsole | null = null
+  private settleStart!: Waiter<WindowsManagedProcess>
   private failure: Error | null = null
   private readonly pending = new Set<Socket>()
   private socket: Socket | null = null
@@ -165,6 +195,7 @@ class HelperRun implements ManagedProcess {
     stdio: { readonly stdin: Writable; readonly stdout: Readable; readonly stderr: Readable },
     private readonly server: Server,
     private readonly token: string,
+    request: string,
     private readonly file: string,
     private readonly options: HelperClientOptions,
   ) {
@@ -186,9 +217,11 @@ class HelperRun implements ManagedProcess {
       this.helperExit = { code }
       this.settle()
     })
-    // The token goes only to the helper's stdin, never on a command line (design D2).
+    // The token and the run request go only to the helper's stdin, never on a command line
+    // (design D2; add-windows-environment-and-commands design D1). The helper reads the request
+    // only after it has proven itself on the pipe.
     stdio.stdin.on('error', (error) => this.log('warn', 'process.helper-stdin-error', { helper: child.pid, message: error.message }))
-    stdio.stdin.end(`${token}\n`)
+    stdio.stdin.end(`${token}\n${request}`)
   }
 
   get pid(): number {
@@ -197,6 +230,11 @@ class HelperRun implements ManagedProcess {
 
   get identity(): ProcessIdentity {
     return this.requireLeader()
+  }
+
+  get console(): WindowsConsole {
+    if (this.startedConsole === null) throw new Error('the command has not started yet')
+    return this.startedConsole
   }
 
   onExit(cb: (e: ExitInfo) => void): void {
@@ -384,6 +422,11 @@ class HelperRun implements ManagedProcess {
       case 'started': {
         if (this.phase !== 'starting') return unexpected()
         this.leader = windowsIdentity(message.pid, message.created)
+        this.startedConsole = { utf8: message.utf8Console, ansiCodePage: message.ansiCodePage }
+        if (!message.utf8Console) {
+          // Console programs then write in the OEM code page, which no decoder covers (design D5).
+          this.log('warn', 'process.windows-console-not-utf8', { leader: message.pid, ansiCodePage: message.ansiCodePage, reason: message.consoleError })
+        }
         this.phase = 'running'
         this.clearStartTimer()
         this.settleStart.resolve(this)

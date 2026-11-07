@@ -7,6 +7,9 @@ import {
   batchCommandLine,
   CMD_MAX_LINE,
   CommandLineError,
+  helperLaunch,
+  isBatchFile,
+  MAX_COMMAND_LINE as WINDOWS_MAX_COMMAND_LINE,
   quoteArgument,
   SHIM_LINE_RESERVE,
   shellCommandLine,
@@ -379,5 +382,132 @@ describe('Windows command lines (design D1)', () => {
       expectRefused(() => shellCommandLine('C:\\x\0\\cmd.exe', 'echo x'), 'nul', /NUL/)
       expectRefused(() => shellCommandLine('\\\\?\\C:\\Windows\\System32\\cmd.exe', 'echo x'), 'invalid-path', /ordinary drive or UNC path/)
     })
+  })
+})
+
+describe('the helper launch (design D1, protocol version 2)', () => {
+  const NODE = 'C:\\Program Files\\nodejs\\node.exe'
+
+  function refusal(run: () => unknown): CommandLineError {
+    let thrown: unknown
+    try {
+      run()
+    } catch (error) {
+      thrown = error
+    }
+    expect(thrown).toBeInstanceOf(CommandLineError)
+    expect(thrown).toBeInstanceOf(SpawnError)
+    return thrown as CommandLineError
+  }
+
+  it('recognises batch files as the helper does, trailing dots and spaces trimmed, in any case', () => {
+    for (const path of ['C:\\x\\build.bat', 'C:\\x\\npm.CMD', 'C:/x/a.Bat', 'C:\\x\\a.cmd.', 'C:\\x\\a.bat . .', '\\\\srv\\share\\run.cmd', 'RUN~1.BAT']) {
+      expect(isBatchFile(path), path).toBe(true)
+    }
+    for (const path of ['C:\\x\\node.exe', 'C:\\x\\a.bat.exe', 'C:\\x.bat\\node.exe', 'C:\\x\\a.batch', 'C:\\x\\acmd', 'C:\\x\\a.bat:stream.exe']) {
+      expect(isBatchFile(path), path).toBe(false)
+    }
+  })
+
+  it('quotes the program and every argument by the CommandLineToArgvW rules when no command line is planned', () => {
+    const args = ['server.js', '', 'a b', 'say "hi"', 'trail\\', 'C:\\dir with space\\', '%PATH%', '&|<>^!', 'é😀']
+    const launch = helperLaunch({ file: NODE, args })
+    expect(launch.application).toBe(NODE)
+    expect(launch.commandLine.startsWith(`"${NODE}" `)).toBe(true)
+    expect(commandLineToArgv(launch.commandLine)).toEqual([NODE, ...args])
+    expect(helperLaunch({ file: NODE, args: [] })).toEqual({ application: NODE, commandLine: `"${NODE}"` })
+  })
+
+  it('passes a planned command line on unchanged', () => {
+    const commandLine = shellCommandLine(CMD, 'npm run dev && echo %USERNAME%')
+    expect(helperLaunch({ file: CMD, args: [], commandLine })).toEqual({ application: CMD, commandLine })
+    const batch = batchCommandLine(CMD, SHIM, ['run', 'a & b'])
+    expect(helperLaunch({ file: CMD, args: [], commandLine: batch })).toEqual({ application: CMD, commandLine: batch })
+  })
+
+  it('refuses a batch file as the program, with or without a command line', () => {
+    for (const file of [SHIM, 'C:\\x\\build.BAT', 'C:\\x\\build.bat. ', '\\\\srv\\share\\run.cmd']) {
+      expect(refusal(() => helperLaunch({ file, args: ['x'] })).refusal, file).toBe('batch-file-program')
+      expect(refusal(() => helperLaunch({ file, args: [], commandLine: `"${file}" x` })).refusal, file).toBe('batch-file-program')
+    }
+    expect(refusal(() => helperLaunch({ file: SHIM, args: [] })).message).toContain('can only run through cmd.exe')
+  })
+
+  it('refuses a program that is not an ordinary full path', () => {
+    const cases: [string, CommandLineRefusal][] = [
+      ['C:node.exe', 'invalid-path'],
+      ['\\node.exe', 'invalid-path'],
+      ['node.exe', 'invalid-path'],
+      ['\\\\.\\C:\\node.exe', 'invalid-path'],
+      ['\\\\?\\C:\\node.exe', 'invalid-path'],
+      ['//?/C:/node.exe', 'invalid-path'],
+      ['C:\\x\\run.bat::$DATA', 'invalid-path'],
+      // Segments that normalization removes would hide a batch file's name (reviewer2, group 2).
+      ['C:\\x\\evil.bat\\.', 'invalid-path'],
+      ['C:\\x\\evil.bat\\..\\evil.bat', 'invalid-path'],
+      ['C:\\x\\evil.bat\\', 'invalid-path'],
+      ['C:\\x\\evil.bat\\ . ', 'invalid-path'],
+      ['C:\\x\\..\\node.exe', 'invalid-path'],
+      ['C:\\x\\.\\node.exe', 'invalid-path'],
+      ['C:\\x\\\\node.exe', 'invalid-path'],
+      ['\\\\srv\\share\\..\\run.cmd', 'invalid-path'],
+      ['C:\\x\\node.exe:alt', 'invalid-path'],
+      ['C:\\x\\"node".exe', 'invalid-path'],
+      ['C:\\x\\node\n.exe', 'invalid-path'],
+      ['C:\\x\\node\0.exe', 'nul'],
+      ['C:\\x\\node\uD800.exe', 'unpaired-surrogate'],
+    ]
+    for (const [file, kind] of cases) expect(refusal(() => helperLaunch({ file, args: [] })).refusal, JSON.stringify(file)).toBe(kind)
+  })
+
+  it('refuses a planned command line that does not start with the quoted program, or that holds NUL or a lone surrogate', () => {
+    const cases: [string, CommandLineRefusal][] = [
+      [`"C:\\Windows\\System32\\other.exe" /c x`, 'command-line-mismatch'],
+      [`${CMD} /c x`, 'command-line-mismatch'],
+      [`"${CMD}"/c x`, 'command-line-mismatch'],
+      [`"${CMD}x" /c x`, 'command-line-mismatch'],
+      ['', 'command-line-mismatch'],
+      [`"${CMD}" /c a\0b`, 'nul'],
+      [`"${CMD}" /c \uDC00`, 'unpaired-surrogate'],
+    ]
+    for (const [commandLine, kind] of cases) {
+      expect(refusal(() => helperLaunch({ file: CMD, args: [], commandLine })).refusal, JSON.stringify(commandLine)).toBe(kind)
+    }
+  })
+
+  it('accepts dots inside segment names, which normalization keeps', () => {
+    for (const file of ['C:\\x\\.hidden\\node.exe', 'C:\\x\\a..b\\node.exe', 'C:\\Program Files\\nodejs\\node.exe', '\\\\srv\\share\\node.exe']) {
+      expect(helperLaunch({ file, args: [] }).application, file).toBe(file)
+    }
+  })
+
+  it('refuses a planned command line together with separate arguments, one of which would be ignored', () => {
+    const commandLine = shellCommandLine(CMD, 'echo hi')
+    expect(refusal(() => helperLaunch({ file: CMD, args: ['x'], commandLine })).refusal).toBe('command-line-mismatch')
+  })
+
+  it('refuses arguments that no command line can carry', () => {
+    expect(refusal(() => helperLaunch({ file: NODE, args: ['a\0b'] })).refusal).toBe('nul')
+    expect(refusal(() => helperLaunch({ file: NODE, args: ['\uD800'] })).refusal).toBe('unpaired-surrogate')
+  })
+
+  it('accepts a command line of exactly the CreateProcess limit and refuses one character more', () => {
+    expect(WINDOWS_MAX_COMMAND_LINE).toBe(32_766)
+    const program = `"${NODE}" `
+    const longest = `${program}${'x'.repeat(WINDOWS_MAX_COMMAND_LINE - program.length)}`
+    expect(helperLaunch({ file: NODE, args: [], commandLine: longest }).commandLine).toHaveLength(WINDOWS_MAX_COMMAND_LINE)
+    const error = refusal(() => helperLaunch({ file: NODE, args: [], commandLine: `${longest}x` }))
+    expect(error.refusal).toBe('command-line-too-long')
+    expect(error.message).toBe(`The command line has 32767 characters, more than the 32766 Windows accepts`)
+    // Quoting counts: an argument of 32,700 characters becomes too long with its quotes.
+    expect(refusal(() => helperLaunch({ file: NODE, args: ['y'.repeat(WINDOWS_MAX_COMMAND_LINE - program.length - 1)] })).refusal).toBe('command-line-too-long')
+    // A direct-mode line of 32,000 characters (the Windows integration test's) fits.
+    expect(helperLaunch({ file: NODE, args: ['z'.repeat(32_000 - program.length - 2)] }).commandLine).toHaveLength(32_000)
+  })
+
+  it('never names an argument in a refusal', () => {
+    const secret = 'token=s3cr3t-value'
+    const error = refusal(() => helperLaunch({ file: NODE, args: [`${secret}\0`] }))
+    expect(error.message).not.toContain(secret)
   })
 })

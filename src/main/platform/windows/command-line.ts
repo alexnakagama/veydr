@@ -1,3 +1,4 @@
+import { sep } from 'node:path'
 import { SpawnError } from '../errors'
 
 // Every Windows command line Veydr starts (add-windows-environment-and-commands design D1). Veydr
@@ -19,6 +20,12 @@ import { SpawnError } from '../errors'
 
 /** The longest command line `cmd.exe` accepts, in characters. */
 export const CMD_MAX_LINE = 8191
+
+/**
+ * The longest command line `CreateProcess` accepts, in characters: 32,767 with the terminating NUL
+ * (the helper refuses the same, design D1).
+ */
+export const MAX_COMMAND_LINE = 32_766
 
 /** Characters kept free on a batch file's own line for its text around `%*` (npm.cmd's is under 200). */
 export const SHIM_LINE_RESERVE = 1024
@@ -55,6 +62,12 @@ export type CommandLineRefusal =
   | 'line-too-long'
   /** More than `CMD_MAX_LINE - SHIM_LINE_RESERVE` characters of arguments on the batch file's own line. */
   | 'batch-line-too-long'
+  /** More than `MAX_COMMAND_LINE` characters on a `CreateProcess` command line. */
+  | 'command-line-too-long'
+  /** A batch file given as the program, which `CreateProcess` would run through `cmd.exe` unquoted. */
+  | 'batch-file-program'
+  /** A command line whose argv[0] is not the quoted program it is started with. */
+  | 'command-line-mismatch'
 
 /**
  * A command line that cannot be built, so nothing was started. It is a `SpawnError`, so it reaches
@@ -78,10 +91,27 @@ export class CommandLineError extends SpawnError {
 const isWindowsFullPath = (path: string): boolean => /^[A-Za-z]:[\\/]/.test(path) || /^[\\/]{2}[^\\/]/.test(path)
 
 /**
+ * Whether `path` names a program without depending on a current drive or directory: `C:\…` or a UNC
+ * path, the rule the helper applies (a root-relative `\…` is not enough). Where paths are POSIX,
+ * which only tests reach, an absolute path is enough.
+ */
+export const isFullyQualified = (path: string): boolean => isWindowsFullPath(path) || (sep === '/' && path.startsWith('/'))
+
+/**
  * A Win32 device or literal path (`\\.\…`, `\\?\…`, in either slash). `cmd.exe` does not reliably run
  * a batch file from one, and the resolver never produces one, so it is refused rather than guessed at.
  */
 const isDevicePath = (path: string): boolean => /^[\\/]{2}[.?][\\/]/.test(path)
+
+/**
+ * Whether a full path has a segment that Windows removes or resolves when it normalizes the path:
+ * an empty one (`\\`, or a trailing separator), `.`, `..`, or one of only dots and spaces. The drive
+ * (`C:`) or the UNC prefix (`\\`) is not a segment. The helper's `HasDotSegment` is the same rule.
+ */
+export function hasDotSegment(path: string): boolean {
+  const rest = /^[A-Za-z]:[\\/]/.test(path) ? path.slice(3) : /^[\\/]{2}/.test(path) ? path.slice(2) : path.replace(/^[\\/]/, '')
+  return rest.split(/[\\/]/).some((segment) => /^[. ]*$/.test(segment))
+}
 
 const hasNul = (text: string): boolean => text.includes('\0')
 const hasLineBreak = (text: string): boolean => /[\r\n]/.test(text)
@@ -195,6 +225,90 @@ export function batchCommandLine(cmdExe: string, file: string, args: readonly st
     )
   }
   return line
+}
+
+/**
+ * Whether `path` names a batch file, which `CreateProcess` would run through `cmd.exe` with its own
+ * unsafe quoting: its file name ends in `.bat` or `.cmd`, in any case, once trailing dots and spaces
+ * (which Windows drops from a file name) are removed. It is the helper's `IsBatchFile`.
+ */
+export function isBatchFile(path: string): boolean {
+  const name = path.slice(Math.max(path.lastIndexOf('\\'), path.lastIndexOf('/')) + 1).replace(/[. ]+$/, '')
+  return /\.(?:bat|cmd)$/i.test(name)
+}
+
+/** What the helper is given for one run (design D1): the program, and its complete command line. */
+export interface HelperLaunch {
+  /** The fully qualified program `CreateProcess` starts; never a batch file. */
+  readonly application: string
+  /** The complete command line, argv[0] included, at most `MAX_COMMAND_LINE` characters. */
+  readonly commandLine: string
+}
+
+/**
+ * The launch for a plan (design D1): `plan.commandLine` when the resolver built one, or `plan.file`
+ * and `plan.args` quoted by the `CommandLineToArgvW` rules. The helper repeats the checks that keep a
+ * batch file from running without `cmd.exe`; they are made here first, so that a refusal names the
+ * cause before any process exists.
+ *
+ * Throws a `CommandLineError` for:
+ * - a program that is not a full drive or UNC path, is a device path, has an empty, `.` or `..`
+ *   segment (or one of only dots and spaces), holds an alternate data stream (`:` after the drive),
+ *   or contains NUL, a line break, `"` or an unpaired surrogate;
+ * - a `commandLine` together with separate `args`, one of which would be ignored;
+ * - a batch-file program without a `commandLine` (`batch-file-program`), and a batch file as the
+ *   program of any command line: a batch file runs only as part of a `cmd.exe` command line;
+ * - a `commandLine` that does not start with the quoted program (`command-line-mismatch`), or that
+ *   contains NUL or an unpaired surrogate;
+ * - a command line beyond `MAX_COMMAND_LINE` characters.
+ */
+export function helperLaunch(plan: { readonly file: string; readonly args: readonly string[]; readonly commandLine?: string | undefined }): HelperLaunch {
+  const { file } = plan
+  if (hasNul(file)) throw new CommandLineError('nul', 'The program path contains a NUL character, which no Windows command line can carry')
+  if (hasLineBreak(file) || file.includes('"')) {
+    throw new CommandLineError('invalid-path', `The program path contains a line break or a double quote, which cannot be quoted: ${JSON.stringify(file)}`)
+  }
+  if (hasLoneSurrogate(file)) throw new CommandLineError('unpaired-surrogate', `The program path contains an unpaired UTF-16 surrogate: ${JSON.stringify(file)}`)
+  if (!isFullyQualified(file)) throw new CommandLineError('invalid-path', `The program must be given by its full path: ${JSON.stringify(file)}`)
+  if (isDevicePath(file)) throw new CommandLineError('invalid-path', `The program must be an ordinary drive or UNC path, not a \\\\.\\ or \\\\?\\ path: ${JSON.stringify(file)}`)
+  // `C:\tool.bat\.` is `C:\tool.bat` once Windows normalizes it, but its last segment is no batch
+  // file name; such segments are refused, so the batch-file check below sees the real name.
+  if (hasDotSegment(file)) {
+    throw new CommandLineError('invalid-path', `The program path has an empty, "." or ".." segment, or one of only dots and spaces: ${JSON.stringify(file)}`)
+  }
+  // `C:\tool.bat::$DATA` names a data stream of the file; no program Veydr plans needs one.
+  if (file.indexOf(':', 2) !== -1) throw new CommandLineError('invalid-path', `The program path contains ":" after the drive: ${JSON.stringify(file)}`)
+  if (isBatchFile(file)) {
+    throw new CommandLineError(
+      'batch-file-program',
+      plan.commandLine === undefined
+        ? `The batch file ${JSON.stringify(file)} can only run through cmd.exe, with a command line built for it`
+        : `The program ${JSON.stringify(file)} is a batch file; a batch file runs only as part of a cmd.exe command line`,
+    )
+  }
+  // argv[0] is read up to its closing quote, without escapes; the path contains no quote.
+  const program = `"${file}"`
+
+  let commandLine: string
+  if (plan.commandLine !== undefined && plan.args.length > 0) {
+    // One of them would be ignored; the command line is the whole truth, so the plan carries no arguments.
+    throw new CommandLineError('command-line-mismatch', 'A plan with a command line must not also have separate arguments')
+  }
+  if (plan.commandLine === undefined) {
+    commandLine = [program, ...plan.args.map(quoteArgument)].join(' ')
+  } else {
+    commandLine = plan.commandLine
+    if (hasNul(commandLine)) throw new CommandLineError('nul', 'The command line contains a NUL character, which no Windows command line can carry')
+    if (hasLoneSurrogate(commandLine)) throw new CommandLineError('unpaired-surrogate', 'The command line contains an unpaired UTF-16 surrogate, which has no UTF-8 form')
+    // argv[0] is what the started program reads as its own path; it must be the program started.
+    if (!(commandLine === program || commandLine.startsWith(`${program} `))) {
+      throw new CommandLineError('command-line-mismatch', `The command line does not start with the quoted program ${program}`)
+    }
+  }
+  if (commandLine.length > MAX_COMMAND_LINE) {
+    throw new CommandLineError('command-line-too-long', `The command line has ${commandLine.length} characters, more than the ${MAX_COMMAND_LINE} Windows accepts`)
+  }
+  return { application: file, commandLine }
 }
 
 /**
