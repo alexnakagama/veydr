@@ -81,7 +81,7 @@ Group 1 review (2026-11-07): reviewer2 found no high items, 1 medium, 3 low and 
   - fake-helper and Windows tests for the parser: quotes, backslashes, every escape, non-BMP characters, a lone surrogate, duplicate and unknown keys, and trailing text refused;
   - `npm test` passes on Linux;
   - the helper builds with `/warnaserror+` in the `windows` job.
-- [ ] 2.2 Update the W1 Windows integration tests for the new `run` form, and add these to `windows-process-tree.test.ts`:
+- [x] 2.2 Update the W1 Windows integration tests for the new `run` form, and add these to `windows-process-tree.test.ts`:
   - **The shim corpus:** the W0 shim corpus runs through the real helper. An `npm.cmd`-style `fwd.cmd` forwards `%*` to a Node recorder; every case arrives unchanged, and no sentinel file is created (`[spec:project-registry/shim-arguments-arrive-unchanged]`).
   - **A plain batch file:** `build.bat release C:\out\`, which tests `if "%1"=="release"` and echoes `%~2` (`[spec:project-registry/simple-batch-arguments-reach-the-batch-file-as-written]`).
   - **The batch-file refusal:** the helper refuses a batch-file application.
@@ -90,8 +90,8 @@ Group 1 review (2026-11-07): reviewer2 found no high items, 1 medium, 3 low and 
   The `it.todo` placeholders for the shim corpus and the plain batch file sit in `test/integration/windows-commands.test.ts` (group 1), since `workflow-policy.test.ts` forbids `it.todo` in `windows-process-tree.test.ts`. Remove them there when these tests land; they must become real tests, never skips. Task 4.3 does the same for `batch-file-editor-on-windows`.
 
   Verify: on the pull request, the `windows` job reports every Windows integration test as run, with the W1 scenarios still passing.
-- [ ] 2.3 In the helper, set the command's console to output code page 65001 (design D5). Free the helper's own console first and re-register its Ctrl handling. After the suspended `CreateProcess`, attach to the leader's console, call `SetConsoleOutputCP(65001)`, re-register the Ctrl handler, detach, and resume. `started.utf8Console` reports the result, and a failure is logged as `process.windows-console-not-utf8`. Add a Windows integration test showing that `started.utf8Console` is `true`, and that `cmd /c echo` of a non-ASCII string writes its UTF-8 bytes. Verify on the `windows` job. **If `utf8Console` is `false` on the runner, pause and report it**, with the attach error and a recommendation between design D5's fallbacks (attach after the resume, or a console-owning wrapper). Group 2 does not merge until that is decided: group 5's decoding depends on it.
-  - Result (2026-11-07, #38): `utf8Console` was `false`. `AttachConsole` on the suspended leader fails with error 6. The user chose fallback (b): the console host `veydr-helper console` (design D5, "Decision"). The same tests now verify it on the `windows` job.
+- [x] 2.3 In the helper, set the command's console to output code page 65001 (design D5). Free the helper's own console first and re-register its Ctrl handling. After the suspended `CreateProcess`, attach to the leader's console, call `SetConsoleOutputCP(65001)`, re-register the Ctrl handler, detach, and resume. `started.utf8Console` reports the result, and a failure is logged as `process.windows-console-not-utf8`. Add a Windows integration test showing that `started.utf8Console` is `true`, and that `cmd /c echo` of a non-ASCII string writes its UTF-8 bytes. Verify on the `windows` job. **If `utf8Console` is `false` on the runner, pause and report it**, with the attach error and a recommendation between design D5's fallbacks (attach after the resume, or a console-owning wrapper). Group 2 does not merge until that is decided: group 5's decoding depends on it.
+  - Result (2026-11-07, #38): `utf8Console` was `false`. `AttachConsole` on the suspended leader fails with error 6. The user chose fallback (b): the console host `veydr-helper console` (design D5, "Decision"). On `af8a8ea` the `windows` job passed: `utf8Console` was `true` in every run, no `process.windows-console-not-utf8` was logged, and `cmd /c echo` wrote UTF-8.
 - [x] 2.4 Update `docs/dependencies.md` (the helper section: the `run` form, protocol version 2 with stdin and the batch-file refusal, and the UTF-8 console). Verify: the docs tests pass.
 
 Group 2 review (2026-11-07): reviewer2 found no high items, 2 medium, 4 low and 3 nits, and no injection path. The re-review approved all fixes.
@@ -105,7 +105,17 @@ Group 2 review (2026-11-07): reviewer2 found no high items, 2 medium, 4 low and 
   - the run request ends with `\n` only.
 - nits: the plan's own checks run before the helper's version is read (fixed). `helperLaunch` running twice per spawn, and a truncated message splitting a surrogate pair, are harmless and left as they are.
 - Additions beyond the design, kept after review: `started.consoleError` (task 2.3 needs the attach error), and the refusal of device paths, data streams and an argv[0] other than the program.
-- Verified on Linux: typecheck, lint, `npm test` (1120 passed, 8 todo), spec coverage 167/167, `openspec validate --strict`. Not yet verified: the helper build with `/warnaserror+` and every Windows test, which need the `windows` job on the pull request. Tasks 2.2 and 2.3 stay open until then; 2.3 pauses the change if `utf8Console` is false.
+- Verified on Linux: typecheck, lint, `npm test` (1120 passed, 8 todo), spec coverage 167/167, `openspec validate --strict`.
+
+Group 2 on Windows (#38, 2026-11-07):
+- The first `windows` run failed for two reasons:
+  - The scenario cleanup started one PowerShell per scenario, which outlasted the 10 s hook limit. It now uses one query (`6e78545`).
+  - Task 2.3's gate: `AttachConsole` on the suspended leader fails with error 6. Fallback (b) was implemented (`db14132`).
+- Console host review: reviewer2 found 1 medium, 2 low and 2 nits. The re-review approved the fixes (`af8a8ea`):
+  - medium: the host was released before the command resumed, so a stall could end the console before the command connected, and an early stop lost its Ctrl+Break. The host is now released after the resume, and gone before `started`.
+  - low: the answer reader catches every exception; the answer timeout is 5 s, and D5 notes the cost.
+  - nits: a leaked reader on the timeout path, and Windows Terminal delegation, left as they are. Also left as is: a command that exits within the host's 5 ms poll delays `started` by up to 2 s, which is harmless.
+- Verified on the `windows` job (`af8a8ea`): the helper builds with `/warnaserror+`; `windows-process-tree.test.ts` ran all 29 tests and all passed, the W1 scenarios included; Windows unit tests 1048 passed, with only the Linux-only files skipped. `ci-ok` passed.
 
 ## 3. Windows command resolver
 
