@@ -4,6 +4,8 @@ import { describe, expect, it } from 'vitest'
 import { LOGIN_SHELL_TIMEOUT_MS } from '../../src/main/platform/linux/environment'
 import { selectPlatform } from '../../src/main/platform'
 import { isRuntimeVariable } from '../../src/main/platform/runtime-env'
+import { BARE_BATCH_ARGUMENT, CMD_MAX_LINE, SHIM_LINE_RESERVE } from '../../src/main/platform/windows/command-line'
+import { ACCEPTED_PROGRAM_TYPES, DEFAULT_PATHEXT, MAX_UNANSWERED_DIRECTORIES, PATH_DIRECTORY_TIMEOUT_MS } from '../../src/main/platform/windows/resolver'
 import { SECRET_STORAGE_DISCLOSURE } from '../../src/renderer/src/CommandEditor'
 
 const root = join(__dirname, '../..')
@@ -36,5 +38,33 @@ describe('docs/commands.md', () => {
   it('discloses plaintext secret storage like the editor does', () => {
     expect(section('Secrets')).toContain('**stored unencrypted**')
     expect(SECRET_STORAGE_DISCLOSURE).toContain('stores them unencrypted')
+  })
+
+  it('states the Windows rules of the resolver and the command lines, as not yet reachable from the app', () => {
+    const windows = section('Windows (not yet available)')
+    // Labelled as not reachable from the app, before anything else is said.
+    expect(windows.slice(windows.indexOf('\n')).trimStart().startsWith('**Not yet reachable from the app.**')).toBe(true)
+    const sub = (title: string): string => windows.split('\n### ').find((part) => part.startsWith(`${title}\n`)) ?? ''
+    const lookup = sub('Finding the program')
+    expect(lookup).toContain('**The working directory is never searched**')
+    expect(lookup).toContain(`(\`${DEFAULT_PATHEXT}\` when \`PATHEXT\` is unset or lists no usable extension)`)
+    expect(lookup).toContain(`has ${PATH_DIRECTORY_TIMEOUT_MS / 1000} seconds to answer`)
+    expect(lookup).toContain(`After ${MAX_UNANSWERED_DIRECTORIES} directories that do not answer, the search stops`)
+    expect(lookup).toContain('only .exe, .com, .bat and .cmd files are started')
+    expect(ACCEPTED_PROGRAM_TYPES.map((type) => `\`${type}\``).join(', ')).toBe('`.exe`, `.com`, `.bat`, `.cmd`')
+    expect(lookup).toContain('`C:tool.exe`')
+    expect(lookup).toContain('`\\tools\\tool.exe`')
+    const batch = sub('Batch files')
+    expect(batch).toContain('`cmd.exe /d /v:off /s /c`')
+    // The simple-argument characters are exactly those of the code's pattern.
+    expect(BARE_BATCH_ARGUMENT.source).toBe('^[A-Za-z0-9_+\\-.:/\\\\@]+$')
+    expect(batch).toContain('ASCII letters, digits and `_ + - . : / \\ @`')
+    expect(batch).toContain(`${CMD_MAX_LINE} characters for the whole line, of which ${SHIM_LINE_RESERVE} are kept free`)
+    expect(batch).toContain('through `%1` itself')
+    const shell = sub('Shell mode')
+    expect(shell).toContain('On Windows, shell mode supports cmd.exe only')
+    expect(shell).toContain(`**${CMD_MAX_LINE} characters.**`)
+    expect(shell).toContain('join the commands with `&&` or `&`')
+    expect(sub('`cmd.exe` as a direct-mode program')).toContain('use shell mode to run a script')
   })
 })

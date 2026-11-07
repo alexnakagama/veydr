@@ -138,7 +138,7 @@ Evidence: `test/unit/linux-process-tree.test.ts` › "reports a process it is no
 - The helper creates a Windows **Job Object** for the command and starts the command **suspended**, assigns it to the job, and only then lets it run. Every process the command starts, from its very first instruction, is in the job, and no process can leave it. A process belongs to a command exactly when it is in the command's job; orphaned descendants included.
 - The command gets a hidden console of its own (no window appears) and starts a new process group, so Ctrl+C is turned off for it and only Ctrl+Break reaches it (see [Stopping](#stopping-1)). Standard input is not connected (`NUL`), and its standard output and error go straight to Veydr, not through the helper.
 - The program must be given by its full path, which must not contain `"` or NUL characters; nothing is looked up in the working directory.
-- A batch file (`.cmd`, `.bat`) is run explicitly through `cmd.exe /d /e:on /v:off /s /c`. Its path must not contain `%`, and its arguments must not contain `"`, `%`, line breaks, or NUL characters, or end with a backslash, because `cmd.exe` would interpret them even inside quotes; such a start is refused.
+- A batch file (`.cmd`, `.bat`) is never started as the program itself, which would let Windows run it through `cmd.exe` with its own unsafe quoting: it runs only as part of a `cmd.exe /d /v:off /s /c` command line that Veydr builds, as described in [commands.md](commands.md#batch-files).
 
 ### Stopping
 

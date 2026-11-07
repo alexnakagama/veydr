@@ -1,6 +1,6 @@
 # Projects and commands (Linux)
 
-This page describes how you register projects, how Veydr runs the commands you configure for them, which environment those commands get, and how secret values are handled. Veydr is Linux-only for now; Windows is not yet supported. How commands are started, stopped, and tracked is described in [processes.md](processes.md).
+This page describes how you register projects, how Veydr runs the commands you configure for them, which environment those commands get, and how secret values are handled. Veydr is Linux-only for now; Windows is not yet supported, and the [Windows (not yet available)](#windows-not-yet-available) section describes rules you cannot use from the app yet. How commands are started, stopped, and tracked is described in [processes.md](processes.md).
 
 ## Projects
 
@@ -73,3 +73,38 @@ These examples are the ones the end-to-end tests use (`test/e2e/commands.spec.ts
 - **Failures after the start.** Veydr checks the working directory, the executable, and a script's `#!` interpreter before starting. Problems that only show when the program is executed — the executable removed in the meantime, an argument list and environment too large for the system (`E2BIG`) — appear as a command that exits with status 126 or 127 right after starting, not as a failed start. Without a mounted `/proc`, programs are not started (status 125).
 - **Non-UTF-8 values.** Login environment values that are not valid UTF-8 are changed (invalid bytes replaced); a warning names them.
 - **Scripts without `#!`.** An executable text file without a `#!` line is run by `/bin/sh`, as a terminal would.
+
+## Windows (not yet available)
+
+**Not yet reachable from the app.** Starting a command on Windows still fails as not supported, and no process is created. The rules below are implemented and tested on a native Windows runner in CI, and are the ones commands will follow once they can be started on Windows.
+
+### Finding the program
+
+- **A name** without `\` or `/` (such as `npm`) is looked up in the directories of the command's `Path`, in order, regardless of letter case. As in `cmd.exe`, double quotes are removed from each entry, and a `;` between quotes belongs to the entry, so a quote left unclosed joins the rest of `Path` into one entry and the directories after it are not searched; entries left empty and entries that are not full paths (such as `.` or `bin`) are skipped.
+- **The working directory is never searched**, unlike in a `cmd.exe` prompt: an `npm.cmd` in the project folder runs only if its directory is on `Path`.
+- **Extensions:** in each directory, a name that has an extension is tried as given, then with each extension of `PATHEXT` in order (`.COM;.EXE;.BAT;.CMD` when `PATHEXT` is unset or lists no usable extension). A file without an extension, such as the `npm` shell script that Node.js installs beside `npm.cmd`, never matches `npm`. Anything after the last dot counts as an extension, so `python3.11` is tried as given first, and an extensionless `python3.11` file is refused (see below) before `python3.11.exe` is tried. The extension is tried as `PATHEXT` spells it (`npm.CMD`), so in a folder set to be case-sensitive a lower-case `npm.cmd` is not found, as in `cmd.exe`.
+- **Accepted types:** the first match must be an `.exe`, `.com`, `.bat` or `.cmd` file. Any other type, such as `.js`, `.vbs` or `.ps1`, is refused with `<file> is not a program Veydr can start on Windows: only .exe, .com, .bat and .cmd files are started`. Veydr does not go on to a later match, so it never starts a program you did not expect.
+- **Slow directories:** each `Path` directory has 2 seconds to answer, so an unreachable network share delays a start but cannot block it. A directory that does not answer, or cannot be read, is skipped, and the error names it if nothing is found. After 2 directories that do not answer, the search stops and the start fails: each unanswered check keeps one of the few threads Veydr reads files with busy until Windows gives up on the share. A directory or path whose check from an earlier start is still waiting counts as not answering at once, without a new check, until Windows gives up on it; for a network path (`\\server\…`) that holds for every path on the same server. The project folder, the working directory, and a program or shell given by path have the same 2-second limit.
+- **A path:** a full path (`C:\tools\tool.exe`, `\\server\share\tool.exe`) is used as given, and any other path (`node_modules\.bin\vite.cmd`) is relative to the working directory. `PATHEXT` does not apply to a path, so give its extension. A path that depends on the current drive (`C:tool.exe`) or on the root of the current drive (`\tools\tool.exe`) is refused: give a full path or a path relative to the working directory.
+- **Names Windows would read as another file** are refused, in a name and in every folder of a path (including the shell's): a name ending in a dot or a space, containing `:`, `*`, `?`, `<`, `>`, `|`, `"` or a control character, or a device name such as `CON`, `NUL`, `AUX`, `COM1` or `LPT1`, with or without an extension.
+- **Links:** a symbolic link or junction that leads to a folder, or to nothing, is not a program.
+
+### Batch files
+
+A `.bat` or `.cmd` file can only run under `cmd.exe`, so a direct-mode batch file is the one case in which direct mode involves a shell. Veydr starts it through `cmd.exe` in the Windows system directory (`%SystemRoot%\System32\cmd.exe`), as `cmd.exe /d /v:off /s /c`: AutoRun commands and delayed `!` expansion are off. Your shell setting does not apply to direct mode.
+
+- **Simple arguments** of only ASCII letters, digits and `_ + - . : / \ @` are passed as written, so a batch file reads them unchanged through `%1` and `%~1`. For example, `build.bat` with the arguments `release` and `C:\out\` sees `"%1"=="release"`, and `%~2` is `C:\out\`.
+- **Every other argument** is quoted and escaped so that a program the batch file forwards its arguments to with `%*`, as `npm.cmd` and other shims do, receives it unchanged, and nothing in it runs as a command: spaces, quotes, `&`, `|`, `<`, `>`, `^`, `%`, `!` and a trailing backslash included.
+- **A batch file that reads such an argument through `%1` itself** sees it with `cmd.exe`'s escape characters (`^`) still in it. Such a batch file has to handle quoted arguments itself, or be given simple arguments only.
+- **Refused before anything starts:** an argument containing a line break or a NUL character, a batch-file path containing `%`, and arguments longer than one `cmd.exe` line can carry: 8191 characters for the whole line, of which 1024 are kept free for the batch file's own text around `%*`.
+
+### Shell mode
+
+- **`cmd.exe` only.** The shell must be a file named `cmd.exe`, given by its full path; it defaults to `cmd.exe` in the Windows system directory (`C:\Windows\System32\cmd.exe` on most systems, read from `SystemRoot`, not from `ComSpec`). PowerShell, `bash.exe` or any other shell is refused with `On Windows, shell mode supports cmd.exe only`.
+- **The script is passed unchanged**, as `cmd.exe /d /v:off /s /c "<script>"`, so `&&`, `||`, `|`, redirection and `%VARIABLE%` work as at a `cmd.exe` prompt. `!VARIABLE!` is not expanded.
+- **One line.** `cmd.exe` runs only the first line of a script, so a script with a line break is refused: join the commands with `&&` or `&`. An empty script is refused too.
+- **8191 characters.** The whole `cmd.exe` line, the `"<cmd.exe>" /d /v:off /s /c "` before the script and the closing quote included, may have at most 8191 characters; a longer one is refused before anything starts.
+
+### `cmd.exe` as a direct-mode program
+
+You can name `cmd.exe` itself as a direct-mode program, for example with the arguments `/c` and `echo hi`. Its arguments are then quoted as for any other program, but `cmd.exe` reads its command line again by its own rules, so quotes, `&`, `|` and `%` in them are interpreted by `cmd.exe`. That is your choice of program; use shell mode to run a script.
