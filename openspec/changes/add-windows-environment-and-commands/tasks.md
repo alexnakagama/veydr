@@ -229,6 +229,7 @@ Group 1 review (2026-11-07): reviewer2 found no high items, 1 medium, 3 low and 
     - the Ports view's unavailable state;
     - that the started app found the helper (which checks that `app.getAppPath()` is the repository root).
   - **A sandbox test** asserts that the renderer runs sandboxed (`[spec:quality-gates/windows-end-to-end-tests-keep-the-sandbox]`).
+  - **`offline.spec.ts` counts itself:** its runner re-runs the file in a network namespace and requires exactly `1 passed` and `1 skipped`. Every test added to that file, a guard or a placeholder, changes those counts, so update the runner's expectation with it. Group 1's placeholder broke the `e2e` job on #37 this way, and now sits in `ports.spec.ts`.
 
   Verify: `npm run test:e2e` passes on Linux, and the table lists every spec file.
 - [ ] 7.3 In `ci.yml`'s `windows` job:

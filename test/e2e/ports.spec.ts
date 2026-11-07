@@ -262,3 +262,7 @@ test('the ports view is reachable by keyboard and its refresh time is announced 
     await cleanup(veydr, s)
   }
 })
+
+// add-windows-environment-and-commands group 7 (design D7) implements this on the Linux-only guards.
+// Not in offline.spec.ts: its runner counts that file's own passed and skipped tests.
+test.fixme('[spec:quality-gates/linux-only-end-to-end-test-on-windows] Linux-only end-to-end tests are skipped on Windows with the facility named', () => {})
