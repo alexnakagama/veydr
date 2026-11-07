@@ -119,8 +119,8 @@ Group 2 on Windows (#38, 2026-11-07):
 
 ## 3. Windows command resolver
 
-- [ ] 3.1 Move the project-folder and working-directory checks of `linux/resolver.ts` unchanged into `src/main/platform/resolve-cwd.ts`, with the realpath function injectable, and use it from the Linux resolver. Verify: the existing Linux resolver unit and integration tests pass unchanged.
-- [ ] 3.2 Add `windows/resolver.ts` (design D2):
+- [x] 3.1 Move the project-folder and working-directory checks of `linux/resolver.ts` unchanged into `src/main/platform/resolve-cwd.ts`, with the realpath function injectable, and use it from the Linux resolver. Verify: the existing Linux resolver unit and integration tests pass unchanged.
+- [x] 3.2 Add `windows/resolver.ts` (design D2):
   - **Paths:** drive and UNC paths are used as given, drive-relative and root-relative paths are refused, and other paths are resolved against the working directory.
   - **Bare names:**
     - looked up in `Path` with surrounding quotes stripped and empty or relative entries skipped;
@@ -137,11 +137,11 @@ Group 2 on Windows (#38, 2026-11-07):
   - lookup order and extension handling;
   - quoted, empty and relative `Path` entries, and a directory that times out;
   - the working directory not being searched (`[spec:project-registry/working-directory-not-searched]`);
-  - an extensionless `npm` before `npm.cmd`, which is refused (`[spec:project-registry/unsupported-program-type-refused]`);
+  - an extensionless `npm` beside `npm.cmd`, which is no match (as with `cmd.exe`), and a `.js` first match before `npm.cmd`, which is refused (`[spec:project-registry/unsupported-program-type-refused]`);
   - drive-relative and root-relative paths (`[spec:project-registry/drive-relative-program-path-refused]`);
   - refused shells (`[spec:project-registry/other-shell-refused-on-windows]`);
   - the `SystemRoot` fallback.
-- [ ] 3.3 Add Windows integration tests (`windows-commands.test.ts`, `[windows-only: cmd.exe and PATHEXT]`), each through the resolver and the real helper:
+- [x] 3.3 Add Windows integration tests (`windows-commands.test.ts`, `[windows-only: cmd.exe and PATHEXT]`), each through the resolver and the real helper:
   - `npm` resolves to an `npm.cmd` on `PATH` and starts (`[spec:project-registry/program-found-through-pathext]`);
   - a decoy `npm.cmd` in the working directory is not run;
   - a shell-mode `cmd.exe` script with `&&` and `%VARIABLE%` runs and prints its result (`[spec:project-registry/cmd-exe-script-runs]`);
@@ -149,13 +149,36 @@ Group 2 on Windows (#38, 2026-11-07):
   - a refused input creates no process (checked with `Get-CimInstance`).
 
   Verify: `npm run test:windows` covers the new file, and the `windows` job reports every test as run.
-- [ ] 3.4 Document in `docs/commands.md`, under a "Windows (not yet available)" heading that group 6 lifts:
+- [x] 3.4 Document in `docs/commands.md`, under a "Windows (not yet available)" heading that group 6 lifts:
   - the resolver rules, including the refusal of a first match of another type and of drive-relative paths;
   - the `cmd.exe`-only shell mode and its 8191-character limit;
   - simple and quoted batch arguments, and batch files that read quoted arguments through `%1` themselves;
   - naming `cmd.exe` as a direct-mode program.
 
   Verify: the docs tests pass.
+
+Group 3 implementation note (2026-11-07): the first draft of task 3.2 and design D2 asked for a test that refuses "an extensionless `npm` before `npm.cmd`". By D2's own lookup rule a name without an extension is tried only with `PATHEXT` extensions, as `cmd.exe` does (W0 `cmd-pathext`), so the extensionless `npm` that Node.js installs beside `npm.cmd` is no match; refusing it would make `npm` unusable on every Node.js install. The test now pins that it is ignored, and the refusal of another type with a `.js` first match (and `.vbs`, `.ps1`). Task 3.2 and D2 are reworded to match.
+
+Group 3 review (2026-11-07): reviewer2 found no high items, 2 medium, 5 low and 3 nits, and agreed with the extensionless-`npm` note above.
+- medium:
+  - a timed-out `Path` directory kept checking its remaining `PATHEXT` candidates, each able to hang a libuv filesystem thread. A cancelled directory now starts no further check, and the search stops after `MAX_UNANSWERED_DIRECTORIES` (2) unanswered directories;
+  - only `Path` directories were time-limited. The project folder, the working directory, and a program or shell given by path now have the same 2 s limit.
+- low:
+  - DOS device names (`CON`, `NUL`, `COM1`, …, with any extension) are refused in names and path segments;
+  - the shell path gets the same segment checks as a program path;
+  - only the segments of the path as given are checked, not the working directory's;
+  - a link that leads to a directory or nowhere is no match, and an App Execution Alias (which `stat` cannot follow) still is;
+  - the "no process for a refused input" test's title says what it checks, and the alias test says when it is no evidence.
+- nits: `Path` is parsed as `cmd.exe` parses it (a `;` between quotes is kept); a `PATHEXT` with no usable extension is logged; the `resolve-cwd.ts` comment says what changed. New unit tests cover `EACCES` and `ENOTDIR` on a path, `python3.11` beside `python3.11.exe`, and the `npm.CMD` spelling, which the docs now mention.
+- Re-review: no high items, 1 medium, 1 low and 2 nits; every earlier finding confirmed fixed.
+  - medium: a hung check outlived its search, so repeated starts could still use up the filesystem threads. The resolver now remembers abandoned checks by directory or path; while one is waiting, that place counts as unanswered at once and gets no new check.
+  - low: an unbalanced quote in `Path` joins the rest into one entry, as in `cmd.exe`; pinned by a test and documented.
+  - nits: the follow-up `stat` of a link also stops in an abandoned search; device names as path segments are correct as they are.
+- Second re-review: no high or medium items; 2 low and 1 nit, all fixed:
+  - a hung UNC check is now remembered by server, so one dead server cannot hold more than one thread per kind of check; a mapped network drive is still keyed by path, which D2 notes;
+  - task 6.1 requires one resolver per platform, since the memory lives in the resolver;
+  - the key ignores a trailing separator.
+- Verified on Linux: typecheck, lint, `npm test`, the Linux integration tests, spec coverage 167/167, `openspec validate --strict`. The Windows integration tests run on the pull request.
 
 ## 4. Windows environment and editor launch
 
@@ -215,7 +238,7 @@ Group 2 on Windows (#38, 2026-11-07):
 
 ## 6. Windows platform composition and the preview
 
-- [ ] 6.1 `createWindowsPlatform({ helperPath, log, inherited })` returns `supported: true`, the D2 `defaultShell`, the resolver, the environment provider and the full process tree, and keeps the unsupported port inspector (design D6). `selectPlatform` passes `inherited`. Verify:
+- [ ] 6.1 `createWindowsPlatform({ helperPath, log, inherited })` returns `supported: true`, the D2 `defaultShell`, the resolver, the environment provider and the full process tree, and keeps the unsupported port inspector (design D6). `selectPlatform` passes `inherited`. Create exactly one Windows resolver per platform, shared by every start: the resolver remembers hung checks (design D2), which a resolver per start would forget. Verify:
   - `npm run typecheck`;
   - `npm run lint` (only the composition root and `platform/index.ts` read `process.platform`);
   - `npm test`.
