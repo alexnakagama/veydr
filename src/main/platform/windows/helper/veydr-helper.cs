@@ -508,6 +508,12 @@ sealed class RunCommand
             {
                 host = ConsoleHost.Start(out consoleError);
                 if (host != null) attached = AttachTo(host, out consoleError);
+                if (host != null && !attached)
+                {
+                    // Of no use now: the command gets a console of its own, which the host is not on.
+                    host.Abandon();
+                    host = null;
+                }
             }
 
             // Attached: the command inherits the host's UTF-8 console. Otherwise it gets one of its own.
@@ -515,6 +521,11 @@ sealed class RunCommand
             uint flags = Native.CREATE_SUSPENDED | Native.CREATE_NEW_PROCESS_GROUP | Native.CREATE_UNICODE_ENVIRONMENT | (attached ? 0 : Native.CREATE_NEW_CONSOLE);
             // Both exactly as Veydr built them (design D1); RunRequest has checked them.
             process = Spawn(request.Application, request.CommandLine, flags, nul, stdout, stderr);
+        }
+        catch
+        {
+            if (host != null) host.Abandon();
+            throw;
         }
         finally
         {
@@ -525,8 +536,6 @@ sealed class RunCommand
                 CtrlEvents.Ignore();
             }
             Native.CloseHandle(nul);
-            // The host waits until the command is on its console, then exits.
-            if (host != null) host.Release();
         }
 
         leader = process.hProcess;
@@ -544,6 +553,10 @@ sealed class RunCommand
         finally
         {
             Native.CloseHandle(process.hThread);
+            // Only now, with the command running: the console must outlive the host until the command
+            // has connected to it, which it does as it starts. Once `started` is sent the host is gone,
+            // so the console holds only the command's processes when a stop sends Ctrl+Break.
+            if (host != null) host.Finish();
         }
         long creation, exit, kernel, user;
         if (!Native.GetProcessTimes(process.hProcess, out creation, out exit, out kernel, out user)) throw HelperException.LastError("could not read the command's creation time");
@@ -1201,16 +1214,22 @@ sealed class RunRequest
  * command's job. It sets that console's output code page to UTF-8 (65001), which works because the
  * console exists once the host runs, and answers `ok` (or the reason it could not) as one ASCII
  * line on its stdout, a pipe to `run`. It then waits for its stdin, a pipe from `run`, to close:
- * `run` closes it once it has created the command on this console. The host stays until the
+ * `run` closes it once the command runs on this console, and waits for the host to exit before it
+ * reports `started`. The host stays until the
  * command is on the console, so the console cannot end before the command connects, at most
  * AttachWaitMs, and exits. It never runs anything itself, and it is never a member of the job.
  */
 sealed class ConsoleHost
 {
-    /** How long `run` waits for the host's answer before it gives the command a console of its own. */
-    const int AnswerTimeoutMs = 10000;
+    /**
+     * How long `run` waits for the host's answer before it gives the command a console of its own;
+     * the host normally answers within a fraction of a second (one more .NET process start).
+     */
+    const int AnswerTimeoutMs = 5000;
     /** How long the host waits, once released, for the command to appear on its console. */
     const int AttachWaitMs = 2000;
+    /** How much longer than AttachWaitMs `run` waits for the host to exit. */
+    const int ExitMarginMs = 500;
     const uint Utf8CodePage = 65001;
     const int MaxAnswerBytes = 512;
 
@@ -1281,7 +1300,7 @@ sealed class ConsoleHost
             return host;
         }
         error = answer == null ? "the console host did not answer within " + AnswerTimeoutMs + " ms" : "the console host could not set the console to UTF-8: " + answer;
-        host.Release();
+        host.Abandon();
         return null;
     }
 
@@ -1306,9 +1325,10 @@ sealed class ConsoleHost
                     answer = text.EndsWith("\r", StringComparison.Ordinal) ? text.Substring(0, text.Length - 1) : text;
                 }
             }
-            catch (IOException)
+            catch (Exception)
             {
-                // The host ended without answering.
+                // The host ended without answering, or its pipe could not be read: no answer, so the
+                // command gets a console of its own. Nothing may escape this thread, or the helper ends.
             }
         });
         reader.IsBackground = true;
@@ -1323,15 +1343,32 @@ sealed class ConsoleHost
         return answer == "" ? null : answer;
     }
 
-    /** Lets the host go: it exits once the command is on its console, or after AttachWaitMs. */
-    public void Release()
+    /**
+     * Lets the host go once the command runs on its console, and waits until it has exited: it stays
+     * only until the command is on the console. A host still there after AttachWaitMs and a margin
+     * is ended, so that it never shares the command's console after `started`.
+     */
+    public void Finish()
+    {
+        CloseInput();
+        if (Native.WaitForSingleObject(process, AttachWaitMs + ExitMarginMs) != Native.WaitObject0) Native.TerminateProcess(process, 1);
+        Native.CloseHandle(process);
+    }
+
+    /** Lets the host go without waiting: it is on no console the command uses, and exits by itself. */
+    public void Abandon()
+    {
+        CloseInput();
+        Native.CloseHandle(process);
+    }
+
+    void CloseInput()
     {
         if (input != IntPtr.Zero)
         {
             Native.CloseHandle(input);
             input = IntPtr.Zero;
         }
-        Native.CloseHandle(process);
     }
 
     /**
@@ -1361,7 +1398,7 @@ sealed class ConsoleHost
         }
         if (answer != "ok") return VeydrHelper.ExitFailure;
 
-        // `run` closes stdin once the command is created on this console (or if it fails).
+        // `run` closes stdin once the command runs on this console (or if it fails).
         try
         {
             Stream stdin = Console.OpenStandardInput();
