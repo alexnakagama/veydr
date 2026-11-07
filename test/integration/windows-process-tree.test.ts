@@ -1,15 +1,20 @@
 import { execFileSync, spawn, spawnSync, type ChildProcess } from 'node:child_process'
-import { randomUUID } from 'node:crypto'
+import { randomBytes, randomUUID } from 'node:crypto'
 import { once } from 'node:events'
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, join, resolve } from 'node:path'
+import { createServer, type Socket } from 'node:net'
 import { createInterface } from 'node:readline'
 import { isMainThread } from 'node:worker_threads'
 import { build } from 'vite'
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
 import { HELPER_PATH } from '../../scripts/build-windows-helper.mjs'
+import { CORPUS, sentinelFor } from '../../scripts/windows-probe/cmd-corpus.mjs'
 import type { ExitInfo, LedgerEntry, ManagedProcess, ProcessIdentity, SpawnPlan, StopResult, Survivor } from '../../src/main/platform/types'
+import { batchCommandLine, CommandLineError, helperLaunch, MAX_COMMAND_LINE, shellCommandLine } from '../../src/main/platform/windows/command-line'
+import { randomPipePath } from '../../src/main/platform/windows/helper-client'
+import { encodeRunRequest } from '../../src/main/platform/windows/protocol'
 import { windowsIdentity } from '../../src/main/platform/windows/identity'
 import { createWindowsProcessTree } from '../../src/main/platform/windows/process-tree'
 import { createRunLedger, ledgerPath } from '../../src/main/supervisor/ledger'
@@ -25,12 +30,14 @@ import type { WindowsHostOptions } from './support/windows-tree-host'
 // Win32_Process for the scenario's marker, and a sentinel started outside Veydr must survive every
 // scenario and receive no console event.
 
-/** The control protocol version the helper must report (design D2). */
-const PROTOCOL_VERSION = '1'
+/** The control protocol version the helper must report (design D2; W2 design D1). */
+const PROTOCOL_VERSION = '2'
 
 const TREE = resolve(__dirname, '../fixtures/windows/tree.mjs')
 const OUTPUT = resolve(__dirname, '../fixtures/windows/output.mjs')
 const FREE_CONSOLE = resolve(__dirname, '../fixtures/windows/free-console.ps1')
+const RECORD_ARGS = resolve(__dirname, '../fixtures/windows/record-args.mjs')
+const CMD_EXE = join(process.env['SystemRoot'] ?? 'C:\\Windows', 'System32', 'cmd.exe')
 const POWERSHELL = join(process.env['SystemRoot'] ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
 
 /** A `graceMs` far longer than any graceful stop takes, and the bound such a stop must stay under. */
@@ -55,17 +62,32 @@ interface MarkedProcess {
 }
 
 /**
- * Live processes whose command line carries `marker`, read with Win32_Process. The helper, whose
- * command line repeats the command's, is listed only with `helpers`.
+ * Live processes whose command line carries `marker`, read with Win32_Process. The helper is never
+ * among them: since protocol version 2 its command line holds only the pipe (W2 design D1).
  */
-function marked(marker: string, { helpers = false } = {}): MarkedProcess[] {
+function marked(marker: string): MarkedProcess[] {
   if (!/^[0-9a-f-]+$/.test(marker)) throw new Error(`not a marker: ${marker}`)
-  const which = helpers ? `$_.Name -eq 'veydr-helper.exe'` : `$_.Name -ne 'veydr-helper.exe'`
   const output = powershell(
-    `$found = @(Get-CimInstance Win32_Process -Filter "CommandLine LIKE '%${marker}%'" | Where-Object { $_.ProcessId -ne $PID -and ${which} } | ForEach-Object {
+    `$found = @(Get-CimInstance Win32_Process -Filter "CommandLine LIKE '%${marker}%'" | Where-Object { $_.ProcessId -ne $PID -and $_.Name -ne 'veydr-helper.exe' } | ForEach-Object {
        [pscustomobject]@{ pid = [int]$_.ProcessId; name = [string]$_.Name }
      })
      ConvertTo-Json -Compress -Depth 3 -InputObject $found`,
+  )
+  return parseArray(output) as MarkedProcess[]
+}
+
+/**
+ * Live helpers started by one of `parents` (this test process, or a host it started), read with
+ * Win32_Process. The helper's command line no longer carries the command's marker, so its parent
+ * names it; each test file runs in a process of its own (the `forks` pool), so no other file's
+ * helpers are counted.
+ */
+function helpersOf(parents: readonly number[]): MarkedProcess[] {
+  const filter = parents.map((pid) => `ParentProcessId = ${String(Math.trunc(pid))}`).join(' OR ')
+  const output = powershell(
+    `ConvertTo-Json -Compress -Depth 3 -InputObject @(Get-CimInstance Win32_Process -Filter "Name = 'veydr-helper.exe' AND (${filter})" | ForEach-Object {
+       [pscustomobject]@{ pid = [int]$_.ProcessId; name = [string]$_.Name }
+     })`,
   )
   return parseArray(output) as MarkedProcess[]
 }
@@ -329,6 +351,25 @@ const eventsIn = (file: string): string[] => (existsSync(file) ? readFileSync(fi
 
 const timeout = (perRepetitionMs: number): number => 30_000 + REPETITIONS * perRepetitionMs
 
+/** Everything `stream` delivers until it ends. */
+function collect(stream: NodeJS.ReadableStream): Promise<Buffer> {
+  return new Promise((done, fail) => {
+    const chunks: Buffer[] = []
+    stream.on('data', (chunk: Buffer) => chunks.push(chunk))
+    stream.on('end', () => done(Buffer.concat(chunks)))
+    stream.on('close', () => done(Buffer.concat(chunks)))
+    stream.on('error', fail)
+  })
+}
+
+/** What a hand-driven `veydr-helper run` reported (`rawRun`): the pipe's lines after `ready`. */
+interface RawRun {
+  readonly lines: Record<string, unknown>[]
+  readonly stdout: string
+  readonly stderr: string
+  readonly code: number | null
+}
+
 describe.skipIf(process.platform !== 'win32')('[windows-only: Job Objects]', () => {
   const tree = createWindowsProcessTree({ helperPath: HELPER_PATH })
   const scenarios: Scenario[] = []
@@ -357,7 +398,7 @@ describe.skipIf(process.platform !== 'win32')('[windows-only: Job Objects]', () 
       await run(s)
       expect(marked(s.marker), `leaked processes (repetition ${i})`).toEqual([])
       // The helper exits once its job is empty (design D1).
-      await waitUntil(() => marked(s.marker, { helpers: true }).length === 0, `the helper to exit (repetition ${i})`)
+      await waitUntil(() => helpersOf([process.pid]).length === 0, `the helper to exit (repetition ${i})`)
     }
   }
 
@@ -382,7 +423,8 @@ describe.skipIf(process.platform !== 'win32')('[windows-only: Job Objects]', () 
   })
 
   it('refuses an unknown subcommand with a usage line and exit code 2', () => {
-    for (const args of [[], ['frobnicate'], ['version', 'extra'], ['run', 'only-a-pipe']]) {
+    // Version 2: `run` takes the pipe and nothing else (W2 design D1).
+    for (const args of [[], ['frobnicate'], ['version', 'extra'], ['run'], ['run', '\\\\.\\pipe\\x', 'C:\\Windows\\System32\\cmd.exe']]) {
       const run = runHelper(...args)
       expect(run.status, args.join(' ')).toBe(2)
       expect(run.stdout, args.join(' ')).toBe('')
@@ -546,7 +588,8 @@ describe.skipIf(process.platform !== 'win32')('[windows-only: Job Objects]', () 
         const batch = join(s.dir, `run-${s.marker}.cmd`)
         writeFileSync(batch, `@"${process.execPath}" "${TREE}" %*\r\n`)
         const plan = s.plan(TREE, ['--depth', '1', '--fanout', '1'])
-        const run = await tree.spawn({ ...plan, file: batch, args: plan.args.slice(1) })
+        // A batch file runs only through cmd.exe, with its command line built by Veydr (W2 design D1).
+        const run = await tree.spawn({ ...plan, file: CMD_EXE, args: [], commandLine: batchCommandLine(CMD_EXE, batch, plan.args.slice(1)) })
         await waitUntil(() => ['root', 'root.0'].every((role) => s.ready()[role] !== undefined), 'processes root, root.0')
         const node = basename(process.execPath).toLowerCase()
         expect(marked(s.marker).map((p) => p.name.toLowerCase()).sort()).toEqual(['cmd.exe', node, node].sort())
@@ -706,6 +749,7 @@ describe.skipIf(process.platform !== 'win32')('[windows-only: Job Objects]', () 
           await exited
           // The helper sees its control channel close (or ends with the host), and the job ends the tree.
           await waitUntil(() => marked(s.marker).length === 0, 'the tree to end', 10_000)
+          await waitUntil(() => helpersOf([host.pid as number]).length === 0, "the host's helper to exit", 10_000)
 
           // What the next launch reads: the run is still recorded, and nothing of it survives.
           const { entries } = await createRunLedger({ dir: configDir, log: quietLog(), directorySync: false }).load()
@@ -724,7 +768,7 @@ describe.skipIf(process.platform !== 'win32')('[windows-only: Job Objects]', () 
         await repeat(async (s) => {
           const { run } = await startTree(s, ['--depth', '1', '--fanout', '2'], ['root', 'root.0', 'root.1'])
           const exit = exitOf(run)
-          const helpers = marked(s.marker, { helpers: true })
+          const helpers = helpersOf([process.pid])
           expect(helpers, 'the run has one helper').toHaveLength(1)
 
           forceKill(helpers[0]?.pid as number)
@@ -844,6 +888,249 @@ describe.skipIf(process.platform !== 'win32')('[windows-only: Job Objects]', () 
       const empty = spawnSync(HELPER_PATH, ['inspect'], { input: '[]\n', encoding: 'utf8', windowsHide: true, timeout: 30_000 })
       expect(empty.status).toBe(0)
       expect(JSON.parse(empty.stdout)).toEqual({ type: 'inspected', processes: [] })
+    })
+  })
+
+  /**
+   * Runs the real helper's `run` by hand, as the client does, with `request` (the bytes after the
+   * token line) on its stdin, and collects what it reports on the pipe, stdout and stderr. The test
+   * process serves the pipe and starts the helper, so the helper accepts the pipe as its parent's.
+   */
+  async function rawRun(request: string | Buffer, cwd: string, env: Readonly<Record<string, string>>): Promise<RawRun> {
+    const pipe = randomPipePath()
+    const token = randomBytes(32).toString('hex')
+    const server = createServer()
+    await new Promise<void>((done, fail) => {
+      server.once('error', fail)
+      server.listen(pipe, () => done())
+    })
+    try {
+      const connection = new Promise<Socket>((done) => server.once('connection', done))
+      const child = spawn(HELPER_PATH, ['run', pipe], { cwd, env, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true })
+      const exited = once(child, 'exit') as Promise<[number | null]>
+      const [stdout, stderr] = [collect(child.stdout), collect(child.stderr)]
+      // The helper may stop reading a request it refuses before all of it is written.
+      child.stdin.on('error', () => undefined)
+      child.stdin.end(Buffer.concat([Buffer.from(`${token}\n`), typeof request === 'string' ? Buffer.from(request, 'utf8') : request]))
+      const socket = await Promise.race([connection, exited.then(() => null)])
+      const received = socket === null ? Promise.resolve(Buffer.alloc(0)) : collect(socket)
+      const [[code], out, err, channel] = await Promise.all([exited, stdout, stderr, received])
+      const lines = channel.toString('utf8').split('\n').filter((line) => line !== '').map((line) => JSON.parse(line) as Record<string, unknown>)
+      expect(lines[0], 'the first line is the handshake').toEqual({ type: 'ready', version: Number(PROTOCOL_VERSION), token, pid: child.pid })
+      return { lines: lines.slice(1), stdout: out.toString('utf8'), stderr: err.toString('utf8'), code }
+    } finally {
+      server.close()
+    }
+  }
+
+  describe('protocol version 2: the run request (W2 design D1)', () => {
+    /** A scenario directory and an environment whose record-args.mjs writes to `record`. */
+    function recording(): { s: Scenario; record: string; env: Record<string, string> } {
+      const s = scenario()
+      scenarios.push(s)
+      const record = join(s.dir, 'recorded.json')
+      return { s, record, env: { ...s.plan('', []).env, VEYDR_RECORD_FILE: record } }
+    }
+
+    const recorded = (file: string): unknown => JSON.parse(readFileSync(file, 'utf8')) as unknown
+
+    /** Every UTF-16 unit of `text` as a `\uXXXX` escape. */
+    const escapeAll = (text: string, upper: boolean): string =>
+      Array.from({ length: text.length }, (_, i) => {
+        const hex = text.charCodeAt(i).toString(16).padStart(4, '0')
+        return `\\u${upper ? hex.toUpperCase() : hex}`
+      }).join('')
+
+    it('runs the command line it is given, read through every JSON string escape', async () => {
+      const args = ['a "b" c\\', 'trail\\', 'x\\"y', '\b\f\n\r\t', 'grüße 日本語 😀', '%PATH%', 'a&b|c', '']
+      const launch = helperLaunch({ file: process.execPath, args: [RECORD_ARGS, ...args] })
+      const standard = encodeRunRequest(launch)
+      const requests: [string, string][] = [
+        ['JSON.stringify, non-ASCII as UTF-8', standard],
+        // `/` written as `\/`: JSON.stringify never puts `/` inside an escape.
+        ['solidus escapes', standard.replaceAll('/', '\\/')],
+        [
+          'every character as \\uXXXX, surrogate pairs included',
+          `{"application":"${escapeAll(launch.application, true)}","commandLine":"${escapeAll(launch.commandLine, false)}"}\n`,
+        ],
+      ]
+      for (const [what, request] of requests) {
+        const { s, record, env } = recording()
+        const result = await rawRun(request, s.dir, env)
+        expect(result.code, `${what}: ${JSON.stringify(result.lines)}`).toBe(0)
+        // A console that is not UTF-8 fails here too, loudly, not only in the echo test (reviewer2).
+        expect(result.lines[0], what).toMatchObject({ type: 'started', utf8Console: true })
+        expect(result.lines.find((line) => line['type'] === 'exited'), what).toEqual({ type: 'exited', code: 0, forced: false })
+        expect(result.stderr, what).toBe('')
+        expect(recorded(record), what).toEqual(args)
+      }
+    })
+
+    it('refuses a malformed or unsafe request on the pipe, never on stderr, and starts nothing', async () => {
+      const A = JSON.stringify(process.execPath)
+      const C = JSON.stringify(helperLaunch({ file: process.execPath, args: [RECORD_ARGS] }).commandLine)
+      const body = (commandLine: string): string => `{"application":${A},"commandLine":${commandLine}}\n`
+      const tooLong = `"${process.execPath}" "${RECORD_ARGS}" ${'x'.repeat(MAX_COMMAND_LINE)}`.slice(0, MAX_COMMAND_LINE + 1)
+      const cases: [string, string | Buffer, RegExp][] = [
+        ['trailing text', `{"application":${A},"commandLine":${C}} \n`, /text after its end/],
+        ['a second object', `{"application":${A},"commandLine":${C}}{}\n`, /text after its end/],
+        ['a duplicate key', `{"application":${A},"application":${A},"commandLine":${C}}\n`, /repeats the key "application"/],
+        ['a duplicate commandLine', `{"application":${A},"commandLine":${C},"commandLine":${C}}\n`, /repeats the key "commandLine"/],
+        ['an unknown key', `{"application":${A},"commandLine":${C},"cwd":"C:\\\\"}\n`, /unknown key at offset/],
+        ['an escaped unknown key', `{"\\u0061pp":${A},"commandLine":${C}}\n`, /unknown key at offset 1/],
+        ['the keys reversed', `{"commandLine":${C},"application":${A}}\n`, /"commandLine" before "application"/],
+        ['a missing key', `{"application":${A}}\n`, /needs both/],
+        ['a number value', `{"application":${A},"commandLine":1}\n`, /value at offset \d+ is not a string/],
+        ['whitespace', `{ "application":${A},"commandLine":${C}}\n`, /malformed at offset 1/],
+        ['an array', `[${A},${C}]\n`, /malformed at offset 0/],
+        ['an unknown escape', body('"\\x41"'), /unknown escape at offset/],
+        ['a short \\u escape', body('"\\u12"'), /malformed \\u escape/],
+        ['a non-hex \\u escape', body('"\\u12g4"'), /malformed \\u escape/],
+        ['a lone high surrogate', body('"a\\ud800b"'), /unpaired surrogate/],
+        ['a lone low surrogate', body('"\\udc00"'), /unpaired surrogate/],
+        ['reversed surrogates', body('"\\ude00\\ud83d"'), /unpaired surrogate/],
+        ['an unescaped control character', body('"a\tb"'), /unescaped control character/],
+        ['an unterminated string', `{"application":${A},"commandLine":"abc\n`, /unterminated string|complete run request|more than one line/],
+        ['invalid UTF-8', Buffer.concat([Buffer.from(`{"application":${A},"commandLine":"`), Buffer.from([0xc3, 0x28]), Buffer.from('"}\n')]), /not valid UTF-8/],
+        ['an encoded surrogate', Buffer.concat([Buffer.from(`{"application":${A},"commandLine":"`), Buffer.from([0xed, 0xa0, 0x80]), Buffer.from('"}\n')]), /not valid UTF-8/],
+        ['a byte order mark', Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from(body(C))]), /malformed at offset 0/],
+        ['no line end', body(C).slice(0, -1), /complete run request line/],
+        // encodeRunRequest ends the line with \n alone.
+        ['a CRLF line end', `${body(C).slice(0, -1)}\r\n`, /text after its end/],
+        ['nothing', '', /complete run request line/],
+        ['two lines', `${body(C)}${body(C)}`, /more than one line/],
+        ['NUL in the command line', body(JSON.stringify(`"${process.execPath}" \0`)), /command line contains a NUL/],
+        ['NUL in the program', `{"application":${JSON.stringify(`${process.execPath}\0`)},"commandLine":${C}}\n`, /program path contains a NUL/],
+        ['a relative program', `{"application":"node.exe","commandLine":${C}}\n`, /full path/],
+        ['a drive-relative program', `{"application":"C:node.exe","commandLine":${C}}\n`, /full path/],
+        ['a root-relative program', `{"application":"\\\\node.exe","commandLine":${C}}\n`, /full path/],
+        ['a device path', `{"application":${JSON.stringify(`\\\\?\\${process.execPath}`)},"commandLine":${C}}\n`, /ordinary drive or UNC path/],
+        ['a data stream', `{"application":${JSON.stringify(`${process.execPath}::$DATA`)},"commandLine":${C}}\n`, /':' after the drive/],
+        ['an empty command line', body('""'), /command line is empty/],
+        ['another program as argv[0]', body(JSON.stringify(`"${CMD_EXE}" /c whoami`)), /does not start with the quoted program/],
+        ['an unquoted argv[0]', body(JSON.stringify(`${process.execPath} x`)), /does not start with the quoted program/],
+        ['argv[0] run into the next argument', body(JSON.stringify(`"${process.execPath}"x`)), /does not start with the quoted program/],
+        ['a quote in the program', `{"application":${JSON.stringify(`${process.execPath}"`)},"commandLine":${C}}\n`, /double quote or a line break/],
+        ['a line break in the program', `{"application":${JSON.stringify(`${process.execPath}\n`)},"commandLine":${C}}\n`, /double quote or a line break/],
+        ['a "." segment after a batch file', `{"application":${JSON.stringify(`${process.execPath}.cmd\\.`)},"commandLine":${C}}\n`, /'\.' or '\.\.' segment/],
+        ['a ".." segment', `{"application":${JSON.stringify(`${process.execPath}\\..\\x.bat`)},"commandLine":${C}}\n`, /'\.' or '\.\.' segment/],
+        ['a trailing separator', `{"application":${JSON.stringify(`${process.execPath}.bat\\`)},"commandLine":${C}}\n`, /'\.' or '\.\.' segment/],
+        ['a command line one character too long', body(JSON.stringify(tooLong)), /has 32767 characters, more than the 32766/],
+        ['a request beyond 1 MiB', body(JSON.stringify(`"${process.execPath}" ${'\u0001'.repeat(200_000)}`)), /exceeds 1048576 bytes/],
+      ]
+      for (const [what, request, message] of cases) {
+        const { s, record, env } = recording()
+        const result = await rawRun(request, s.dir, env)
+        expect(result.code, what).toBe(1)
+        expect(result.lines, what).toEqual([{ type: 'error', message: expect.stringMatching(message) as unknown }])
+        // stderr and stdout belong to the command, which never started.
+        expect(result.stderr, what).toBe('')
+        expect(result.stdout, what).toBe('')
+        expect(existsSync(record), `${what}: nothing ran`).toBe(false)
+      }
+    })
+
+    it('never shows the text of a refused request', async () => {
+      const { s, env } = recording()
+      const secret = 'hunter2-SECRET-token'
+      const result = await rawRun(`{"application":${JSON.stringify(process.execPath)},"commandLine":"${secret} \\q"}\n`, s.dir, env)
+      expect(result.lines).toEqual([{ type: 'error', message: expect.stringMatching(/unknown escape at offset \d+/) as unknown }])
+      expect(JSON.stringify(result.lines)).not.toContain('SECRET')
+    })
+
+    it('refuses a batch file given as the program, whatever its case or trailing dots and spaces', async () => {
+      for (const name of ['run.cmd', 'BUILD.BAT', 'npm.Cmd. .', 'x.bat.']) {
+        const { s, record, env } = recording()
+        const batch = join(s.dir, name.replace(/[. ]+$/, ''))
+        // It would record its arguments, had it run.
+        writeFileSync(batch, `@"${process.execPath}" "${RECORD_ARGS}" %*\r\n`)
+        const result = await rawRun(`${JSON.stringify({ application: join(s.dir, name), commandLine: `"${join(s.dir, name)}" x` })}\n`, s.dir, env)
+        expect(result.code, name).toBe(1)
+        expect(result.lines, name).toEqual([{ type: 'error', message: expect.stringContaining('the program is a batch file') as unknown }])
+        expect(result.stderr, name).toBe('')
+        expect(existsSync(record), `${name}: nothing ran`).toBe(false)
+        expect(marked(s.marker), name).toEqual([])
+      }
+      // The process tree refuses it before the helper is involved.
+      const { s, env } = recording()
+      const batch = join(s.dir, 'run.cmd')
+      writeFileSync(batch, '@echo off\r\n')
+      await expect(tree.spawn({ file: batch, args: [], cwd: s.dir, env })).rejects.toBeInstanceOf(CommandLineError)
+    })
+
+    it('starts a direct-mode command line of 32,000 characters', async () => {
+      const { s, record, env } = recording()
+      const base = helperLaunch({ file: process.execPath, args: [RECORD_ARGS, ''] }).commandLine.length
+      const long = 'L'.repeat(32_000 - base)
+      const plan: SpawnPlan = { file: process.execPath, args: [RECORD_ARGS, long], cwd: s.dir, env }
+      expect(helperLaunch(plan).commandLine).toHaveLength(32_000)
+      const exit = await exitOf(await tree.spawn(plan))
+      expect(exit).toEqual({ code: 0, signal: null, forced: false })
+      expect(recorded(record)).toEqual([long])
+    })
+
+    it(
+      '[spec:project-registry/shim-arguments-arrive-unchanged] passes every W0 shim-corpus case through an npm.cmd-style shim unchanged, with no sentinel created',
+      async () => {
+        const refused: string[] = []
+        for (const c of CORPUS) {
+          const { s, record, env } = recording()
+          // An npm.cmd-style forwarder, as W0's fwd.cmd.
+          const shim = join(s.dir, 'fwd.cmd')
+          writeFileSync(shim, `@"${process.execPath}" "${RECORD_ARGS}" %*\r\n`)
+          let commandLine: string
+          try {
+            commandLine = batchCommandLine(CMD_EXE, shim, c.args)
+          } catch (error) {
+            // A case cmd.exe cannot carry passes by being refused before anything starts.
+            expect(error, c.id).toBeInstanceOf(CommandLineError)
+            refused.push(c.id)
+            continue
+          }
+          const exit = await exitOf(await tree.spawn({ file: CMD_EXE, args: [], commandLine, cwd: s.dir, env }))
+          expect(exit, c.id).toEqual({ code: 0, signal: null, forced: false })
+          expect(recorded(record), c.id).toEqual(c.args)
+          expect(existsSync(join(s.dir, sentinelFor(c.id))), `${c.id}: an injected command created the sentinel`).toBe(false)
+        }
+        expect(refused.sort()).toEqual(['carriage-return', 'long', 'newline'])
+        await waitUntil(() => helpersOf([process.pid]).length === 0, 'the helpers to exit')
+      },
+      120_000,
+    )
+
+    it(
+      '[spec:project-registry/simple-batch-arguments-reach-the-batch-file-as-written] build.bat release C:\\out\\ sees %1 == release and %~2 == C:\\out\\',
+      async () => {
+        const { s, env } = recording()
+        const build = join(s.dir, 'build.bat')
+        writeFileSync(build, '@echo off\r\nif "%1"=="release" (echo first=release) else (echo first=other: %1)\r\necho second=%~2\r\n')
+        const commandLine = batchCommandLine(CMD_EXE, build, ['release', 'C:\\out\\'])
+        // Simple arguments pass bare (W2 design D1).
+        expect(commandLine).toBe(`"${CMD_EXE}" /d /v:off /s /c ""${build}" release C:\\out\\"`)
+        const run = await tree.spawn({ file: CMD_EXE, args: [], commandLine, cwd: s.dir, env })
+        const [stdout, exit] = await Promise.all([collect(run.stdout), exitOf(run)])
+        expect(exit).toEqual({ code: 0, signal: null, forced: false })
+        expect(stdout.toString('utf8')).toBe('first=release\r\nsecond=C:\\out\\\r\n')
+      },
+    )
+
+    it("sets the command's console to UTF-8 before it runs, so cmd /c echo writes non-ASCII text as UTF-8 (W2 design D5)", async () => {
+      const events: { level: string; event: string; detail?: Record<string, unknown> }[] = []
+      const logged = createWindowsProcessTree({
+        helperPath: HELPER_PATH,
+        log: { record: (level, event, detail) => events.push({ level, event, ...(detail === undefined ? {} : { detail }) }) },
+      })
+      const { s, env } = recording()
+      const text = 'grüße 日本語 ✓'
+      const run = await logged.spawn({ file: CMD_EXE, args: [], commandLine: shellCommandLine(CMD_EXE, `echo ${text}`), cwd: s.dir, env })
+      const [stdout, exit] = await Promise.all([collect(run.stdout), exitOf(run)])
+      expect(exit).toEqual({ code: 0, signal: null, forced: false })
+      // If this fails, the change pauses for a decision between design D5's fallbacks (task 2.3);
+      // the logged reason is the attach error to report.
+      expect(run.console.utf8, `utf8Console is false: ${JSON.stringify(events)}`).toBe(true)
+      expect(events.filter((e) => e.event === 'process.windows-console-not-utf8')).toEqual([])
+      expect(run.console.ansiCodePage).toBeGreaterThan(0)
+      expect(stdout.toString('hex'), stdout.toString('latin1')).toBe(Buffer.from(`${text}\r\n`, 'utf8').toString('hex'))
     })
   })
 })

@@ -60,7 +60,7 @@ Group 1 review (2026-11-07): reviewer2 found no high items, 1 medium, 3 low and 
 
 ## 2. Helper protocol version 2 and the UTF-8 console
 
-- [ ] 2.1 In `veydr-helper.cs` (design D1):
+- [x] 2.1 In `veydr-helper.cs` (design D1):
   - change `run` to `run <pipe>`;
   - read the token, connect, and send `ready`, and only then read one UTF-8 JSON line from stdin, `{"application", "commandLine"}`, with a strict hand-written parser (design D1) and a 1 MiB limit;
   - report every refusal as an `error` line on the pipe, never on stderr;
@@ -91,7 +91,20 @@ Group 1 review (2026-11-07): reviewer2 found no high items, 1 medium, 3 low and 
 
   Verify: on the pull request, the `windows` job reports every Windows integration test as run, with the W1 scenarios still passing.
 - [ ] 2.3 In the helper, set the command's console to output code page 65001 (design D5). Free the helper's own console first and re-register its Ctrl handling. After the suspended `CreateProcess`, attach to the leader's console, call `SetConsoleOutputCP(65001)`, re-register the Ctrl handler, detach, and resume. `started.utf8Console` reports the result, and a failure is logged as `process.windows-console-not-utf8`. Add a Windows integration test showing that `started.utf8Console` is `true`, and that `cmd /c echo` of a non-ASCII string writes its UTF-8 bytes. Verify on the `windows` job. **If `utf8Console` is `false` on the runner, pause and report it**, with the attach error and a recommendation between design D5's fallbacks (attach after the resume, or a console-owning wrapper). Group 2 does not merge until that is decided: group 5's decoding depends on it.
-- [ ] 2.4 Update `docs/dependencies.md` (the helper section: the `run` form, protocol version 2 with stdin and the batch-file refusal, and the UTF-8 console). Verify: the docs tests pass.
+- [x] 2.4 Update `docs/dependencies.md` (the helper section: the `run` form, protocol version 2 with stdin and the batch-file refusal, and the UTF-8 console). Verify: the docs tests pass.
+
+Group 2 review (2026-11-07): reviewer2 found no high items, 2 medium, 4 low and 3 nits, and no injection path. The re-review approved all fixes.
+- medium:
+  - a program path such as `C:\evil.bat\.` normalizes to a batch file while its last segment does not look like one. Both sides now refuse an empty, `.` or `..` segment, or one of only dots and spaces (`hasDotSegment`, `HasDotSegment`);
+  - `AttachConsole` on the suspended leader is unverified. The raw-protocol accept cases now assert `utf8Console: true` as well, so the `windows` job fails loudly if it does not work.
+- low:
+  - the helper checks that argv[0] is the quoted program, and refuses `"` and line breaks in it, as `helperLaunch` does;
+  - the helper reads its stdout and stderr before freeing its console, and refuses console handles;
+  - a plan with both a `commandLine` and separate `args` is refused;
+  - the run request ends with `\n` only.
+- nits: the plan's own checks run before the helper's version is read (fixed). `helperLaunch` running twice per spawn, and a truncated message splitting a surrogate pair, are harmless and left as they are.
+- Additions beyond the design, kept after review: `started.consoleError` (task 2.3 needs the attach error), and the refusal of device paths, data streams and an argv[0] other than the program.
+- Verified on Linux: typecheck, lint, `npm test` (1120 passed, 8 todo), spec coverage 167/167, `openspec validate --strict`. Not yet verified: the helper build with `/warnaserror+` and every Windows test, which need the `windows` job on the pull request. Tasks 2.2 and 2.3 stay open until then; 2.3 pauses the change if `utf8Console` is false.
 
 ## 3. Windows command resolver
 

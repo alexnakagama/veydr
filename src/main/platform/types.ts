@@ -22,6 +22,12 @@ export interface SpawnPlan {
   readonly args: readonly string[]
   readonly cwd: string
   readonly env: Env
+  /**
+   * The complete Windows command line, argv[0] included, when the plan's resolver built one
+   * (a batch file or a shell-mode script through `cmd.exe`); `file` is then the program it starts.
+   * Without it, the Windows process tree quotes `file` and `args` itself. Other platforms ignore it.
+   */
+  readonly commandLine?: string
 }
 
 export interface ExitInfo {

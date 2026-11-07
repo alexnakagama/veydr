@@ -3,19 +3,26 @@ import { z } from 'zod'
 import { isFiletime, isWindowsPid } from './identity'
 
 /**
- * Version 1 of the control protocol between Veydr and `veydr-helper.exe run`
- * (add-windows-process-supervision design D2): UTF-8 JSON objects, one per line (`\n`, an optional
- * preceding `\r` is ignored), over the run's named pipe.
+ * Version 2 of the control protocol between Veydr and `veydr-helper.exe run`
+ * (add-windows-process-supervision design D2, add-windows-environment-and-commands design D1 and
+ * D5): UTF-8 JSON objects, one per line (`\n`, an optional preceding `\r` is ignored), over the
+ * run's named pipe.
  *
- * Handshake. Veydr spawns `veydr-helper.exe run <pipe> <file> [<arg>...]` with the command's working
- * directory and environment, writes a one-time token as one line on the helper's stdin, and closes
- * it. The helper connects to `<pipe>` and its first line is
- * `{"type":"ready","version":1,"token":"<token>","pid":<helper PID>}`. Veydr closes connections
- * whose first line does not carry the token, and fails the run if the token matches but the version
- * does not. The helper ignores everything Veydr sends before its `ready`.
+ * Handshake. Veydr spawns `veydr-helper.exe run <pipe>` with the command's working directory and
+ * environment, and writes two lines on the helper's stdin before closing it: a one-time token, and
+ * the run request `{"application":"<program>","commandLine":"<command line>"}` (`encodeRunRequest`).
+ * Neither appears on the helper's own command line. The helper reads the token, connects to
+ * `<pipe>`, and its first line is `{"type":"ready","version":2,"token":"<token>","pid":<helper PID>}`.
+ * Only then does it read the run request, so every refusal of the request is an `error` line on the
+ * pipe and never on stderr, which belongs to the command. Veydr closes connections whose first line
+ * does not carry the token, and fails the run if the token matches but the version does not. The
+ * helper ignores everything Veydr sends before its `ready`.
  *
  * Helper to Veydr, after `ready`:
- * - `{"type":"started","pid":P,"created":"<FILETIME>"}` the command's leader, once;
+ * - `{"type":"started","pid":P,"created":"<FILETIME>","utf8Console":B,"ansiCodePage":N}` the
+ *   command's leader, once. `utf8Console` says whether the command's console was set to output code
+ *   page 65001 before it ran, and `ansiCodePage` is the system's ANSI code page (`GetACP`). When
+ *   `utf8Console` is false, `"consoleError":"..."` says why;
  * - `{"type":"members","answer":B,"members":[{"pid":P,"created":"<FILETIME>","image":"<path>"}...]}`
  *   the live job members (`image` is the full image path, empty if unreadable): with `answer: false`
  *   on every job change, and with `answer: true` exactly once per `list`, in the order received. The helper answers `list` at
@@ -33,7 +40,14 @@ import { isFiletime, isWindowsPid } from './identity'
  * line malformed, and Veydr treats the helper as failed.
  */
 
-export const PROTOCOL_VERSION = 1
+export const PROTOCOL_VERSION = 2
+
+/**
+ * Longest run request the helper reads, in bytes, `\n` excluded. Escaping can make a command line
+ * of `MAX_COMMAND_LINE` characters about six times longer, so this is the helper's own limit,
+ * separate from the token line's.
+ */
+export const MAX_RUN_REQUEST_BYTES = 1024 * 1024
 
 /** Longest accepted line in bytes, `\n` excluded (a `members` line for thousands of processes fits). */
 export const MAX_LINE_BYTES = 1024 * 1024
@@ -63,8 +77,23 @@ const created = z.custom<string>(isFiletime, 'Must be a canonical FILETIME decim
 const member = z.strictObject({ pid, created, image: z.string().max(32_767) })
 export type HelperMember = z.infer<typeof member>
 
+const started = z
+  .strictObject({
+    type: z.literal('started'),
+    pid,
+    created,
+    utf8Console: z.boolean(),
+    // A Windows code page identifier (a 16-bit value; 0 is CP_ACP itself, never a code page).
+    ansiCodePage: z.int().min(1).max(0xffff),
+    consoleError: z.string().max(4096).optional(),
+  })
+  .refine((message) => message.utf8Console === (message.consoleError === undefined), {
+    message: 'consoleError must be present exactly when utf8Console is false',
+    path: ['consoleError'],
+  })
+
 const helperMessages = {
-  started: z.strictObject({ type: z.literal('started'), pid, created }),
+  started,
   members: z.strictObject({ type: z.literal('members'), answer: z.boolean(), members: z.array(member) }),
   exited: z.strictObject({ type: z.literal('exited'), code: z.int().min(0).max(0xffff_ffff), forced: z.boolean() }),
   stopped: z.strictObject({
@@ -148,6 +177,27 @@ export function parseHandshake(line: string, token: string): { readonly pid: num
   const result = handshakeSchema.safeParse(value)
   if (!result.success) throw new ProtocolError('malformed', `Malformed ready message: ${describeIssues(result.error)}`)
   return { pid: result.data.pid }
+}
+
+/**
+ * The run request, the second line on the helper's stdin, `\n` included (design D1). The key order
+ * is fixed and there is no whitespace, the only form the helper's strict parser accepts.
+ * `JSON.stringify` escapes `"`, `\` and control characters, and writes every other character as
+ * UTF-8; a lone surrogate (which it would write as `\uD800`) or NUL never reaches here, since
+ * `helperLaunch` refuses them, but they are refused again because the helper refuses them too.
+ */
+export function encodeRunRequest(launch: { readonly application: string; readonly commandLine: string }): string {
+  for (const [name, value] of [
+    ['application', launch.application],
+    ['commandLine', launch.commandLine],
+  ] as const) {
+    if (value.includes('\0')) throw new RangeError(`The run request's ${name} contains a NUL character`)
+    if (/[\uD800-\uDFFF]/u.test(value)) throw new RangeError(`The run request's ${name} contains an unpaired UTF-16 surrogate`)
+  }
+  const line = JSON.stringify({ application: launch.application, commandLine: launch.commandLine })
+  const bytes = Buffer.byteLength(line, 'utf8')
+  if (bytes > MAX_RUN_REQUEST_BYTES) throw new RangeError(`The run request has ${bytes} bytes, more than the ${MAX_RUN_REQUEST_BYTES} the helper reads`)
+  return `${line}\n`
 }
 
 /** Encodes a message to the helper as one line, `\n` included. */

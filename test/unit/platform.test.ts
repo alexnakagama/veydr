@@ -7,7 +7,8 @@ import { duplicateEnvName, envNameKey } from '../../src/shared/config'
 import type { CommandSpec, LedgerEntry, SpawnPlan } from '../../src/main/platform/types'
 import { createWindowsPlatform } from '../../src/main/platform/windows'
 
-const plan: SpawnPlan = { file: 'node', args: [], cwd: '/tmp', env: {} }
+// A full path on every system, so that only the helper's absence is what these tests meet.
+const plan: SpawnPlan = { file: process.execPath, args: [], cwd: '/tmp', env: {} }
 const spec: CommandSpec = {
   mode: 'direct',
   file: 'node',
