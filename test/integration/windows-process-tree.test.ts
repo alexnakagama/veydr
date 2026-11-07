@@ -294,11 +294,30 @@ function scenario(): Scenario {
     },
     plan: (script, args) => ({ file: process.execPath, args: [script, '--marker', marker, '--dir', dir, ...args], cwd: dir, env }),
     cleanup() {
-      // Whatever a failed scenario left behind; a passing one leaves nothing.
-      powershell(`Get-CimInstance Win32_Process -Filter "CommandLine LIKE '%${marker}%'" | Where-Object { $_.ProcessId -ne $PID } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }`)
-      rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
+      cleanupScenarios([this])
     },
   }
+}
+
+/**
+ * Ends whatever the scenarios left behind (a passing one leaves nothing) and removes their
+ * directories, with one PowerShell query for all of them: a test may use dozens of scenarios, and
+ * one PowerShell start each would outlast the afterEach hook's time limit.
+ */
+function cleanupScenarios(list: readonly Pick<Scenario, 'dir' | 'marker'>[]): void {
+  if (list.length === 0) return
+  const markers = list.map((s) => {
+    if (!/^[0-9a-f-]+$/.test(s.marker)) throw new Error(`not a marker: ${s.marker}`)
+    return `'${s.marker}'`
+  })
+  powershell(
+    `$markers = @(${markers.join(',')})
+     Get-CimInstance Win32_Process | Where-Object {
+       $line = $_.CommandLine
+       $_.ProcessId -ne $PID -and $null -ne $line -and @($markers | Where-Object { $line.Contains($_) }).Count -gt 0
+     } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }`,
+  )
+  for (const s of list) rmSync(s.dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
 }
 
 interface Sentinel {
@@ -382,7 +401,7 @@ describe.skipIf(process.platform !== 'win32')('[windows-only: Job Objects]', () 
     sentinel?.stop()
   })
   afterEach(() => {
-    for (const s of scenarios.splice(0)) s.cleanup()
+    cleanupScenarios(scenarios.splice(0))
     expect(sentinel?.alive(), 'sentinel alive').toBe(true)
     expect(sentinel?.events(), 'console events received by the sentinel').toEqual([])
   })
