@@ -428,3 +428,8 @@ describe('supervisor attribution sets (ports, task 8.2)', () => {
     expect(h.statuses()).toEqual(['starting', 'running'])
   })
 })
+
+// add-windows-environment-and-commands group 6 (design D6) implements this, and removes start-on-windows.
+describe('supervisor on the Windows platform', () => {
+  it.todo('[spec:process-supervision/command-started-on-windows] plans and spawns a command through the Windows resolver and environment')
+})

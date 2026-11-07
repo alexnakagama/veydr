@@ -278,3 +278,6 @@ test('a dev-server URL in the environment is ignored by non-dev builds', async (
     rmSync(veydr.workDir, { recursive: true, force: true })
   }
 })
+
+// add-windows-environment-and-commands group 7 (design D7) implements this.
+test.fixme('[spec:quality-gates/windows-end-to-end-tests-keep-the-sandbox] renderer runs sandboxed on Windows', () => {})

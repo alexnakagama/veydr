@@ -136,3 +136,8 @@ describe('docs/processes.md matches the implementation', () => {
     expect(deferred).toContain('\n## Windows process supervision (2026-11-06)\n')
   })
 })
+
+// add-windows-environment-and-commands group 6 (design D6) implements this.
+describe('docs/processes.md describes the Windows preview', () => {
+  it.todo('[spec:process-supervision/windows-preview-documented] says run from source, no Windows package, and lists what is not verified, claiming nothing beyond them')
+})
