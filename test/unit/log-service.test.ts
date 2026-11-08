@@ -14,13 +14,19 @@ const noSecrets = command()
 
 function harness() {
   const sent: LogBatch[] = []
+  const events: { level: string; event: string; detail?: Record<string, unknown> }[] = []
   let clock = 1_000
-  const logs = createLogService({ delivery: { active: () => true, send: (batch) => sent.push(batch) }, now: () => clock })
+  const logs = createLogService({
+    delivery: { active: () => true, send: (batch) => sent.push(batch) },
+    now: () => clock,
+    log: { record: (level, event, detail) => events.push({ level, event, ...(detail === undefined ? {} : { detail }) }) },
+  })
   const out = (runId: string, text: string): void => logs.write(CMD, runId, 'stdout', Buffer.from(text))
   const err = (runId: string, text: string): void => logs.write(CMD, runId, 'stderr', Buffer.from(text))
   return {
     logs,
     sent,
+    events,
     out,
     err,
     tick: (ms: number) => {
@@ -39,7 +45,7 @@ afterEach(() => {
 describe('log service', () => {
   it('[spec:process-logs/stream-distinguished] [spec:process-logs/interleaving-is-approximate] tags lines with their stream and capture time, ordered by capture across streams', () => {
     const h = harness()
-    h.logs.open(CMD, RUN_1, noSecrets)
+    h.logs.open(CMD, RUN_1, noSecrets, null)
     h.out(RUN_1, 'one\n')
     h.tick(5)
     h.err(RUN_1, 'two\n')
@@ -60,7 +66,7 @@ describe('log service', () => {
 
   it('a partial line is numbered when it is shown, after lines of the other stream completed meanwhile', () => {
     const h = harness()
-    h.logs.open(CMD, RUN_1, noSecrets)
+    h.logs.open(CMD, RUN_1, noSecrets, null)
     h.out(RUN_1, 'progress')
     h.err(RUN_1, 'warning\n')
     vi.advanceTimersByTime(PARTIAL_LINE_FLUSH_MS)
@@ -72,7 +78,7 @@ describe('log service', () => {
 
   it('redacts secrets before anything is retained or sent, also when a value is split across chunks', () => {
     const h = harness()
-    h.logs.open(CMD, RUN_1, secretEnv)
+    h.logs.open(CMD, RUN_1, secretEnv, null)
     h.out(RUN_1, 'key=s3cr3t-')
     h.out(RUN_1, 'value\n')
     h.err(RUN_1, 's3cr3t-value')
@@ -85,19 +91,94 @@ describe('log service', () => {
 
   it('redacts a secret printed in two parts with a pause longer than the partial-line delay (L6-04)', () => {
     const h = harness()
-    h.logs.open(CMD, RUN_1, secretEnv)
+    h.logs.open(CMD, RUN_1, secretEnv, null)
     h.out(RUN_1, 'token=s3cr3t')
     vi.advanceTimersByTime(PARTIAL_LINE_FLUSH_MS * 3)
     h.out(RUN_1, '-value and more\n')
     expect(h.logs.read({ runId: RUN_1, fromSeq: 1, limit: 10 }).lines.map((l) => l.text)).toEqual(['token=', '[redacted] and more'])
   })
 
+  it("[spec:process-logs/ansi-output-on-windows] decodes each stream's lines that are not UTF-8 with the run's fallback encoding", () => {
+    const h = harness()
+    h.logs.open(CMD, RUN_1, noSecrets, 'windows-1252')
+    h.logs.write(CMD, RUN_1, 'stdout', Buffer.from([0x63, 0x61, 0x66, 0xe9, 0x0a]))
+    h.logs.write(CMD, RUN_1, 'stderr', Buffer.from('Größe\n'))
+    h.logs.write(CMD, RUN_1, 'stderr', Buffer.from([0x80, 0x0a]))
+    expect(h.logs.read({ runId: RUN_1, fromSeq: 1, limit: 10 }).lines.map((l) => [l.stream, l.text])).toEqual([
+      ['stdout', 'café'],
+      ['stderr', 'Größe'],
+      ['stderr', '€'],
+    ])
+    expect(h.events).toEqual([])
+  })
+
+  it('redacts a secret in a line decoded with the fallback, also when it is printed in two parts', () => {
+    const h = harness()
+    h.logs.open(CMD, RUN_1, secretEnv, 'windows-1252')
+    h.logs.write(CMD, RUN_1, 'stdout', Buffer.from([0xe9, ...Buffer.from('=s3cr3t')]))
+    vi.advanceTimersByTime(PARTIAL_LINE_FLUSH_MS * 3)
+    h.logs.write(CMD, RUN_1, 'stdout', Buffer.from('-value\n'))
+    expect(h.logs.read({ runId: RUN_1, fromSeq: 1, limit: 10 }).lines.map((l) => l.text)).toEqual(['é=', '[redacted]'])
+  })
+
+  it('redacts a secret printed in UTF-8 on a line that the fallback decodes, because of another byte (group 5 review)', () => {
+    const h = harness()
+    const env = command({ env: [{ key: 'TOKEN', value: 'café-secret', secret: true }] })
+    h.logs.open(CMD, RUN_1, env, 'windows-1252')
+    // "key=café-secret " in UTF-8, then a stray windows-1252 "é": the fallback would show "cafÃ©".
+    h.logs.write(CMD, RUN_1, 'stdout', Buffer.concat([Buffer.from('key=café-secret '), Buffer.from([0xe9, 0x0a])]))
+    // An ANSI line without a secret is still decoded with the fallback.
+    h.logs.write(CMD, RUN_1, 'stdout', Buffer.from([0x63, 0x61, 0x66, 0xe9, 0x0a]))
+    expect(h.logs.read({ runId: RUN_1, fromSeq: 1, limit: 10 }).lines.map((l) => l.text)).toEqual(['key=[redacted] �', 'café'])
+  })
+
+  it('redacts a secret whose first character a Shift_JIS lead byte would swallow (group 5 review)', () => {
+    const h = harness()
+    const env = command({ env: [{ key: 'TOKEN', value: 'secret1234', secret: true }] })
+    h.logs.open(CMD, RUN_1, env, 'shift_jis')
+    h.logs.write(CMD, RUN_1, 'stdout', Buffer.concat([Buffer.from([0x81]), Buffer.from('secret1234\n')]))
+    const [line] = h.logs.read({ runId: RUN_1, fromSeq: 1, limit: 10 }).lines
+    expect(line?.text).toBe('�[redacted]')
+  })
+
+  it('keeps back the start of a UTF-8 secret at a pause in a line the fallback decodes (group 5 review)', () => {
+    const h = harness()
+    const env = command({ env: [{ key: 'TOKEN', value: 'café-secret', secret: true }] })
+    h.logs.open(CMD, RUN_1, env, 'windows-1252')
+    h.logs.write(CMD, RUN_1, 'stdout', Buffer.concat([Buffer.from([0xe9]), Buffer.from(' token=café-se')]))
+    vi.advanceTimersByTime(PARTIAL_LINE_FLUSH_MS * 3)
+    h.logs.write(CMD, RUN_1, 'stdout', Buffer.from('cret\n'))
+    const texts = h.logs.read({ runId: RUN_1, fromSeq: 1, limit: 10 }).lines.map((l) => l.text)
+    expect(texts).toEqual(['é token=', '[redacted]'])
+    expect(JSON.stringify(texts)).not.toMatch(/caf/)
+  })
+
+  it('keeps back the start of a UTF-8 secret when the pause falls inside its next character (group 5 re-review)', () => {
+    const h = harness()
+    const env = command({ env: [{ key: 'TOKEN', value: 'abcdé123', secret: true }] })
+    h.logs.open(CMD, RUN_1, env, 'windows-1252')
+    // An ANSI "é" first, then "abcd" and the first byte of a UTF-8 "é".
+    h.logs.write(CMD, RUN_1, 'stdout', Buffer.from([0xe9, 0x20, 0x61, 0x62, 0x63, 0x64, 0xc3]))
+    vi.advanceTimersByTime(PARTIAL_LINE_FLUSH_MS * 3)
+    h.logs.write(CMD, RUN_1, 'stdout', Buffer.concat([Buffer.from([0xa9]), Buffer.from('123\n')]))
+    const texts = h.logs.read({ runId: RUN_1, fromSeq: 1, limit: 10 }).lines.map((l) => l.text)
+    expect(texts).toEqual(['é ', '[redacted]'])
+  })
+
+  it('logs a fallback encoding this runtime cannot decode, and still captures the run as UTF-8', () => {
+    const h = harness()
+    h.logs.open(CMD, RUN_1, noSecrets, 'cp437')
+    h.logs.write(CMD, RUN_1, 'stdout', Buffer.from([0x61, 0xff, 0x0a]))
+    expect(h.logs.read({ runId: RUN_1, fromSeq: 1, limit: 10 }).lines.map((l) => l.text)).toEqual(['a�'])
+    expect(h.events).toEqual([{ level: 'warn', event: 'logs.fallback-encoding-unsupported', detail: { commandId: CMD, runId: RUN_1, encoding: 'cp437' } }])
+  })
+
   it('keeps output of the current and previous run, and ignores output of a run no longer retained', () => {
     const h = harness()
-    h.logs.open(CMD, RUN_1, noSecrets)
+    h.logs.open(CMD, RUN_1, noSecrets, null)
     h.out(RUN_1, 'first\n')
-    h.logs.open(CMD, RUN_2, noSecrets)
-    h.logs.open(CMD, RUN_3, noSecrets)
+    h.logs.open(CMD, RUN_2, noSecrets, null)
+    h.logs.open(CMD, RUN_3, noSecrets, null)
     // Run 1's descendants may still write (its pipes are open): nothing is kept or sent.
     h.out(RUN_1, 'late\n')
     vi.advanceTimersByTime(BATCH_INTERVAL_MS)
@@ -109,7 +190,7 @@ describe('log service', () => {
 
   it('emits the final partial line when a stream closes and ignores output after that', () => {
     const h = harness()
-    h.logs.open(CMD, RUN_1, noSecrets)
+    h.logs.open(CMD, RUN_1, noSecrets, null)
     h.out(RUN_1, 'no newline at the end')
     h.logs.close(CMD, RUN_1, 'stdout')
     h.out(RUN_1, 'after close\n')
@@ -118,7 +199,7 @@ describe('log service', () => {
 
   it('clears a run: retained and not yet delivered lines go, capture continues', () => {
     const h = harness()
-    h.logs.open(CMD, RUN_1, noSecrets)
+    h.logs.open(CMD, RUN_1, noSecrets, null)
     h.out(RUN_1, 'a\nb\n')
     expect(h.logs.clear(RUN_1)).toEqual({ clearedThroughSeq: 2 })
     h.out(RUN_1, 'c\n')
@@ -130,7 +211,7 @@ describe('log service', () => {
 
   it('reads in pages from any seq and reports discarded lines', () => {
     const h = harness()
-    h.logs.open(CMD, RUN_1, noSecrets)
+    h.logs.open(CMD, RUN_1, noSecrets, null)
     h.out(RUN_1, Array.from({ length: 10_005 }, (_, i) => `${i + 1}\n`).join(''))
     const page = h.logs.read({ runId: RUN_1, fromSeq: 1, limit: 3 })
     expect(page).toMatchObject({ firstRetainedSeq: 6, nextSeq: 10_006, discarded: 5 })

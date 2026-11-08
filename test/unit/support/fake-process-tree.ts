@@ -36,6 +36,7 @@ export class FakeProcess implements ManagedProcess {
   readonly sessionId: number
   readonly stdout = new PassThrough()
   readonly stderr = new PassThrough()
+  outputFallbackEncoding: string | null = null
   leaderAlive = true
   descendants: number
   stopCalls = 0
@@ -132,6 +133,8 @@ export class FakeProcessTree implements Pick<ProcessTree, 'spawn'> {
   readonly spawned: FakeProcess[] = []
   /** Spawn calls, including failed ones. */
   spawnCalls = 0
+  /** The `outputFallbackEncoding` of processes spawned from now on. */
+  fallbackEncoding: string | null = null
   private nextPid = 1000
 
   async spawn(plan: SpawnPlan): Promise<ManagedProcess> {
@@ -140,6 +143,7 @@ export class FakeProcessTree implements Pick<ProcessTree, 'spawn'> {
     await delay(behavior.spawnDelayMs)
     if (behavior.spawnError !== null) throw behavior.spawnError
     const process = new FakeProcess(this.nextPid++, plan, behavior)
+    process.outputFallbackEncoding = this.fallbackEncoding
     this.spawned.push(process)
     return process
   }

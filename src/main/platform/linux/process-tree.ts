@@ -266,6 +266,8 @@ class LinuxRun implements ManagedProcess {
   readonly sessionId: number
   readonly stdout: Readable
   readonly stderr: Readable
+  /** Linux output is decoded as UTF-8 only. */
+  readonly outputFallbackEncoding = null
   /** Start time of the leader; nothing attributed to the run can be older. */
   private readonly startTime: number
   /** Observed descendants (PID → start time), kept while they live even if they leave the session. */

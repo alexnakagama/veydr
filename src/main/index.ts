@@ -128,6 +128,7 @@ function start(): void {
       active: () => hub.subscriberCount(channels.logs.onBatch) > 0,
       send: (batch) => hub.publish(channels.logs.onBatch, batch),
     },
+    log,
   })
   hub.onSubscribe(channels.logs.onBatch, () => logs.resetDelivery())
   // Commands start only on an explicit user request (`processes.start`/`restart`); nothing is started here.

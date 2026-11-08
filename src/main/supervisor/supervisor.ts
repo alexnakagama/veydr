@@ -24,8 +24,11 @@ export type OutputStream = 'stdout' | 'stderr'
  * processes).
  */
 export interface OutputSink {
-  /** A run was spawned with `command`'s configuration; called before any output of the run. */
-  open(commandId: string, runId: string, command: CommandConfig): void
+  /**
+   * A run was spawned with `command`'s configuration; called before any output of the run.
+   * `fallbackEncoding` is the process's `outputFallbackEncoding`.
+   */
+  open(commandId: string, runId: string, command: CommandConfig, fallbackEncoding: string | null): void
   /** A chunk of the run's `stream`. */
   write(commandId: string, runId: string, stream: OutputStream, chunk: Buffer): void
   /** The run's `stream` is closed: no more output follows on it. */
@@ -326,7 +329,7 @@ function createCommandActor(commandId: string, deps: SupervisorDeps): CommandAct
 
     const run: Run = { runId, process, startedAt: now(), graceMs: target.command.stopTimeoutMs, leaderExit: null, ended: false }
     current = run
-    toSink(runId, () => output.open(commandId, runId, target.command))
+    toSink(runId, () => output.open(commandId, runId, target.command, process.outputFallbackEncoding))
     drain(run, 'stdout')
     drain(run, 'stderr')
     process.onExit((info) => {

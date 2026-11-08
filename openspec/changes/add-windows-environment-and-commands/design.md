@@ -203,7 +203,7 @@ The supervisor passes the fallback to the log service when a run starts.
 
 **The splitter with a fallback.**
 - It splits each stream on `\n` bytes and decodes each completed or flushed line with a fatal UTF-8 `TextDecoder`. A line that fails is decoded with the fallback decoder.
-- The 16 KiB truncation cuts bytes and then drops a trailing incomplete UTF-8 sequence before deciding. A cut can still split a multibyte ANSI character (Shift_JIS, GBK, …); the decoder then shows one replacement character at the cut, which the docs note.
+- The 16 KiB truncation cuts bytes and then drops a trailing incomplete UTF-8 sequence before deciding. The decoded text is then cut again, at a character boundary, to 16 KiB of UTF-8 (the log API refuses longer text, `MAX_LINE_TEXT_LENGTH`). ANSI text never shrinks when decoded, so a multibyte ANSI character (Shift_JIS, GBK, …) split by the byte cut is always dropped by that second cut, never shown as a replacement character; the docs note it.
 - The partial-line display decodes the held bytes the same way.
 - Without a fallback, the splitter keeps today's `StringDecoder` path, so Linux is unchanged.
 

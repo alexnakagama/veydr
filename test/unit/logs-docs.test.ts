@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
+import { KNOWN_ANSI_CODE_PAGES } from '../../src/main/platform/windows/code-page'
 import { RETENTION_NOTICE } from '../../src/renderer/src/LogView'
 import {
   BATCH_INTERVAL_MS,
@@ -51,6 +52,24 @@ describe('docs/logs.md', () => {
     expect(text).toContain(`Values shorter than ${MIN_REDACTED_SECRET_LENGTH} characters are not redacted`)
     expect(text).toContain(`at most ${MIN_REDACTED_SECRET_LENGTH - 1} characters of a secret can remain visible`)
     for (const limitation of ['transformed values', 'split values', 'partial values']) expect(text).toContain(limitation)
+  })
+
+  it('[spec:process-logs/ansi-output-on-windows] states the Windows output decoding, as not yet reachable from the app', () => {
+    const text = section('Windows (not yet available)')
+    expect(text).toContain('**Not yet reachable from the app.**')
+    // The UTF-8 console, and what happens when it cannot be set.
+    expect(text).toContain('output code page is set to UTF-8 (65001) before the command runs')
+    expect(text).toContain('`process.windows-console-not-utf8`')
+    // The ANSI fallback, with every code page of the table.
+    expect(text).toContain('decoded with the system\'s **ANSI code page**')
+    for (const codePage of KNOWN_ANSI_CODE_PAGES.filter((cp) => cp < 1251 || cp > 1257)) expect(text).toContain(String(codePage))
+    // OEM bytes written straight to a pipe, and the remedies.
+    expect(text).toContain('### Programs that write OEM bytes to a pipe')
+    expect(text).toContain('`PYTHONUTF8=1`')
+    expect(text).toContain('`chcp 65001 >nul`')
+    // A multibyte character cut at the line limit.
+    expect(text).toContain(`The ${MAX_LINE_BYTES / KiB} KiB limit applies to the bytes as the command wrote them, and to the shown text in UTF-8.`)
+    expect(text).toContain('A character cut in two at the limit is dropped, never shown in part')
   })
 
   it('states that output is never written to disk', () => {
