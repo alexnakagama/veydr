@@ -225,6 +225,14 @@ Group 4 review (2026-11-08): reviewer2 found 1 high, 4 medium, 5 low and 4 nits.
 - Additions beyond the design, kept after review: runtime variables are removed regardless of case, and names containing `=` anywhere are dropped (not only a leading `=`).
 - Verified on Linux: typecheck, lint, `npm test` (1178 passed), spec coverage 167/167, `openspec validate --strict`. The Windows integration tests run on the pull request.
 
+Group 4 on Windows (#41, 2026-11-08):
+- The first `windows` run failed in one test: the control that shows the console check can see a console (a batch-file editor that starts Node.js). It looked for a `conhost.exe` by its parent process and for console window classes, and found neither within 30 s. `0e74ee4` reads a process's console with `AttachConsole` and `GetConsoleWindow` instead, as the W0 probes did (`pt-console-window`). A timeout now reports what the check saw.
+- Verified on the `windows` job (`0e74ee4`):
+  - `windows-commands.test.ts` and `windows-process-tree.test.ts` ran 41 tests, and all passed. The one todo is group 5's `console-output-on-windows` placeholder.
+  - Windows unit tests: 1106 passed, with only the Linux-only files skipped.
+  - `ci-ok` passed.
+- Evidence recorded (design D4): the detached editor is in a job on the runner (`the detached editor is in a job: true`). It still survives the host that launched it being killed, while that host's supervised command and its helper end.
+
 ## 5. Output decoding on Windows
 
 - [ ] 5.1 `ManagedProcess` gains `outputFallbackEncoding` (design D5): on Windows, the WHATWG label of `started.ansiCodePage`, or `null`; on Linux, `null`. Verify: unit tests for the code-page-to-label table, including an unknown code page, and `npm test` passes.
