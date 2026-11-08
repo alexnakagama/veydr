@@ -52,4 +52,15 @@ describe('redactor', () => {
     expect(out.truncated).toBe(true)
     expect(out.text).not.toContain('abcd')
   })
+
+  it('says whether a text shows a secret value, as redact would replace it', () => {
+    const r = createRedactor(['s3cr3t-value'])
+    expect(r.exposes('key=s3cr3t-value', false)).toBe(true)
+    expect(r.exposes('key=s3cr3t-value', false)).toBe(true)
+    expect(r.exposes('nothing here', false)).toBe(false)
+    // A cut-off start counts only on a truncated line, as in redact.
+    expect(r.exposes('key=s3cr3t', false)).toBe(false)
+    expect(r.exposes('key=s3cr3t', true)).toBe(true)
+    expect(createRedactor([]).exposes('s3cr3t-value', true)).toBe(false)
+  })
 })

@@ -1,17 +1,20 @@
 import type { ClearLogsResponse, LogStream, ReadLogsRequest, ReadLogsResponse } from '../../shared/api'
 import type { CommandConfig } from '../../shared/config'
 import { NotFoundError } from '../errors'
+import type { PlatformLog } from '../platform/types'
 import type { OutputSink } from '../supervisor/supervisor'
 import { createBatcher, DEFAULT_BATCHER_LIMITS, type BatchDelivery, type Batcher, type BatcherLimits } from './batcher'
 import { createLogStore, DEFAULT_RETENTION, type LogStore, type RetentionLimits, type RunBuffer } from './buffer'
 import { createRedactor, redactableSecrets, type Redactor } from './redactor'
-import { createLineSplitter, type LineSplitter } from './splitter'
+import { createLineSplitter, isSupportedEncoding, type LineSplitter } from './splitter'
 
 export interface LogServiceOptions {
   readonly delivery: BatchDelivery
   readonly retention?: RetentionLimits
   readonly batching?: BatcherLimits
   readonly now?: () => number
+  /** Records a fallback encoding this runtime cannot decode (the run's output is then UTF-8 only). */
+  readonly log?: PlatformLog
 }
 
 /**
@@ -48,7 +51,14 @@ export function createLogService(options: LogServiceOptions): LogService {
   /** Runs whose output streams are still open. */
   const capturing = new Map<string, CapturingRun>()
 
-  const capture = (run: CapturingRun, stream: LogStream, raw: string, cut: boolean): void => {
+  /**
+   * `utf8`: the line's UTF-8 view, when it was decoded with a fallback encoding. If that view shows
+   * a secret value, it is kept (redacted) instead of the decoded text, which may hide the value
+   * from the redactor (a line mixing UTF-8 and ANSI bytes; add-windows-environment-and-commands
+   * group 5 review).
+   */
+  const capture = (run: CapturingRun, stream: LogStream, decoded: string, cut: boolean, utf8?: string): void => {
+    const raw = utf8 !== undefined && run.redactor.exposes(utf8, cut) ? utf8 : decoded
     const { text, truncated } = run.redactor.redact(raw, cut)
     const bytes = Buffer.byteLength(text, 'utf8')
     const line = store.append(run.buffer, stream, now(), text, truncated, bytes)
@@ -63,12 +73,19 @@ export function createLogService(options: LogServiceOptions): LogService {
   }
 
   return {
-    open(commandId: string, runId: string, command: Pick<CommandConfig, 'env'>) {
+    open(commandId: string, runId: string, command: Pick<CommandConfig, 'env'>, fallbackEncoding: string | null) {
       if (capturing.has(runId)) return
       const run: CapturingRun = { buffer: store.open(commandId, runId), redactor: createRedactor(redactableSecrets(command)), splitters: {} }
       const holdBack = (text: string): number => run.redactor.secretPrefixLength(text)
-      run.splitters.stdout = createLineSplitter((text, truncated) => capture(run, 'stdout', text, truncated), { holdBack })
-      run.splitters.stderr = createLineSplitter((text, truncated) => capture(run, 'stderr', text, truncated), { holdBack })
+      // A label without a decoder must not cost the run its output: it is decoded as UTF-8 instead.
+      let fallback = fallbackEncoding
+      if (fallback !== null && !isSupportedEncoding(fallback)) {
+        options.log?.record('warn', 'logs.fallback-encoding-unsupported', { commandId, runId, encoding: fallback })
+        fallback = null
+      }
+      const splitterOptions = { holdBack, fallbackEncoding: fallback }
+      run.splitters.stdout = createLineSplitter((text, truncated, utf8) => capture(run, 'stdout', text, truncated, utf8), splitterOptions)
+      run.splitters.stderr = createLineSplitter((text, truncated, utf8) => capture(run, 'stderr', text, truncated, utf8), splitterOptions)
       capturing.set(runId, run)
     },
 

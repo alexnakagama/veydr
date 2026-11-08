@@ -9,22 +9,31 @@ import { build } from 'vite'
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
 import { compilerPath, HELPER_PATH } from '../../scripts/build-windows-helper.mjs'
 import { SpawnError } from '../../src/main/platform/errors'
+import { createLogService } from '../../src/main/logs/service'
 import type { CommandSpec, Env, ExitInfo, ManagedProcess, ResolveResult, SpawnPlan } from '../../src/main/platform/types'
 import { createWindowsEnvProvider } from '../../src/main/platform/windows/environment'
+import type { WindowsManagedProcess } from '../../src/main/platform/windows/helper-client'
 import { createWindowsProcessTree } from '../../src/main/platform/windows/process-tree'
 import { createWindowsCommandResolver, systemCmdExe } from '../../src/main/platform/windows/resolver'
 import { editorArguments } from '../../src/main/projects/desktop'
 import { effectiveEnvironment } from '../../src/main/projects/environment'
+import { createPlanner } from '../../src/main/supervisor/plan'
+import { createProcessStateRegistry } from '../../src/main/supervisor/state'
+import { createSupervisor, type LaunchTarget, type OutputStream } from '../../src/main/supervisor/supervisor'
+import type { ProcessStateEvent } from '../../src/shared/api'
+import type { CommandConfig } from '../../src/shared/config'
+import { command, project, quietLog } from '../unit/support/config'
 import { collect, consolesOf, helpersOf, isInJob, marked, powershell, waitUntil } from './support/windows'
 import type { EditorHostOptions } from './support/windows-editor-host'
 
 // Windows commands through the resolver, the command lines and the real helper
 // (add-windows-environment-and-commands designs D2, D4 and D5). The shim corpus and the plain batch
 // file (group 2) are in windows-process-tree.test.ts, which keeps no `it.todo` of its own
-// (workflow-policy.test.ts); groups 4 and 5 implement the placeholders left here.
+// (workflow-policy.test.ts).
 
 const RECORD_ARGS = resolve(__dirname, '../fixtures/windows/record-args.mjs')
 const PRINT_ENV = resolve(__dirname, '../fixtures/windows/print-env.mjs')
+const OUTPUT = resolve(__dirname, '../fixtures/windows/output.mjs')
 const GUI_RECORDER_SOURCE = resolve(__dirname, '../fixtures/windows/gui-recorder.cs')
 const CMD_EXE = systemCmdExe(process.env['SystemRoot'])
 const SENTINEL = 'veydr-decoy-ran'
@@ -425,5 +434,81 @@ describe.skipIf(process.platform !== 'win32')('[windows-only: cmd.exe and PATHEX
     })
   })
 
-  it.todo('[spec:process-logs/console-output-on-windows] a cmd /c echo of non-ASCII text reaches the log unchanged')
+  describe('output decoding (design D5)', () => {
+    /**
+     * Starts `execution` as Veydr does, through the planner, the supervisor and the log service, and
+     * resolves with the text of its log lines once it has exited and its output is captured.
+     */
+    async function logOf(
+      s: Scenario,
+      execution: CommandConfig['execution'],
+    ): Promise<{ readonly lines: Readonly<Record<OutputStream, readonly string[]>>; readonly process: ManagedProcess }> {
+      const config = command({ execution, stopTimeoutMs: 5_000 })
+      const target: LaunchTarget = { project: project({ path: s.dir, commands: [config] }), command: config }
+      const events: ProcessStateEvent[] = []
+      const spawned: ManagedProcess[] = []
+      const closed = new Set<string>()
+      const logs = createLogService({ delivery: { active: () => false, send: () => undefined } })
+      const supervisor = createSupervisor({
+        processTree: {
+          spawn: async (plan) => {
+            const started = await tree.spawn(plan)
+            spawned.push(started)
+            return started
+          },
+        },
+        states: createProcessStateRegistry((event) => events.push(event)),
+        lookup: (id) => (id === config.id ? target : null),
+        plan: createPlanner({ resolver, environment: { base: () => Promise.resolve({ env: s.env(process.env['PATH'] ?? ''), warnings: [] }) }, envNames: 'case-insensitive' }),
+        output: {
+          open: (...args) => logs.open(...args),
+          write: (...args) => logs.write(...args),
+          close: (commandId, runId, stream) => {
+            logs.close(commandId, runId, stream)
+            closed.add(stream)
+          },
+        },
+        log: quietLog(),
+      })
+      try {
+        const state = await supervisor.start(config.id)
+        expect(state, JSON.stringify(state.error)).toMatchObject({ status: 'running' })
+        await waitUntil(() => events.some((e) => e.status === 'exited') && closed.size === 2, 'the command to exit and its output to be captured')
+        expect(events.at(-1)).toMatchObject({ status: 'exited', exit: { code: 0 } })
+        const [started] = spawned
+        if (started === undefined || state.runId === null) throw new Error('nothing was spawned')
+        const read = logs.read({ runId: state.runId, fromSeq: 1, limit: 100 }).lines
+        const of = (stream: OutputStream): string[] => read.filter((line) => line.stream === stream).map((line) => line.text)
+        return { lines: { stdout: of('stdout'), stderr: of('stderr') }, process: started }
+      } finally {
+        logs.dispose()
+      }
+    }
+
+    it('[spec:process-logs/console-output-on-windows] a cmd /c echo of non-ASCII text reaches the log unchanged', async () => {
+      const s = scenario()
+      const text = `grüße 日本語 ✓ ${s.marker}`
+      const { lines, process: run } = await logOf(s, { mode: 'shell', shell: CMD_EXE, script: `echo ${text}` })
+      expect((run as WindowsManagedProcess).console.utf8, 'the console was set to UTF-8 (design D5)').toBe(true)
+      expect(lines).toEqual({ stdout: [text], stderr: [] })
+    })
+
+    it("[spec:process-logs/ansi-output-on-windows] a Node fixture's windows-1252 line is shown decoded, between UTF-8 lines", async () => {
+      const s = scenario()
+      // "café 50 €" in windows-1252, between two UTF-8 lines, on stdout; the same on stderr.
+      const ansi = Buffer.from([0x63, 0x61, 0x66, 0xe9, 0x20, 0x35, 0x30, 0x20, 0x80])
+      const bytes = Buffer.concat([Buffer.from('Größe\r\n'), ansi, Buffer.from('\r\n日本語\r\n')])
+      writeFileSync(join(s.dir, 'out.bin'), bytes)
+      writeFileSync(join(s.dir, 'err.bin'), ansi)
+      const { lines, process: run } = await logOf(s, {
+        mode: 'direct',
+        file: process.execPath,
+        args: [OUTPUT, '--marker', s.marker, '--dir', s.dir, '--stdout', join(s.dir, 'out.bin'), '--stderr', join(s.dir, 'err.bin')],
+      })
+      // The runner's ANSI code page is 1252 (design D5); another one would make this no evidence.
+      expect((run as WindowsManagedProcess).console.ansiCodePage, "the runner's ANSI code page").toBe(1252)
+      expect(run.outputFallbackEncoding).toBe('windows-1252')
+      expect(lines).toEqual({ stdout: ['Größe', 'café 50 €', '日本語'], stderr: ['café 50 €'] })
+    })
+  })
 })

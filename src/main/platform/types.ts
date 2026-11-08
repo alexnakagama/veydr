@@ -51,6 +51,12 @@ export interface ManagedProcess {
   readonly sessionId: number | null
   readonly stdout: Readable
   readonly stderr: Readable
+  /**
+   * WHATWG label of the encoding a line of output that is not valid UTF-8 is decoded with instead
+   * (Windows: the system's ANSI code page, when it has a decoder); `null`: such a line is decoded
+   * as UTF-8 with replacement characters (add-windows-environment-and-commands design D5).
+   */
+  readonly outputFallbackEncoding: string | null
   /** `cb` runs once when the leader exits, or soon after registration if it already has. */
   onExit(cb: (e: ExitInfo) => void): void
   /**

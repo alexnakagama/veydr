@@ -5,6 +5,7 @@ import { createServer, type Server, type Socket } from 'node:net'
 import type { Readable, Writable } from 'node:stream'
 import { SpawnError } from '../errors'
 import type { ExitInfo, ManagedProcess, PlatformLog, ProcInfo, ProcessIdentity, SpawnPlan, StopResult } from '../types'
+import { ansiCodePageLabel } from './code-page'
 import { helperLaunch } from './command-line'
 import { windowsIdentity } from './identity'
 import {
@@ -235,6 +236,14 @@ class HelperRun implements WindowsManagedProcess {
   get console(): WindowsConsole {
     if (this.startedConsole === null) throw new Error('the command has not started yet')
     return this.startedConsole
+  }
+
+  /**
+   * The ANSI code page's label, whether or not the console is UTF-8: without a UTF-8 console,
+   * console programs write in the OEM code page, which has no decoder (design D5).
+   */
+  get outputFallbackEncoding(): string | null {
+    return ansiCodePageLabel(this.console.ansiCodePage)
   }
 
   onExit(cb: (e: ExitInfo) => void): void {

@@ -21,6 +21,8 @@ export interface Redactor {
    * secret printed in two parts with a pause between is still redacted as a whole (L6-04).
    */
   secretPrefixLength(text: string): number
+  /** Whether `redact(text, truncated)` would replace anything, i.e. `text` shows a secret value. */
+  exposes(text: string, truncated: boolean): boolean
 }
 
 const escapeRegExp = (value: string): string => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
@@ -48,9 +50,11 @@ export function redactableSecrets(command: Pick<CommandConfig, 'env'>): string[]
  */
 export function createRedactor(secrets: readonly string[]): Redactor {
   const values = [...new Set(secrets.filter((value) => value.length >= MIN_REDACTED_SECRET_LENGTH))].sort((a, b) => b.length - a.length)
-  if (values.length === 0) return { redact: (text, truncated) => ({ text, truncated }), secretPrefixLength: () => 0 }
+  if (values.length === 0) return { redact: (text, truncated) => ({ text, truncated }), secretPrefixLength: () => 0, exposes: () => false }
   // Longest first, so a secret that contains another is replaced as a whole.
   const pattern = new RegExp(values.map(escapeRegExp).join('|'), 'g')
+  // Not global, so `test` keeps no position between calls.
+  const anywhere = new RegExp(pattern.source)
 
   /** Length of the longest suffix of `text` that is a prefix (≥ the minimum length) of a secret. */
   const cutSecretSuffix = (text: string): number => {
@@ -70,6 +74,7 @@ export function createRedactor(secrets: readonly string[]): Redactor {
 
   return {
     secretPrefixLength: (text) => (text === '' ? 0 : cutSecretSuffix(text)),
+    exposes: (text, truncated) => anywhere.test(text) || (truncated && text !== '' && cutSecretSuffix(text) > 0),
     redact(text, truncated) {
       let out = text.replace(pattern, () => REDACTION_MARKER)
       if (truncated) {

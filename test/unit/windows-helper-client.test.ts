@@ -751,6 +751,7 @@ describe('the run request (protocol version 2)', () => {
   it('reports the console the command was given, and logs one that is not UTF-8', async () => {
     const { run } = await startedRun()
     expect((run as WindowsManagedProcess).console).toEqual({ utf8: true, ansiCodePage: 1252 })
+    expect(run.outputFallbackEncoding).toBe('windows-1252')
     expect(harness.log.events.find((e) => e.event === 'process.windows-console-not-utf8')).toBeUndefined()
 
     const pending = start(harness.options())
@@ -760,6 +761,8 @@ describe('the run request (protocol version 2)', () => {
     helper.send({ type: 'started', pid: 5000, created: LEADER.created, utf8Console: false, ansiCodePage: 932, consoleError: reason })
     const second = (await pending) as WindowsManagedProcess
     expect(second.console).toEqual({ utf8: false, ansiCodePage: 932 })
+    // Still the ANSI label: console programs then write OEM bytes, which no decoder covers (design D5).
+    expect(second.outputFallbackEncoding).toBe('shift_jis')
     expect(harness.log.events.filter((e) => e.event === 'process.windows-console-not-utf8')).toEqual([
       { level: 'warn', event: 'process.windows-console-not-utf8', detail: { leader: 5000, ansiCodePage: 932, reason } },
     ])

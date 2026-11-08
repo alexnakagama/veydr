@@ -235,8 +235,8 @@ Group 4 on Windows (#41, 2026-11-08):
 
 ## 5. Output decoding on Windows
 
-- [ ] 5.1 `ManagedProcess` gains `outputFallbackEncoding` (design D5): on Windows, the WHATWG label of `started.ansiCodePage`, or `null`; on Linux, `null`. Verify: unit tests for the code-page-to-label table, including an unknown code page, and `npm test` passes.
-- [ ] 5.2 Give `createLineSplitter` an optional fallback decoder. When it is set:
+- [x] 5.1 `ManagedProcess` gains `outputFallbackEncoding` (design D5): on Windows, the WHATWG label of `started.ansiCodePage`, or `null`; on Linux, `null`. Verify: unit tests for the code-page-to-label table, including an unknown code page, and `npm test` passes.
+- [x] 5.2 Give `createLineSplitter` an optional fallback decoder. When it is set:
   - lines are split on `\n` bytes and decoded with a fatal UTF-8 decoder, falling back for each line;
   - the 16 KiB cut drops a trailing incomplete UTF-8 sequence;
   - the partial-line display decodes the same way.
@@ -247,12 +247,12 @@ Group 4 on Windows (#41, 2026-11-08):
   - a cut through a multibyte UTF-8 character, and one through a Shift_JIS character, which shows one replacement character;
   - CRLF and partial lines;
   - Linux output unchanged (`[spec:process-logs/invalid-utf-8]` still passes).
-- [ ] 5.3 Add Windows integration tests:
+- [x] 5.3 Add Windows integration tests:
   - a `cmd /c echo` of a non-ASCII string reaches the log unchanged (`[spec:process-logs/console-output-on-windows]`);
   - a Node fixture writing windows-1252 bytes is shown decoded.
 
   Verify: the `windows` job runs them.
-- [ ] 5.4 Document Windows output decoding in `docs/logs.md`:
+- [x] 5.4 Document Windows output decoding in `docs/logs.md`:
   - the UTF-8 console, and what happens when it cannot be set;
   - the ANSI fallback;
   - OEM bytes written straight to a pipe;
@@ -260,6 +260,22 @@ Group 4 on Windows (#41, 2026-11-08):
   - `PYTHONUTF8=1` and `chcp`.
 
   Verify: the docs tests pass.
+
+Group 5 implementation note (2026-11-08):
+- The decoded text of a line is cut again to 16 KiB of UTF-8, at a character boundary, and marked truncated. `LineListener` promises at most `MAX_LINE_BYTES` UTF-8 bytes, and the log API refuses longer text (`MAX_LINE_TEXT_LENGTH`), but a 16 KiB ANSI line decodes to up to 48 KiB. Since ANSI text never shrinks when decoded, a Shift_JIS character split by the byte cut is always dropped by this second cut. Task 5.2's "shows one replacement character" is therefore tested as "never shows part of a character", and design D5 and `docs/logs.md` say so.
+- The splitter with a fallback works on bytes, so it sees the bytes of a character before the character is complete. For UTF-8 output it emits exactly what the UTF-8-only splitter emits, which a seeded comparison checks with random chunks and pauses between characters. A pause inside a character differs in two ways, each pinned by a test: a lone `\r` already restarts the line, and a partial line past the limit is already marked truncated.
+- Additions beyond the design: an unsupported fallback label is logged (`logs.fallback-encoding-unsupported`), and the run is then captured as UTF-8 rather than losing its output. The supervisor passes the encoding as a fourth argument of `OutputSink.open`.
+
+Group 5 review (2026-11-08): reviewer2 found no high or medium items, 2 low and 3 nits.
+- low:
+  - redaction missed a secret printed in UTF-8 on a line the fallback decodes, because of another ANSI byte or a lead byte that swallows the secret's first character. The splitter now gives such a line's UTF-8 view as well. If that view shows a secret, the log keeps it, redacted, instead of the ANSI reading, and a partial line keeps back the start of a secret found in either reading (`Redactor.exposes`, documented in `docs/logs.md`);
+  - a partial line whose decoded text passed the limit was cut, but the line then went on as a new one. It is now truncated, and the rest of it up to its newline is dropped.
+- nits: the comment on dividing a partial line now gives the Shift_JIS example. Left as they are: OEM bytes read as ANSI text (D5 and the docs state it), and the byte-by-byte decode of a partial ANSI line (at most one per 100 ms pause).
+- Re-review: both lows and the nit confirmed fixed; no high, medium or low items, 2 nits, both fixed:
+  - a pause inside the UTF-8 character after a secret's start, on an ANSI line, showed that start: the hold-back now reads the line without its incomplete last character, and keeps that character back with the secret's start;
+  - the splitter's doc comment sits on the function again, not on the `Decoded` interface.
+  - Noted, as documented: a line shown in its UTF-8 reading because it exposed a secret shows its ANSI characters as `�`.
+- Verified on Linux: typecheck, lint, `npm test` (1261 passed), the Linux integration tests, spec coverage 167/167, `openspec validate --strict`. One local `verify` run failed in the integration stage after 444 s (output not kept) while another session loaded the machine; it passed on the three runs after. The Windows integration tests run on the pull request.
 
 ## 6. Windows platform composition and the preview
 

@@ -1,6 +1,6 @@
 # Logs (output of commands)
 
-This page describes how Veydr captures, keeps, and shows what your commands print, and what it does not guarantee. Veydr is Linux-only for now; Windows is not yet supported.
+This page describes how Veydr captures, keeps, and shows what your commands print, and what it does not guarantee. Veydr is Linux-only for now; Windows is not yet supported, and the [Windows (not yet available)](#windows-not-yet-available) section describes how output will be decoded there.
 
 ## What is captured
 
@@ -13,7 +13,7 @@ Output becomes **lines**. Every line records which stream it came from (`out` or
 - Text without a newline is shown as a line of its own once the stream has been quiet for 100 ms (for example a prompt or a progress indicator). What the command prints after that starts a new line; a newline that follows right away only ends the shown text. If the text ends with what could be the start of a secret value (see [Secret values in output](#secret-values-in-output)), that part is held back until the line continues or ends; if neither happens, it stays hidden until the command closes its output (for example when it exits).
 - **Progress output** that redraws one line with `\r` behaves as follows: updates arriving less than 100 ms apart are not shown until the line ends or pauses (only the last state is shown); updates arriving further apart are each shown and kept as a separate line, so a long-running progress bar can take up much of a run's 10,000 lines and push out older output.
 - A line longer than 16 KiB (16,384 bytes) keeps its first 16 KiB and is marked **truncated at 16 KiB**; the rest of it, up to the next newline, is dropped.
-- Bytes that are not valid UTF-8 are shown as the replacement character `�`; capturing continues.
+- Bytes that are not valid UTF-8 are shown as the replacement character `�`; capturing continues. On Windows, such a line is decoded with the system's code page instead (see [Windows](#windows-not-yet-available)).
 
 **Order across the two streams is best effort.** Standard output and standard error are separate pipes. Lines are ordered by the time Veydr read them, which can differ from the order the command wrote them when it writes to both streams quickly. A line shown after the 100 ms pause is numbered when it is shown, after lines of the other stream completed meanwhile.
 
@@ -69,6 +69,38 @@ This is best effort. Veydr does **not** detect:
 A secret value that spans several lines (for example a key in PEM format, entered in the configuration file) is redacted line by line: each of its lines of at least 4 characters is replaced wherever it appears; its shorter lines are not redacted, and the editor cannot warn about them.
 
 Values shorter than 4 characters are not redacted at all (they would match ordinary text too often); the command editor warns when you enter such a value and mark it as secret. It cannot warn about a short secret saved earlier while its value is hidden, because the window never receives hidden values; reveal it to check. When a line is cut at 16 KiB in the middle of a secret value, the cut-off start of the value is replaced if it is at least 4 characters long, so at most 3 characters of a secret can remain visible there.
+
+## Windows (not yet available)
+
+**Not yet reachable from the app.** Starting a command on Windows still fails as not supported. The rules below are implemented and tested on a native Windows runner in CI, and are the ones output will follow once commands can be started on Windows.
+
+### The console is set to UTF-8
+
+Every command gets a console of its own, hidden, whose output code page is set to UTF-8 (65001) before the command runs. Console programs that follow it, `cmd.exe` among them (`echo`, `dir`, `type`), then write UTF-8, so `echo grüße 日本語` is shown as written.
+
+If the console cannot be set, the command still starts, with a console in the system's OEM code page (437 or 850 on English and Western European systems), and Veydr notes `process.windows-console-not-utf8` with the reason in its diagnostic messages. Veydr has no decoder for OEM code pages: what console programs write is then decoded as described below, so their accented and other non-ASCII characters are shown wrong.
+
+### Lines that are not UTF-8
+
+Each line is decoded on its own. A line that is valid UTF-8 is shown as UTF-8. Any other line is decoded with the system's **ANSI code page** (Windows' "language for non-Unicode programs"), which many Windows programs use when they write to a pipe; Python 3.14 and earlier do, for example, unless told otherwise. So a program can mix UTF-8 and ANSI lines, and each is shown correctly. A partial line (shown after a 100 ms pause) is decoded the same way.
+
+- The ANSI code pages Veydr decodes are 874 (Thai), 1250 to 1258 (European, Cyrillic, Greek, Turkish, Hebrew, Arabic, Baltic, Vietnamese), 932 (Japanese), 936 (Simplified Chinese), 949 (Korean) and 950 (Traditional Chinese). With any other ANSI code page, bytes that are not valid UTF-8 become `�`, as on Linux.
+- **Secret values** are looked for in both readings of such a line, as ANSI text and as UTF-8. If the UTF-8 reading shows a secret value (for example one printed in UTF-8 on a line that also holds an ANSI character), that reading is shown instead, with the value redacted, and its other non-UTF-8 bytes appear as `�`.
+- A line of ANSI text that happens to be valid UTF-8 too is shown as UTF-8. This is rare in practice: it takes characters such as `Ã` directly followed by another accented character.
+- The CI runner's code pages are 1252 (ANSI) and 437 (OEM). The other ANSI code pages are tested with sample bytes only.
+
+### Programs that write OEM bytes to a pipe
+
+Some programs convert their text to the OEM code page themselves, whatever the console's setting, and write it straight to their output. Veydr cannot tell those bytes from ANSI text, so their non-ASCII characters are shown wrong. You can make such programs write UTF-8 instead:
+
+- **Python 3.14 and earlier:** add `PYTHONUTF8=1` to the command's environment (UTF-8 is the default from Python 3.15).
+- **Programs that follow the console's code page,** started from a batch file: begin the batch file with `chcp 65001 >nul`. Veydr sets this already; it helps only when the console could not be set.
+
+Veydr does not set these for you: they change how your programs behave.
+
+### Long lines
+
+The 16 KiB limit applies to the bytes as the command wrote them, and to the shown text in UTF-8. A character cut in two at the limit is dropped, never shown in part, whether it is UTF-8 or a Japanese, Chinese or Korean ANSI character. ANSI text takes more bytes in UTF-8 than as written, so a long ANSI line is cut further, at a character boundary, to fit in 16 KiB of UTF-8.
 
 ## No log files
 

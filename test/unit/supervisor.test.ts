@@ -40,6 +40,8 @@ interface Harness {
   readonly target: LaunchTarget
   readonly supervisor: ReturnType<typeof createSupervisor>
   readonly output: [string, OutputStream | 'open' | 'close', string][]
+  /** The fallback encoding each opened run was given, in order. */
+  readonly fallbackEncodings: (string | null)[]
   plans: number
   /** Status sequence of the emitted events. */
   statuses(): string[]
@@ -57,12 +59,14 @@ function harness(
   const proj = project({ commands: [cmd] })
   let target: LaunchTarget | null = { project: proj, command: cmd }
   const output: [string, OutputStream | 'open' | 'close', string][] = []
+  const fallbackEncodings: (string | null)[] = []
   const h: Harness = {
     tree,
     events,
     commandId: cmd.id,
     target,
     output,
+    fallbackEncodings,
     plans: 0,
     statuses: () => events.map((e) => e.status),
     remove: () => {
@@ -77,7 +81,10 @@ function harness(
         return options.plan?.(t) ?? Promise.resolve({ ok: true, plan: { file: t.command.name, args: [], cwd: t.project.path, env: {} } })
       },
       output: {
-        open: (_commandId, runId, opened) => output.push([runId, 'open', opened.id]),
+        open: (_commandId, runId, opened, fallbackEncoding) => {
+          output.push([runId, 'open', opened.id])
+          fallbackEncodings.push(fallbackEncoding)
+        },
         write: (_commandId, runId, stream, chunk) => {
           if (chunk.toString() === 'boom') throw new Error('sink failed')
           output.push([runId, stream, chunk.toString()])
@@ -287,6 +294,14 @@ describe('supervisor state machine', () => {
       [state.runId, 'close', 'stderr'],
       [state.runId, 'close', 'stdout'],
     ])
+  })
+
+  it("opens the run's output with the process's fallback encoding (add-windows-environment-and-commands design D5)", async () => {
+    const h = harness()
+    await h.supervisor.start(h.commandId)
+    h.tree.fallbackEncoding = 'windows-1252'
+    await h.supervisor.restart(h.commandId)
+    expect(h.fallbackEncodings).toEqual([null, 'windows-1252'])
   })
 
   it('rejects unknown commands with NotFoundError and records nothing', async () => {
