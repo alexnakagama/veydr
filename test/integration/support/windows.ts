@@ -116,57 +116,60 @@ export function collect(stream: NodeJS.ReadableStream): Promise<Buffer> {
   })
 }
 
-/** The window classes of a console: conhost.exe's, a pseudo-console's, and Windows Terminal's. */
-const CONSOLE_WINDOW_CLASSES = ['ConsoleWindowClass', 'PseudoConsoleWindow', 'CASCADIA_HOSTING_WINDOW_CLASS']
-
-export interface ConsoleView {
-  /** Console hosts (conhost.exe) started for one of the processes. */
-  readonly hosts: readonly number[]
-  /** Owners of console windows, visible or not, among the processes and their console hosts. */
-  readonly windowOwners: readonly number[]
+export interface ProcessConsole {
+  readonly pid: number
+  /** Whether this process has a console that can be attached to. */
+  readonly attached: boolean
+  /** Why attaching failed (a Win32 error code), when it did; 6 (ERROR_INVALID_HANDLE) for a process without a console. */
+  readonly attachError: number | null
+  /** The console's window handle (`GetConsoleWindow`), 0 for none. */
+  readonly window: number
+  /** Whether that window is visible. */
+  readonly visible: boolean
 }
 
 /**
- * The consoles of `pids`, read with Win32_Process and EnumWindows: a process that gets a new
- * console has a conhost.exe started for it, which draws its ConsoleWindowClass window (or hands it
- * to Windows Terminal, whose window belongs to WindowsTerminal.exe and is not seen here).
+ * The console of each of `pids`, read as the W0 probes read it (`scripts/windows-probe/process-tree.ps1`,
+ * `pt-console-window`): PowerShell frees its own console, attaches to the process's with
+ * `AttachConsole`, and reads `GetConsoleWindow`. Unlike guessing the console host from its parent
+ * process or a window class, this does not depend on how the runner hosts consoles.
  */
-export function consolesOf(pids: readonly number[]): ConsoleView {
-  if (pids.length === 0) return { hosts: [], windowOwners: [] }
+export function consolesOf(pids: readonly number[]): ProcessConsole[] {
+  if (pids.length === 0) return []
   const list = pids.map((pid) => String(Math.trunc(pid))).join(',')
-  const classes = CONSOLE_WINDOW_CLASSES.map((name) => `"${name}"`).join(', ')
   const output = powershell(
     `Add-Type -TypeDefinition @'
 using System;
-using System.Collections.Generic;
 using System.Runtime.InteropServices;
-using System.Text;
 public static class VeydrConsoles {
-  public delegate bool EnumProc(IntPtr window, IntPtr data);
-  [DllImport("user32.dll")] static extern bool EnumWindows(EnumProc callback, IntPtr data);
-  [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetClassName(IntPtr window, StringBuilder name, int size);
-  [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr window, out uint pid);
-  public static uint[] Owners(string[] classes) {
-    List<uint> owners = new List<uint>();
-    EnumWindows(delegate(IntPtr window, IntPtr data) {
-      StringBuilder name = new StringBuilder(256);
-      GetClassName(window, name, name.Capacity);
-      if (Array.IndexOf(classes, name.ToString()) >= 0) { uint pid; GetWindowThreadProcessId(window, out pid); owners.Add(pid); }
-      return true;
-    }, IntPtr.Zero);
-    return owners.ToArray();
+  [DllImport("kernel32.dll")] static extern bool FreeConsole();
+  [DllImport("kernel32.dll", SetLastError = true)] static extern bool AttachConsole(uint pid);
+  [DllImport("kernel32.dll")] static extern IntPtr GetConsoleWindow();
+  [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr window);
+  public static string Of(uint pid) {
+    FreeConsole();
+    if (!AttachConsole(pid)) return pid + " 0 " + Marshal.GetLastWin32Error() + " 0 0";
+    try {
+      IntPtr window = GetConsoleWindow();
+      bool visible = window != IntPtr.Zero && IsWindowVisible(window);
+      return pid + " 1 0 " + window.ToInt64() + " " + (visible ? "1" : "0");
+    } finally {
+      FreeConsole();
+    }
   }
 }
 '@
-$tree = @(${list})
-$hosts = @(Get-CimInstance Win32_Process -Filter "Name = 'conhost.exe'" | Where-Object { $tree -contains [int]$_.ParentProcessId } | ForEach-Object { [int]$_.ProcessId })
-$owners = @([VeydrConsoles]::Owners(@(${classes})) | ForEach-Object { [int]$_ } | Where-Object { ($tree + $hosts) -contains $_ })
-# One array per line: Windows PowerShell serializes an array inside an object with its Count.
-ConvertTo-Json -Compress -InputObject $hosts
-ConvertTo-Json -Compress -InputObject $owners`,
+# One line per process: pid, attached (1/0), the attach error, the window handle, visible (1/0).
+@(${list}) | ForEach-Object { [VeydrConsoles]::Of([uint32]$_) }`,
   )
-  const [hosts = '', owners = ''] = output.trim().split(/\r?\n/)
-  return { hosts: parseArray(hosts) as number[], windowOwners: parseArray(owners) as number[] }
+  return output
+    .split(/\r?\n/)
+    .filter((line) => line.trim() !== '')
+    .map((line) => {
+      const [pid, attached, error, window, visible] = line.trim().split(' ').map(Number)
+      if ([pid, attached, error, window, visible].some((n) => n === undefined || !Number.isFinite(n))) throw new Error(`unexpected console answer: ${line}`)
+      return { pid: pid as number, attached: attached === 1, attachError: attached === 1 ? null : (error as number), window: window as number, visible: visible === 1 }
+    })
 }
 
 /** Whether process `pid` is in any Job Object (`IsProcessInJob`); `null` if it cannot be opened. */

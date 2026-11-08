@@ -346,7 +346,7 @@ describe.skipIf(process.platform !== 'win32')('[windows-only: cmd.exe and PATHEX
       const pids = launched(s)
       // cmd.exe waits for a program a batch file starts, also a GUI one, so both are still running.
       expect(pids.length, 'cmd.exe (waiting for the editor) and the editor are running').toBe(2)
-      expect(consolesOf(pids)).toEqual({ hosts: [], windowOwners: [] })
+      expect(consolesOf(pids).filter((c) => c.attached || c.window !== 0), 'processes with a console').toEqual([])
       // No helper takes part in a detached launch.
       expect(helpersOf([process.pid])).toEqual([])
     })
@@ -359,11 +359,16 @@ describe.skipIf(process.platform !== 'win32')('[windows-only: cmd.exe and PATHEX
       await waitUntil(() => existsSync(s.record), 'the editor to record its arguments')
       expect(recorded(s)).toEqual(args)
       noInjection(s, project)
-      // Both parts of the check must see it, or the check in the test above proves nothing.
+      await waitUntil(() => marked(s.marker).some((p) => p.name.toLowerCase() === 'node.exe'), 'the console program to run')
+      // The check of the test above must see this console, or its finding of none proves nothing.
+      let seen: unknown = 'no query finished'
       await waitUntil(() => {
         const consoles = consolesOf(launched(s))
-        return consoles.hosts.length > 0 && consoles.windowOwners.length > 0
-      }, 'a console host and its console window for the console program', 30_000)
+        seen = consoles
+        return consoles.some((c) => c.attached && c.window !== 0)
+      }, 'a console with a window for the console program', 30_000).catch((error: unknown) => {
+        throw new Error(`${error instanceof Error ? error.message : String(error)}; last seen: ${JSON.stringify(seen)}`)
+      })
     })
 
     it('the editor survives the ending of the process that launched it, inside the runner\'s job, while that process\'s supervised command ends', async () => {
