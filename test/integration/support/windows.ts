@@ -116,3 +116,81 @@ export function collect(stream: NodeJS.ReadableStream): Promise<Buffer> {
   })
 }
 
+export interface ProcessConsole {
+  readonly pid: number
+  /** Whether this process has a console that can be attached to. */
+  readonly attached: boolean
+  /** Why attaching failed (a Win32 error code), when it did; 6 (ERROR_INVALID_HANDLE) for a process without a console. */
+  readonly attachError: number | null
+  /** The console's window handle (`GetConsoleWindow`), 0 for none. */
+  readonly window: number
+  /** Whether that window is visible. */
+  readonly visible: boolean
+}
+
+/**
+ * The console of each of `pids`, read as the W0 probes read it (`scripts/windows-probe/process-tree.ps1`,
+ * `pt-console-window`): PowerShell frees its own console, attaches to the process's with
+ * `AttachConsole`, and reads `GetConsoleWindow`. Unlike guessing the console host from its parent
+ * process or a window class, this does not depend on how the runner hosts consoles.
+ */
+export function consolesOf(pids: readonly number[]): ProcessConsole[] {
+  if (pids.length === 0) return []
+  const list = pids.map((pid) => String(Math.trunc(pid))).join(',')
+  const output = powershell(
+    `Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class VeydrConsoles {
+  [DllImport("kernel32.dll")] static extern bool FreeConsole();
+  [DllImport("kernel32.dll", SetLastError = true)] static extern bool AttachConsole(uint pid);
+  [DllImport("kernel32.dll")] static extern IntPtr GetConsoleWindow();
+  [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr window);
+  public static string Of(uint pid) {
+    FreeConsole();
+    if (!AttachConsole(pid)) return pid + " 0 " + Marshal.GetLastWin32Error() + " 0 0";
+    try {
+      IntPtr window = GetConsoleWindow();
+      bool visible = window != IntPtr.Zero && IsWindowVisible(window);
+      return pid + " 1 0 " + window.ToInt64() + " " + (visible ? "1" : "0");
+    } finally {
+      FreeConsole();
+    }
+  }
+}
+'@
+# One line per process: pid, attached (1/0), the attach error, the window handle, visible (1/0).
+@(${list}) | ForEach-Object { [VeydrConsoles]::Of([uint32]$_) }`,
+  )
+  return output
+    .split(/\r?\n/)
+    .filter((line) => line.trim() !== '')
+    .map((line) => {
+      const [pid, attached, error, window, visible] = line.trim().split(' ').map(Number)
+      if ([pid, attached, error, window, visible].some((n) => n === undefined || !Number.isFinite(n))) throw new Error(`unexpected console answer: ${line}`)
+      return { pid: pid as number, attached: attached === 1, attachError: attached === 1 ? null : (error as number), window: window as number, visible: visible === 1 }
+    })
+}
+
+/** Whether process `pid` is in any Job Object (`IsProcessInJob`); `null` if it cannot be opened. */
+export function isInJob(pid: number): boolean | null {
+  const output = powershell(
+    `Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class VeydrJobs {
+  [DllImport("kernel32.dll", SetLastError = true)] static extern IntPtr OpenProcess(uint access, bool inherit, uint pid);
+  [DllImport("kernel32.dll", SetLastError = true)] static extern bool IsProcessInJob(IntPtr process, IntPtr job, out bool result);
+  [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr handle);
+  public static string InJob(uint pid) {
+    IntPtr process = OpenProcess(0x1000, false, pid);
+    if (process == IntPtr.Zero) return "null";
+    try { bool result; return IsProcessInJob(process, IntPtr.Zero, out result) ? (result ? "true" : "false") : "null"; }
+    finally { CloseHandle(process); }
+  }
+}
+'@
+[VeydrJobs]::InJob(${String(Math.trunc(pid))})`,
+  )
+  return JSON.parse(output.trim()) as boolean | null
+}

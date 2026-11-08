@@ -8,7 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { SpawnError } from '../../src/main/platform/errors'
 import type { LedgerEntry, ProcessIdentity, SpawnPlan, Survivor } from '../../src/main/platform/types'
 import { CommandLineError } from '../../src/main/platform/windows/command-line'
-import { createWindowsProcessTree, isFullyQualified, runHelperVersion, type WindowsProcessTreeOptions } from '../../src/main/platform/windows/process-tree'
+import { createWindowsProcessTree, isFullyQualified, runHelperVersion, SPAWN_ERROR_WAIT_MS, type WindowsProcessTreeOptions } from '../../src/main/platform/windows/process-tree'
 import { MAX_GRACE_MS, MAX_TOOL_IDENTITIES, MAX_TOOL_OUTPUT_BYTES, PROTOCOL_VERSION } from '../../src/main/platform/windows/protocol'
 import { localSockets } from '../support/local-socket'
 
@@ -231,6 +231,208 @@ describe('the command', () => {
   it('refuses a planned command line that does not start with the program', async () => {
     const error = await failure({ commandLine: '"C:\\Windows\\System32\\cmd.exe" /c whoami' })
     expect((error as CommandLineError).refusal).toBe('command-line-mismatch')
+  })
+})
+
+// The editor launch on Windows (add-windows-environment-and-commands design D4, task 4.3): Node's
+// `spawn` without the helper. A fake `spawn` records what it is given; the real launch runs in
+// test/integration/windows-commands.test.ts.
+describe('launchDetached', () => {
+  interface DetachedCall {
+    readonly file: string
+    readonly args: readonly string[]
+    readonly options: SpawnOptions
+  }
+
+  /** A started child as `child_process.spawn` returns it, or one Node failed to create (`error`). */
+  function fakeChild(error?: NodeJS.ErrnoException): ChildProcess & { unrefs: number } {
+    const child = new EventEmitter() as EventEmitter & { pid: number | undefined; unrefs: number; unref(): void }
+    child.pid = error === undefined ? 4242 : undefined
+    child.unrefs = 0
+    child.unref = () => {
+      child.unrefs++
+    }
+    if (error !== undefined) setImmediate(() => child.emit('error', error))
+    return child as unknown as ChildProcess & { unrefs: number }
+  }
+
+  function launcher(result: () => ChildProcess = () => fakeChild()) {
+    const calls: DetachedCall[] = []
+    const children: ChildProcess[] = []
+    const tree = createWindowsProcessTree({
+      ...options(),
+      spawnDetached: (file, args, opts) => {
+        calls.push({ file, args, options: opts })
+        const child = result()
+        children.push(child)
+        return child
+      },
+    })
+    return { tree, calls, children }
+  }
+
+  const failure = async (planned: SpawnPlan): Promise<SpawnError> => {
+    const { tree, calls } = launcher()
+    const error = await spawnError(tree.launchDetached(planned))
+    expect(calls).toEqual([])
+    return error
+  }
+
+  it('passes the planned command line verbatim, argv[0] as the quoted program, detached and without pipes', async () => {
+    const cmdExe = join(dir, 'cmd.exe')
+    writeFileSync(cmdExe, '')
+    const commandLine = `"${cmdExe}" /d /v:off /s /c ""C:\\Tools\\code.cmd" "C:\\My ^&Project""`
+    const { tree, calls, children } = launcher()
+    await tree.launchDetached({ file: cmdExe, args: [], cwd: dir, env: { Path: 'C:\\Tools', TOKEN: 'x' }, commandLine })
+    expect(calls).toEqual([
+      {
+        file: cmdExe,
+        args: [commandLine.slice(`"${cmdExe}" `.length)],
+        options: {
+          cwd: dir,
+          env: { Path: 'C:\\Tools', TOKEN: 'x' },
+          argv0: `"${cmdExe}"`,
+          detached: true,
+          windowsVerbatimArguments: true,
+          stdio: 'ignore',
+          shell: false,
+        },
+      },
+    ])
+    // libuv joins argv0 and the arguments with a space: exactly the planned line.
+    const [call] = calls
+    expect([call?.options.argv0, ...(call?.args ?? [])].join(' ')).toBe(commandLine)
+    expect((children[0] as ChildProcess & { unrefs: number }).unrefs).toBe(1)
+    // The helper is not involved.
+    expect(versionReads).toEqual([])
+    expect(spawned).toEqual([])
+  })
+
+  it('quotes separate arguments with quoteArgument, and passes no argument for none', async () => {
+    const { tree, calls } = launcher()
+    await tree.launchDetached({ ...plan(), args: ['C:\\My Project\\', 'a"b', 'plain'] })
+    expect(calls[0]?.file).toBe(process.execPath)
+    expect(calls[0]?.args).toEqual(['"C:\\My Project\\\\" "a\\"b" "plain"'])
+    await tree.launchDetached({ ...plan(), args: [] })
+    expect(calls[1]?.args).toEqual([])
+    expect(calls[1]?.options.argv0).toBe(`"${process.execPath}"`)
+  })
+
+  it('does not share the plan\'s environment object with Node', async () => {
+    const env = { A: '1' }
+    const { tree, calls } = launcher()
+    await tree.launchDetached({ ...plan(), env })
+    expect(calls[0]?.options.env).toEqual(env)
+    expect(calls[0]?.options.env).not.toBe(env)
+  })
+
+  it('refuses a batch file without a command line built for cmd.exe, before anything is read or started', async () => {
+    for (const name of ['code.cmd', 'build.BAT', 'run.cmd. .']) {
+      const error = await failure({ ...plan(), file: join(dir, name) })
+      expect(error, name).toBeInstanceOf(CommandLineError)
+      expect((error as CommandLineError).refusal, name).toBe('batch-file-program')
+    }
+  })
+
+  it('refuses a batch file as the program of a command line', async () => {
+    const batch = join(dir, 'code.cmd')
+    writeFileSync(batch, '')
+    const error = await failure({ ...plan(), file: batch, commandLine: `"${batch}" .` })
+    expect((error as CommandLineError).refusal).toBe('batch-file-program')
+  })
+
+  it('refuses a command line that does not start with the program, or one with separate arguments as well', async () => {
+    expect(((await failure({ ...plan(), args: [], commandLine: '"C:\\Windows\\System32\\cmd.exe" /c whoami' })) as CommandLineError).refusal).toBe('command-line-mismatch')
+    expect(((await failure({ ...plan(), commandLine: `"${process.execPath}" x` })) as CommandLineError).refusal).toBe('command-line-mismatch')
+  })
+
+  it('refuses NUL, a relative program, a missing program or working directory, before starting anything', async () => {
+    expect(await failure({ ...plan(), args: ['a\0b'] })).toMatchObject({ reason: 'other' })
+    expect(await failure({ ...plan(), file: 'code.exe' })).toMatchObject({ reason: 'executable-not-found', message: 'Executable not found: code.exe (a full path is needed)' })
+    const missing = join(dir, 'missing.exe')
+    expect(await failure({ ...plan(), file: missing })).toMatchObject({ reason: 'executable-not-found', message: `Executable not found: ${missing}` })
+    expect(await failure({ ...plan(), file: dir })).toMatchObject({ reason: 'not-executable' })
+    expect(await failure({ ...plan(), cwd: join(dir, 'gone') })).toMatchObject({ reason: 'cwd-missing' })
+  })
+
+  it('rejects with SpawnError when Node cannot create the process, and does not unref it', async () => {
+    const enoent = Object.assign(new Error('spawn ENOENT'), { code: 'ENOENT' })
+    const { tree, children } = launcher(() => fakeChild(enoent))
+    expect(await spawnError(tree.launchDetached(plan()))).toMatchObject({ reason: 'executable-not-found', message: `Executable not found: ${process.execPath}` })
+    expect((children[0] as ChildProcess & { unrefs: number }).unrefs).toBe(0)
+
+    const eacces = Object.assign(new Error('spawn EACCES'), { code: 'EACCES' })
+    expect(await spawnError(launcher(() => fakeChild(eacces)).tree.launchDetached(plan()))).toMatchObject({ reason: 'not-executable' })
+    const other = Object.assign(new Error('spawn UNKNOWN'), { code: 'UNKNOWN' })
+    expect(await spawnError(launcher(() => fakeChild(other)).tree.launchDetached(plan()))).toMatchObject({ reason: 'other', message: `Could not start ${process.execPath}: spawn UNKNOWN` })
+  })
+
+  it('does not ask Windows to hide the program, whose first window would then stay hidden', async () => {
+    // libuv turns windowsHide into SW_HIDE in STARTUPINFO, which a GUI editor applies to its first window.
+    const { tree, calls } = launcher()
+    await tree.launchDetached(plan())
+    expect(calls[0]?.options).not.toHaveProperty('windowsHide')
+  })
+
+  it('rejects with SpawnError when Node creates no process and gives no reason in time', async () => {
+    expect(SPAWN_ERROR_WAIT_MS).toBe(5_000)
+    const tree = createWindowsProcessTree({
+      ...options(),
+      spawnErrorWaitMs: 20,
+      spawnDetached: () => {
+        const child = fakeChild()
+        ;(child as unknown as { pid: undefined }).pid = undefined
+        return child
+      },
+    })
+    expect(await spawnError(tree.launchDetached(plan()))).toMatchObject({
+      reason: 'other',
+      message: `Could not start ${process.execPath}: no process was created, and Node gave no reason within 20 ms`,
+    })
+  })
+
+  it('logs an error Node reports after it stopped being waited for, instead of crashing', async () => {
+    const entries: unknown[] = []
+    const children: ChildProcess[] = []
+    const tree = createWindowsProcessTree({
+      ...options(),
+      log: { record: (...entry) => entries.push(entry) },
+      spawnErrorWaitMs: 20,
+      spawnDetached: () => {
+        const child = fakeChild()
+        ;(child as unknown as { pid: undefined }).pid = undefined
+        children.push(child)
+        return child
+      },
+    })
+    await spawnError(tree.launchDetached(plan()))
+    // Would throw ERR_UNHANDLED_ERROR without a listener.
+    expect(() => children[0]?.emit('error', new Error('late'))).not.toThrow()
+    expect(entries).toEqual([['warn', 'process.detached-error', { message: 'late' }]])
+  })
+
+  it('rejects with SpawnError when spawn throws', async () => {
+    const { tree } = launcher(() => {
+      throw Object.assign(new TypeError('The argument is invalid'), { code: 'ERR_INVALID_ARG_VALUE' })
+    })
+    expect(await spawnError(tree.launchDetached(plan()))).toMatchObject({ reason: 'other', message: `Could not start ${process.execPath}: The argument is invalid` })
+  })
+
+  it('logs a later error of the started program instead of throwing it', async () => {
+    const entries: unknown[] = []
+    const children: ChildProcess[] = []
+    const tree = createWindowsProcessTree({
+      ...options(),
+      log: { record: (...entry) => entries.push(entry) },
+      spawnDetached: () => {
+        const child = fakeChild()
+        children.push(child)
+        return child
+      },
+    })
+    await tree.launchDetached(plan())
+    children[0]?.emit('error', new Error('late'))
+    expect(entries).toEqual([['warn', 'process.detached-error', { message: 'late' }]])
   })
 })
 

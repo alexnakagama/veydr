@@ -149,7 +149,7 @@ The AppImage cleanup in `withoutRuntimeVariables` is a no-op on Windows, since `
 
 `launchDetached` lives in `windows/process-tree.ts` and does not go through the helper. It applies the same batch-file refusal as the helper (D1):
 - it uses Node's `spawn` with `detached: true`, `stdio: 'ignore'`, `shell: false` and `windowsVerbatimArguments: true`;
-- it uses `windowsHide: true` as well, which `DETACHED_PROCESS` makes moot for console creation;
+- it does not use `windowsHide`: `DETACHED_PROCESS` already keeps a console program from getting a console, and libuv turns `windowsHide` into `SW_HIDE` in the child's `STARTUPINFO`, which a GUI editor started directly (`Code.exe`) would apply to its first window (group 4 review);
 - it unrefs the child.
 
 Node adds argv[0] itself, so `commandLine`'s argv[0] (the quoted application) is stripped before the rest is passed as one verbatim argument. A unit test pins the exact command line handed to `spawn`.

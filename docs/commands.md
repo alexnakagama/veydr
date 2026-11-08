@@ -105,6 +105,18 @@ A `.bat` or `.cmd` file can only run under `cmd.exe`, so a direct-mode batch fil
 - **One line.** `cmd.exe` runs only the first line of a script, so a script with a line break is refused: join the commands with `&&` or `&`. An empty script is refused too.
 - **8191 characters.** The whole `cmd.exe` line, the `"<cmd.exe>" /d /v:off /s /c "` before the script and the closing quote included, may have at most 8191 characters; a longer one is refused before anything starts.
 
+### Environment
+
+- **Inherited.** A command starts with the environment Veydr itself was started with, not one read from a login shell or from the registry. Veydr's runtime variables are removed in any letter case (`electron_run_as_node` is the same variable as `ELECTRON_RUN_AS_NODE` on Windows), and so are the per-drive entries Windows keeps for itself (`=C:`) and any variable that cannot be passed on (a name that is empty or contains `=`, or a name or value containing a NUL character).
+- **Names merged.** Windows compares variable names without regard to letter case, but an environment can still hold both `Path` and `PATH`. Veydr keeps one entry for each name: the first one, which is the one Windows' own lookup finds, with its spelling and value. A merge is recorded in the diagnostic log as `environment.names-merged`, with the names but not the values. An override replaces the variable whatever its letter case, so a command sees exactly one `PATH`.
+- **A restart is needed after a `PATH` change.** A program you install, or a variable you change in the system settings, after Veydr started reaches commands only once Veydr is started again (from the Start menu or Explorer, which pass on the updated environment; a terminal opened before the change passes on the old one). **Refresh environment** reads nothing new on Windows: it shows the environment Veydr was started with.
+
+### Editor
+
+- **Found as a command is.** The editor is looked up as a direct-mode program, so `code` finds `code.cmd` on `Path`. A batch-file editor such as `code.cmd` is started through `cmd.exe` by the batch-file rules above: the project folder stays one argument, quoted if it is not a simple one, and nothing in it runs as a command, even with spaces, `&` or `^` in it.
+- **Detached.** The editor is started without a console and outside Veydr's tracking, so it keeps running when Veydr quits. Should Veydr itself run inside a Job Object that ends its processes when it closes (as some service managers and CI runners do), the editor may end with it.
+- **No new console window** appears for an editor that is a GUI program, or a batch file that starts one (`code.cmd`, which starts `Code.exe`). **A batch-file editor that starts a console program shows that program's console**, because the batch file has no console to share with it.
+
 ### `cmd.exe` as a direct-mode program
 
 You can name `cmd.exe` itself as a direct-mode program, for example with the arguments `/c` and `echo hi`. Its arguments are then quoted as for any other program, but `cmd.exe` reads its command line again by its own rules, so quotes, `&`, `|` and `%` in them are interpreted by `cmd.exe`. That is your choice of program; use shell mode to run a script.
