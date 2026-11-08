@@ -182,16 +182,16 @@ Group 3 review (2026-11-07): reviewer2 found no high items, 2 medium, 5 low and 
 
 ## 4. Windows environment and editor launch
 
-- [ ] 4.1 Add `windows/environment.ts` (design D3):
+- [x] 4.1 Add `windows/environment.ts` (design D3):
   - it starts from `withoutRuntimeVariables(process.env)`;
   - it drops empty names, names starting with `=`, and names containing NUL;
   - it merges names that differ only in case into the case-insensitive lookup's entry;
   - it logs `environment.names-merged` with the names only.
 
   Verify with unit tests on every system, using a fake inherited environment that holds `Path` and `PATH`, `=C:`, and `ELECTRON_RUN_AS_NODE`, tagged `[spec:project-registry/windows-base-environment]`. The effective environment with an override `PATH` holds exactly one entry.
-- [ ] 4.2 Add a Windows integration test showing that a started command sees exactly one path variable, with the expected value, and no `ELECTRON_*` variable. Verify: the `windows` job runs it.
-- [ ] 4.3 Implement `launchDetached` in `windows/process-tree.ts` (design D4):
-  - `spawn` with `detached`, `windowsHide`, `stdio: 'ignore'` and `windowsVerbatimArguments`, with `commandLine`'s argv[0] stripped, then `unref`;
+- [x] 4.2 Add a Windows integration test showing that a started command sees exactly one path variable, with the expected value, and no `ELECTRON_*` variable. Verify: the `windows` job runs it.
+- [x] 4.3 Implement `launchDetached` in `windows/process-tree.ts` (design D4):
+  - `spawn` with `detached`, `stdio: 'ignore'` and `windowsVerbatimArguments`, with `commandLine`'s argv[0] stripped, then `unref` (no `windowsHide`: see the group 4 review);
   - a batch-file `file` without a `commandLine` is refused;
   - a missing program rejects with `SpawnError`.
 
@@ -202,11 +202,28 @@ Group 3 review (2026-11-07): reviewer2 found no high items, 2 medium, 5 low and 
   - a missing editor rejects.
 
   Verify: the `windows` job runs them all.
-- [ ] 4.4 Document in `docs/commands.md`:
+- [x] 4.4 Document in `docs/commands.md`:
   - the Windows environment: inherited, names merged, a restart needed after a `PATH` change, and **Refresh** reads nothing new;
   - the editor launch on Windows, including that a batch-file editor which starts a console program shows that program's console.
 
   Verify: the docs tests pass.
+
+Group 4 review (2026-11-08): reviewer2 found 1 high, 4 medium, 5 low and 4 nits. The re-review confirmed all fixes and found 2 low items and 1 nit; both lows are fixed.
+- high: `windowsHide` becomes `SW_HIDE` in the child's `STARTUPINFO`, so a GUI editor started directly could open with its first window hidden. `launchDetached` no longer passes it (`DETACHED_PROCESS` already keeps a console program from getting a console). A unit test pins it, and design D4 and task 4.3 are reworded.
+- medium:
+  - the editor tests' programs linger for 60 s, longer than the PowerShell checks take;
+  - the control test waits for both a console host and a console window, so the "no console" check is shown to see one;
+  - the survival host first supervises a command through the helper, so libuv's kill-on-close job exists, as in Veydr. The test asserts that the command and its helper end while `cmd.exe` and the editor survive;
+  - the editor gets the base environment, without a command's overrides. Task 6.1's wiring must keep that.
+- low:
+  - a missing `error` event times out (`SPAWN_ERROR_WAIT_MS`) into a `SpawnError`, and the error listener is attached before that wait, so a late event is logged rather than crashing;
+  - a `__proto__` variable is kept (null-prototype objects, no `withoutRuntimeVariables` call, whose denylist is applied case-insensitively already);
+  - `base()` rejects instead of throwing;
+  - the `toUpperCase` caveat is commented;
+  - the docs mention dropped NUL values.
+- nits: the host's options go over stdin, not its command line; the argv[0] prefix of a detached launch is checked explicitly. Left as is: the survival test finds the host's helper by the dead host's PID, which cannot be reused within its 15 s wait in practice.
+- Additions beyond the design, kept after review: runtime variables are removed regardless of case, and names containing `=` anywhere are dropped (not only a leading `=`).
+- Verified on Linux: typecheck, lint, `npm test` (1178 passed), spec coverage 167/167, `openspec validate --strict`. The Windows integration tests run on the pull request.
 
 ## 5. Output decoding on Windows
 

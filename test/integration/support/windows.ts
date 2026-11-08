@@ -116,3 +116,78 @@ export function collect(stream: NodeJS.ReadableStream): Promise<Buffer> {
   })
 }
 
+/** The window classes of a console: conhost.exe's, a pseudo-console's, and Windows Terminal's. */
+const CONSOLE_WINDOW_CLASSES = ['ConsoleWindowClass', 'PseudoConsoleWindow', 'CASCADIA_HOSTING_WINDOW_CLASS']
+
+export interface ConsoleView {
+  /** Console hosts (conhost.exe) started for one of the processes. */
+  readonly hosts: readonly number[]
+  /** Owners of console windows, visible or not, among the processes and their console hosts. */
+  readonly windowOwners: readonly number[]
+}
+
+/**
+ * The consoles of `pids`, read with Win32_Process and EnumWindows: a process that gets a new
+ * console has a conhost.exe started for it, which draws its ConsoleWindowClass window (or hands it
+ * to Windows Terminal, whose window belongs to WindowsTerminal.exe and is not seen here).
+ */
+export function consolesOf(pids: readonly number[]): ConsoleView {
+  if (pids.length === 0) return { hosts: [], windowOwners: [] }
+  const list = pids.map((pid) => String(Math.trunc(pid))).join(',')
+  const classes = CONSOLE_WINDOW_CLASSES.map((name) => `"${name}"`).join(', ')
+  const output = powershell(
+    `Add-Type -TypeDefinition @'
+using System;
+using System.Collections.Generic;
+using System.Runtime.InteropServices;
+using System.Text;
+public static class VeydrConsoles {
+  public delegate bool EnumProc(IntPtr window, IntPtr data);
+  [DllImport("user32.dll")] static extern bool EnumWindows(EnumProc callback, IntPtr data);
+  [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetClassName(IntPtr window, StringBuilder name, int size);
+  [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr window, out uint pid);
+  public static uint[] Owners(string[] classes) {
+    List<uint> owners = new List<uint>();
+    EnumWindows(delegate(IntPtr window, IntPtr data) {
+      StringBuilder name = new StringBuilder(256);
+      GetClassName(window, name, name.Capacity);
+      if (Array.IndexOf(classes, name.ToString()) >= 0) { uint pid; GetWindowThreadProcessId(window, out pid); owners.Add(pid); }
+      return true;
+    }, IntPtr.Zero);
+    return owners.ToArray();
+  }
+}
+'@
+$tree = @(${list})
+$hosts = @(Get-CimInstance Win32_Process -Filter "Name = 'conhost.exe'" | Where-Object { $tree -contains [int]$_.ParentProcessId } | ForEach-Object { [int]$_.ProcessId })
+$owners = @([VeydrConsoles]::Owners(@(${classes})) | ForEach-Object { [int]$_ } | Where-Object { ($tree + $hosts) -contains $_ })
+# One array per line: Windows PowerShell serializes an array inside an object with its Count.
+ConvertTo-Json -Compress -InputObject $hosts
+ConvertTo-Json -Compress -InputObject $owners`,
+  )
+  const [hosts = '', owners = ''] = output.trim().split(/\r?\n/)
+  return { hosts: parseArray(hosts) as number[], windowOwners: parseArray(owners) as number[] }
+}
+
+/** Whether process `pid` is in any Job Object (`IsProcessInJob`); `null` if it cannot be opened. */
+export function isInJob(pid: number): boolean | null {
+  const output = powershell(
+    `Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class VeydrJobs {
+  [DllImport("kernel32.dll", SetLastError = true)] static extern IntPtr OpenProcess(uint access, bool inherit, uint pid);
+  [DllImport("kernel32.dll", SetLastError = true)] static extern bool IsProcessInJob(IntPtr process, IntPtr job, out bool result);
+  [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr handle);
+  public static string InJob(uint pid) {
+    IntPtr process = OpenProcess(0x1000, false, pid);
+    if (process == IntPtr.Zero) return "null";
+    try { bool result; return IsProcessInJob(process, IntPtr.Zero, out result) ? (result ? "true" : "false") : "null"; }
+    finally { CloseHandle(process); }
+  }
+}
+'@
+[VeydrJobs]::InJob(${String(Math.trunc(pid))})`,
+  )
+  return JSON.parse(output.trim()) as boolean | null
+}

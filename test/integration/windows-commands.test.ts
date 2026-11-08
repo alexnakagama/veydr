@@ -1,13 +1,22 @@
+import { execFileSync, spawn, spawnSync, type ChildProcess } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
+import { once } from 'node:events'
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
-import { HELPER_PATH } from '../../scripts/build-windows-helper.mjs'
+import { createInterface } from 'node:readline'
+import { build } from 'vite'
+import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
+import { compilerPath, HELPER_PATH } from '../../scripts/build-windows-helper.mjs'
+import { SpawnError } from '../../src/main/platform/errors'
 import type { CommandSpec, Env, ExitInfo, ManagedProcess, ResolveResult, SpawnPlan } from '../../src/main/platform/types'
+import { createWindowsEnvProvider } from '../../src/main/platform/windows/environment'
 import { createWindowsProcessTree } from '../../src/main/platform/windows/process-tree'
 import { createWindowsCommandResolver, systemCmdExe } from '../../src/main/platform/windows/resolver'
-import { collect, helpersOf, marked, powershell, waitUntil } from './support/windows'
+import { editorArguments } from '../../src/main/projects/desktop'
+import { effectiveEnvironment } from '../../src/main/projects/environment'
+import { collect, consolesOf, helpersOf, isInJob, marked, powershell, waitUntil } from './support/windows'
+import type { EditorHostOptions } from './support/windows-editor-host'
 
 // Windows commands through the resolver, the command lines and the real helper
 // (add-windows-environment-and-commands designs D2, D4 and D5). The shim corpus and the plain batch
@@ -15,6 +24,8 @@ import { collect, helpersOf, marked, powershell, waitUntil } from './support/win
 // (workflow-policy.test.ts); groups 4 and 5 implement the placeholders left here.
 
 const RECORD_ARGS = resolve(__dirname, '../fixtures/windows/record-args.mjs')
+const PRINT_ENV = resolve(__dirname, '../fixtures/windows/print-env.mjs')
+const GUI_RECORDER_SOURCE = resolve(__dirname, '../fixtures/windows/gui-recorder.cs')
 const CMD_EXE = systemCmdExe(process.env['SystemRoot'])
 const SENTINEL = 'veydr-decoy-ran'
 
@@ -186,6 +197,228 @@ describe.skipIf(process.platform !== 'win32')('[windows-only: cmd.exe and PATHEX
     expect(existsSync(s.record)).toBe(false)
   })
 
-  it.todo('[spec:project-registry/batch-file-editor-on-windows] a .cmd editor receives a project path with spaces, & and ^ as one argument, with no new console window')
+  describe('the environment (design D3)', () => {
+    /**
+     * Veydr's environment as the provider would inherit it, with the entries D3 is about: two
+     * spellings of the path variable, runtime variables in two spellings, and a per-drive entry.
+     */
+    function inheritedWith(s: Scenario, first: string): Record<string, string | undefined> {
+      const env: Record<string, string | undefined> = {}
+      for (const [key, value] of Object.entries(process.env)) if (key.toUpperCase() !== 'PATH' && !/^ELECTRON_/i.test(key)) env[key] = value
+      return {
+        ...env,
+        Path: first,
+        PATH: join(s.dir, 'second'),
+        ELECTRON_RUN_AS_NODE: '1',
+        electron_no_attach_console: '1',
+        '=C:': 'C:\\',
+        VEYDR_RECORD_FILE: s.record,
+      }
+    }
+
+    /** The environment a command started with `env` sees, as [name, value] pairs. */
+    async function seenBy(s: Scenario, env: Env): Promise<[string, string][]> {
+      const spec = direct(s, process.execPath, [PRINT_ENV, '--marker', s.marker])
+      const plan = planOf(await resolver.resolve(spec, env))
+      expect(await exitOf(await tree.spawn(plan))).toEqual({ code: 0, signal: null, forced: false })
+      return JSON.parse(readFileSync(s.record, 'utf8')) as [string, string][]
+    }
+
+    it('[spec:project-registry/windows-base-environment] a started command sees exactly one path variable, the first spelling, and no ELECTRON_* variable', async () => {
+      const s = scenario()
+      const first = `${join(s.dir, 'first')};${process.env['SystemRoot'] ?? 'C:\\Windows'}\\System32`
+      const { env } = await createWindowsEnvProvider({ inherited: inheritedWith(s, first) }).base()
+      const seen = await seenBy(s, effectiveEnvironment(env, [], 'case-insensitive'))
+      expect(seen.filter(([name]) => name.toUpperCase() === 'PATH')).toEqual([['Path', first]])
+      expect(seen.filter(([name]) => /^ELECTRON_/i.test(name))).toEqual([])
+      expect(seen.filter(([name]) => name.startsWith('='))).toEqual([])
+    })
+
+    it('[spec:project-registry/override-differing-in-case-on-windows] a PATH override reaches the command as its only path variable', async () => {
+      const s = scenario()
+      const { env } = await createWindowsEnvProvider({ inherited: inheritedWith(s, join(s.dir, 'first')) }).base()
+      const override = join(s.dir, 'override')
+      const seen = await seenBy(s, effectiveEnvironment(env, [{ key: 'PATH', value: override, secret: false }], 'case-insensitive'))
+      expect(seen.filter(([name]) => name.toUpperCase() === 'PATH')).toEqual([['PATH', override]])
+    })
+  })
+
+  describe('the editor launch (design D4)', () => {
+    let fixtureDir: string
+    let guiRecorder: string
+    let hostScript: string
+    const hosts: ChildProcess[] = []
+
+    beforeAll(async () => {
+      fixtureDir = mkdtempSync(join(tmpdir(), 'veydr-win-editor-'))
+      // A GUI-subsystem program, as Code.exe is: compiled with the compiler the helper is built with.
+      guiRecorder = join(fixtureDir, 'gui-recorder.exe')
+      const compiled = spawnSync(compilerPath(), ['/nologo', '/warnaserror+', '/target:winexe', `/out:${guiRecorder}`, GUI_RECORDER_SOURCE], {
+        encoding: 'utf8',
+        windowsHide: true,
+        timeout: 120_000,
+      })
+      if (compiled.status !== 0) throw new Error(`gui-recorder.cs did not compile: ${compiled.error?.message ?? ''}${compiled.stdout}${compiled.stderr}`)
+      // The host imports the TypeScript sources; bundle it into one CommonJS file Node can run.
+      await build({
+        configFile: false,
+        logLevel: 'silent',
+        ssr: { noExternal: true },
+        build: {
+          ssr: join(__dirname, 'support/windows-editor-host.ts'),
+          outDir: join(fixtureDir, 'host'),
+          emptyOutDir: true,
+          minify: false,
+          rolldownOptions: { output: { format: 'cjs', entryFileNames: 'editor-host.cjs' } },
+        },
+      })
+      hostScript = join(fixtureDir, 'host', 'editor-host.cjs')
+    }, 180_000)
+    afterAll(() => {
+      rmSync(fixtureDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
+    })
+    afterEach(() => {
+      for (const host of hosts.splice(0)) host.kill()
+    })
+
+    interface Editor {
+      /** The project folder, its name holding spaces, `&` and `^`, and the scenario's marker. */
+      readonly project: string
+      /** What **Open in editor** plans for it: `code`, found as `code.cmd` on `Path`, through cmd.exe. */
+      readonly plan: SpawnPlan
+      /** What the program behind `code.cmd` should receive. */
+      readonly args: readonly string[]
+    }
+
+    const INJECTED = 'veydr-injected'
+    /**
+     * How long the launched programs stay alive: far longer than the checks below take, each of
+     * which starts PowerShell and compiles a type; the scenario cleanup ends them early.
+     */
+    const LINGER_MS = 60_000
+
+    /**
+     * A project and a `code.cmd` holding `lines`, planned as Veydr's **Open in editor** plans it.
+     * Were the project path's `&` to reach cmd.exe as a command separator, `mkdir veydr-injected`
+     * would run in the project folder.
+     */
+    async function editor(s: Scenario, lines: readonly string[], lingerMs: number): Promise<Editor> {
+      const project = join(s.dir, `My Project & mkdir ${INJECTED} ^ ${s.marker}`)
+      mkdirSync(project)
+      const bin = join(s.dir, 'editor bin')
+      mkdirSync(bin)
+      writeFileSync(join(bin, 'code.cmd'), lines.map((line) => `${line}\r\n`).join(''))
+      const inherited = { ...s.env(bin), VEYDR_LINGER_MS: String(lingerMs) }
+      const { env } = await createWindowsEnvProvider({ inherited }).base()
+      const args = editorArguments(['--reuse-window', '{path}'], project)
+      const plan = planOf(
+        await resolver.resolve({ mode: 'direct', file: 'code', args, script: '', shellPath: null, projectRoot: project, cwd: '.' }, effectiveEnvironment(env, [], 'case-insensitive')),
+      )
+      expect(plan.file).toBe(CMD_EXE)
+      return { project, plan, args }
+    }
+
+    /** The launched tree's processes: cmd.exe and the program, both carrying the marker. */
+    const launched = (s: Scenario, exclude: readonly number[] = []): number[] =>
+      marked(s.marker)
+        .filter((p) => !exclude.includes(p.pid))
+        .map((p) => p.pid)
+
+    const recorded = (s: Scenario): unknown => JSON.parse(readFileSync(s.record, 'utf8'))
+
+    function noInjection(s: Scenario, project: string): void {
+      expect(existsSync(join(project, INJECTED)), 'an injected command ran in the project folder').toBe(false)
+      expect(existsSync(join(s.dir, INJECTED)), 'an injected command ran').toBe(false)
+    }
+
+    it('[spec:project-registry/batch-file-editor-on-windows] a .cmd editor receives a project path with spaces, & and ^ as one argument, no other command runs, and no console appears', async () => {
+      const s = scenario()
+      // As VS Code's code.cmd starts Code.exe, a GUI-subsystem program.
+      const { project, plan, args } = await editor(s, [`@"${guiRecorder}" %*`], LINGER_MS)
+      // Helpers of earlier tests exit once their command has; none may be left to blur the check below.
+      await waitUntil(() => helpersOf([process.pid]).length === 0, 'the helpers of earlier tests to exit')
+      await tree.launchDetached(plan)
+      await waitUntil(() => existsSync(s.record), 'the editor to record its arguments')
+      expect(recorded(s)).toEqual(args)
+      expect(args[1]).toBe(project)
+      noInjection(s, project)
+      // While the editor runs, cmd.exe still waits for it: neither has a console of its own.
+      const pids = launched(s)
+      // cmd.exe waits for a program a batch file starts, also a GUI one, so both are still running.
+      expect(pids.length, 'cmd.exe (waiting for the editor) and the editor are running').toBe(2)
+      expect(consolesOf(pids)).toEqual({ hosts: [], windowOwners: [] })
+      // No helper takes part in a detached launch.
+      expect(helpersOf([process.pid])).toEqual([])
+    })
+
+    it('a batch-file editor that starts a console program shows that program\'s console, as documented (the check above can see one)', async () => {
+      const s = scenario()
+      // Console programs behind the batch file: Node.js records the arguments, then another stays alive for the check.
+      const { project, plan, args } = await editor(s, [`@"${process.execPath}" "${RECORD_ARGS}" %*`, `@"${process.execPath}" -e "setTimeout(function(){},${LINGER_MS})" ${s.marker}`], 0)
+      await tree.launchDetached(plan)
+      await waitUntil(() => existsSync(s.record), 'the editor to record its arguments')
+      expect(recorded(s)).toEqual(args)
+      noInjection(s, project)
+      // Both parts of the check must see it, or the check in the test above proves nothing.
+      await waitUntil(() => {
+        const consoles = consolesOf(launched(s))
+        return consoles.hosts.length > 0 && consoles.windowOwners.length > 0
+      }, 'a console host and its console window for the console program', 30_000)
+    })
+
+    it('the editor survives the ending of the process that launched it, inside the runner\'s job, while that process\'s supervised command ends', async () => {
+      const s = scenario()
+      const { plan, args } = await editor(s, [`@"${guiRecorder}" %*`], LINGER_MS)
+      // As Veydr does: a supervised command first, so that libuv's kill-on-close job exists and holds its helper.
+      const supervised: SpawnPlan = { file: process.execPath, args: ['-e', `setTimeout(function(){},${LINGER_MS})`, s.marker], cwd: s.dir, env: s.env(process.env['PATH'] ?? '') }
+      const options: EditorHostOptions = { helperPath: HELPER_PATH, supervised, editor: plan }
+      const host = spawn(process.execPath, [hostScript], { stdio: ['pipe', 'pipe', 'inherit'], windowsHide: true })
+      hosts.push(host)
+      if (host.stdin === null || host.stdout === null) throw new Error('the host was started without pipes')
+      host.stdin.end(JSON.stringify(options))
+      const output = createInterface({ input: host.stdout })
+      try {
+        expect((await output[Symbol.asyncIterator]().next()).value).toBe('launched')
+      } finally {
+        output.close()
+      }
+      await waitUntil(() => existsSync(s.record), 'the editor to record its arguments')
+      expect(recorded(s)).toEqual(args)
+      const byName = (name: string): number[] =>
+        marked(s.marker)
+          .filter((p) => p.name.toLowerCase() === name)
+          .map((p) => p.pid)
+      const [editorPid] = byName('gui-recorder.exe')
+      const [shellPid] = byName('cmd.exe')
+      expect(editorPid, 'the editor process').toBeDefined()
+      expect(shellPid, 'cmd.exe, waiting for the editor').toBeDefined()
+      expect(byName('node.exe'), 'the supervised command').toHaveLength(1)
+      expect(helpersOf([host.pid as number]), "the supervised command's helper").toHaveLength(1)
+      // Recorded, not assumed (design D4): whether the editor ended up in a job, such as the runner's.
+      console.info(`[windows-evidence] the detached editor is in a job: ${String(isInJob(editorPid as number))}`)
+
+      const exited = once(host, 'exit')
+      execFileSync('taskkill.exe', ['/F', '/PID', String(host.pid)], { windowsHide: true, stdio: 'ignore', timeout: 30_000 })
+      await exited
+      // The host's job ends its helper, whose job ends the supervised command; the editor is in neither.
+      await waitUntil(() => byName('node.exe').length === 0, 'the supervised command to end with the host', 15_000)
+      await waitUntil(() => helpersOf([host.pid as number]).length === 0, "the host's helper to end", 15_000)
+      expect(byName('gui-recorder.exe'), 'the editor survives').toEqual([editorPid])
+      expect(byName('cmd.exe'), 'cmd.exe, waiting for the editor, survives').toEqual([shellPid])
+    })
+
+    it('a missing editor rejects with SpawnError, and nothing starts', async () => {
+      const s = scenario()
+      const missing = join(s.dir, `missing-editor-${s.marker}.exe`)
+      const error = await tree.launchDetached({ file: missing, args: [s.dir], cwd: s.dir, env: s.env(process.env['PATH'] ?? '') }).then(
+        () => null,
+        (e: unknown) => e,
+      )
+      expect(error).toBeInstanceOf(SpawnError)
+      expect(error).toMatchObject({ reason: 'executable-not-found', message: `Executable not found: ${missing}` })
+      expect(marked(s.marker)).toEqual([])
+    })
+  })
+
   it.todo('[spec:process-logs/console-output-on-windows] a cmd /c echo of non-ASCII text reaches the log unchanged')
 })

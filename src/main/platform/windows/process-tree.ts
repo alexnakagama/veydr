@@ -1,4 +1,5 @@
-import { execFile, spawn as spawnChild } from 'node:child_process'
+import { execFile, spawn as spawnChild, type ChildProcess } from 'node:child_process'
+import { once } from 'node:events'
 import { stat } from 'node:fs/promises'
 import { DEFAULT_STOP_TIMEOUT_MS } from '../../../shared/config'
 import { SpawnError } from '../errors'
@@ -39,10 +40,14 @@ export interface WindowsProcessTreeOptions extends HelperClientOptions {
   readonly inspectTimeoutMs?: number
   /** This process; never reported or ended. */
   readonly selfPid?: number
+  /** Starts an unsupervised program for `launchDetached`; `child_process.spawn` outside tests. */
+  readonly spawnDetached?: SpawnHelper
+  /** How long Node may take to say why `spawnDetached` created no process (`SPAWN_ERROR_WAIT_MS`). */
+  readonly spawnErrorWaitMs?: number
 }
 
 /** The Windows process tree; its runs also report the console the helper gave them. */
-export interface WindowsProcessTree extends Pick<ProcessTree, 'findSurvivors' | 'terminateSurvivors'> {
+export interface WindowsProcessTree extends Pick<ProcessTree, 'launchDetached' | 'findSurvivors' | 'terminateSurvivors'> {
   spawn(plan: SpawnPlan): Promise<WindowsManagedProcess>
 }
 
@@ -162,6 +167,46 @@ export function createWindowsProcessTree(options: WindowsProcessTreeOptions): Wi
       await checkHelper()
       await checkPlanFiles(plan)
       return startHelperRun(plan, options)
+    },
+
+    /**
+     * Starts an editor or another unsupervised program (design D4), without the helper: Node's
+     * `spawn` with `detached` (`DETACHED_PROCESS`, so no console and outside libuv's job, which ends
+     * Veydr's children with Veydr), no pipes, and the plan's command line verbatim. The same checks
+     * as `spawn` run first, the batch-file refusal included, so `CreateProcess` never runs a batch
+     * file without `cmd.exe`.
+     *
+     * No `windowsHide`: `DETACHED_PROCESS` already keeps a console program from getting a console,
+     * and libuv turns `windowsHide` into `SW_HIDE` in the child's `STARTUPINFO`, which a GUI editor
+     * started directly (`Code.exe`) would apply to its first window.
+     */
+    async launchDetached(plan: SpawnPlan): Promise<void> {
+      checkPlanText(plan)
+      await checkPlanFiles(plan)
+      const { file, argv0, args } = detachedLaunch(plan)
+      const spawnDetached = options.spawnDetached ?? spawnChild
+      let child: ChildProcess
+      try {
+        child = spawnDetached(file, args, {
+          cwd: plan.cwd,
+          env: { ...plan.env },
+          argv0,
+          detached: true,
+          windowsVerbatimArguments: true,
+          stdio: 'ignore',
+          shell: false,
+        })
+      } catch (error) {
+        throw detachedSpawnFailure(error, plan)
+      }
+      // Attached first and kept: an `error` event without a listener would be an uncaught exception,
+      // also one that comes after `spawnErrorOf` stopped waiting.
+      child.on('error', (error) => options.log?.record('warn', 'process.detached-error', { message: error.message }))
+      if (child.pid === undefined) {
+        // No process was created; Node reports why with an `error` event, which is not waited for forever.
+        throw detachedSpawnFailure(await spawnErrorOf(child, options.spawnErrorWaitMs ?? SPAWN_ERROR_WAIT_MS), plan)
+      }
+      child.unref()
     },
 
     /**
@@ -346,6 +391,57 @@ function checkPlanText(plan: SpawnPlan): void {
   // The command line, before anything is read from disk: a batch file without one built for
   // cmd.exe, for one, is refused whether or not it exists (design D1).
   helperLaunch(plan)
+}
+
+/** What `child_process.spawn` is given for a detached launch (design D4). */
+export interface DetachedLaunch {
+  readonly file: string
+  /** The quoted program: with verbatim arguments Node copies argv[0] into the command line as is. */
+  readonly argv0: string
+  /** The rest of the command line as one verbatim argument, or none. */
+  readonly args: readonly string[]
+}
+
+/**
+ * The plan's command line (`helperLaunch`, with all its refusals) split for Node: argv[0], the
+ * quoted program, becomes `argv0`, and what follows it the one verbatim argument. libuv joins them
+ * with a space, so the program receives exactly the planned command line.
+ */
+export function detachedLaunch(plan: SpawnPlan): DetachedLaunch {
+  const { application, commandLine } = helperLaunch(plan)
+  const argv0 = `"${application}"`
+  // helperLaunch guarantees the line is argv0 alone, or argv0 and a space; checked again here, so a
+  // change there cannot silently cut the wrong part of the line.
+  if (commandLine !== argv0 && !commandLine.startsWith(`${argv0} `)) {
+    throw new SpawnError('other', `Could not start ${plan.file}: the command line does not start with the quoted program`)
+  }
+  const rest = commandLine.slice(argv0.length + 1)
+  return { file: application, argv0, args: rest === '' ? [] : [rest] }
+}
+
+/** How long Node may take to report why it created no process. */
+export const SPAWN_ERROR_WAIT_MS = 5_000
+
+/** The `error` Node emits for a child it could not create, or a timeout error if none comes. */
+async function spawnErrorOf(child: ChildProcess, waitMs: number): Promise<unknown> {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), waitMs)
+  try {
+    const [error] = (await once(child, 'error', { signal: controller.signal })) as [unknown]
+    return error
+  } catch {
+    return new Error(`no process was created, and Node gave no reason within ${waitMs} ms`)
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+function detachedSpawnFailure(error: unknown, plan: SpawnPlan): SpawnError {
+  if (error instanceof SpawnError) return error
+  const code = errnoOf(error)
+  if (code === 'ENOENT') return new SpawnError('executable-not-found', `Executable not found: ${plan.file}`)
+  if (code === 'EACCES' || code === 'EPERM') return new SpawnError('not-executable', `Not an executable file: ${plan.file}`)
+  return new SpawnError('other', `Could not start ${plan.file}: ${messageOf(error)}`)
 }
 
 /** The working directory and the program, as they are on disk. */
