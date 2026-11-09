@@ -58,11 +58,6 @@ const changesDir = join(root, 'openspec/changes')
 const isSpec = (f) => f.endsWith('/spec.md')
 const capabilityOf = (file) => file.split('/').at(-2)
 
-/**
- * Requirements an active (unarchived) change removes, as `<capability>/<requirement name>`. Their
- * scenarios in the main specs no longer need a test while the change is active: the change's own
- * delta says what replaces them, and archiving the change removes them from the main specs.
- */
 /** The lines of a Markdown file outside fenced code blocks (``` or ~~~). */
 function proseLines(file) {
   const lines = []
@@ -78,6 +73,11 @@ function proseLines(file) {
   return lines
 }
 
+/**
+ * Requirements an active (unarchived) change removes, as `<capability>/<requirement name>`. Their
+ * scenarios in the main specs no longer need a test while the change is active: the change's own
+ * delta says what replaces them, and archiving the change removes them from the main specs.
+ */
 function removedRequirements() {
   const removed = new Set()
   for (const file of walk(changesDir, isSpec)) {

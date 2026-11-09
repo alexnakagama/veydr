@@ -135,7 +135,7 @@ The runner cannot show these. Each is `NOT-TESTABLE` in every run, and what woul
 | `ctx-job` | The probe driver ends up in libuv's job, which hides whether the runner runs steps in a job of its own (see [Context](#context)). So nothing was measured under a parent outside every Job Object, as when Veydr is started from Explorer. | run the process-tree probes from a parent outside any Job Object (started from Explorer on a Windows 10/11 desktop), or read the runner's job from a compiled helper started without a console |
 | `ffi-koffi-electron` | Not approved: the maintainer did not approve installing `koffi` under gate G-4 (design D6). | the koffi load check of design D6, after approval |
 
-Windows 10/11 desktop behavior in general (console host, Defender policy, installed tools) is outside this evidence. The preview statement W4 ships names Windows Server 2025 for that reason.
+Windows 10/11 desktop behavior in general (console host, Defender policy, installed tools) is outside this evidence. The preview statement names Windows Server 2025 for that reason.
 
 ## Decisions
 

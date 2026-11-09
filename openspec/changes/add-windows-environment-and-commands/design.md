@@ -273,6 +273,8 @@ The policy forbids branching in tests, so differing expectations are never writt
 
 `workflow-policy.test.ts` checks the steps, their conditions, and the absence of `--no-sandbox` and `VEYDR_ALLOW_SKIP_OFFLINE`. The Linux `e2e` job is unchanged.
 
+**Proxy discovery off (found by the first Windows run, #45).** The Windows e2e tests showed Chromium following the runner's "Automatically detect settings": it looked up the host `wpad` and probed IPv6 reachability at startup. That breaks the existing desktop-shell requirement "No outbound connections". `disableProxyDiscovery` (`src/main/app/security.ts`) appends `--no-proxy-server` before `ready` on every system. Veydr makes no network requests, so the switch changes nothing on Linux, where the e2e network checks (`no-network.spec.ts`) still pass. It needs no spec delta, because it makes Windows meet a requirement that already applies everywhere. It is documented in `docs/network-isolation.md`.
+
 **Alternative considered:** *Separate `processes.linux.ts` and `processes.windows.ts` files.* They still need one selection point, so they add a file without removing the exception. Rejected.
 
 ## Risks / Trade-offs
