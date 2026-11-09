@@ -1,9 +1,10 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Page } from '@playwright/test'
-import { fixture, killTagged, TAG_VARIABLE } from '../support/proc'
+import { fixture, TAG_VARIABLE } from '../support/proc'
+import { killTagged } from '../support/processes'
 import { commandProcesses, expect, expectNoOutboundConnections, launchVeydr, test } from './support/fixtures'
+import { removeDir, tempDir } from './support/temp'
 
 // Task 6.8: everything reachable by keyboard alone, with shortcuts and confirmations.
 
@@ -28,7 +29,7 @@ const focusedLabel = (window: Page): Promise<string> => window.evaluate(() => do
 
 test('a project and a command can be added, started, and stopped with the keyboard alone', async () => {
   const tag = crypto.randomUUID()
-  const work = mkdtempSync(join(tmpdir(), 'veydr-e2e-keyboard-'))
+  const work = tempDir('veydr-e2e-keyboard-')
   const shop = join(work, 'shop')
   mkdirSync(shop)
   const pickFile = join(work, 'pick.txt')
@@ -122,7 +123,7 @@ test('a project and a command can be added, started, and stopped with the keyboa
   } finally {
     await veydr.app.close().catch(() => undefined)
     killTagged(tag)
-    rmSync(veydr.workDir, { recursive: true, force: true })
-    rmSync(work, { recursive: true, force: true })
+    removeDir(veydr.workDir)
+    removeDir(work)
   }
 })

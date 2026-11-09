@@ -1,11 +1,12 @@
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Page } from '@playwright/test'
 import type { Config } from '../../src/shared/config'
-import { fixture, isAlive, killTagged, readProcess, TAG_VARIABLE, waitUntil } from '../support/proc'
-import { commandProcesses, expect, expectNoOutboundConnections, launchVeydr, test, type VeydrApp } from './support/fixtures'
+import { fixture, TAG_VARIABLE, waitUntil } from '../support/proc'
+import { isAlive, killTagged, linuxProcess, processIdentity } from '../support/processes'
+import { appInfo, commandProcesses, expect, expectNoOutboundConnections, launchVeydr, test, type VeydrApp } from './support/fixtures'
 import { seed } from './support/seed'
+import { removeDir, tempDir } from './support/temp'
 
 // Tasks 6.4–6.6: the command editor, secrets, the effective environment, and the editor launch.
 
@@ -27,7 +28,7 @@ interface Harness {
  */
 async function withVeydr(run: (h: Harness) => Promise<void | 'closed'>, settings: Config['settings'] = { editor: null }): Promise<void> {
   const tag = crypto.randomUUID()
-  const work = mkdtempSync(join(tmpdir(), 'veydr-e2e-commands-'))
+  const work = tempDir('veydr-e2e-commands-')
   const home = join(work, 'home')
   mkdirSync(join(home, 'bin'), { recursive: true })
   writeFileSync(join(home, '.bash_profile'), 'echo "login banner"\nexport PATH="$HOME/bin:$PATH"\nexport VEYDR_FROM_LOGIN=yes\n')
@@ -45,9 +46,9 @@ async function withVeydr(run: (h: Harness) => Promise<void | 'closed'>, settings
   } finally {
     await veydr.app.close().catch(() => undefined)
     killTagged(tag)
-    rmSync(veydr.workDir, { recursive: true, force: true })
-    rmSync(seeded.root, { recursive: true, force: true })
-    rmSync(work, { recursive: true, force: true })
+    removeDir(veydr.workDir)
+    removeDir(seeded.root)
+    removeDir(work)
   }
 }
 
@@ -117,7 +118,8 @@ test('[spec:project-registry/shell-mode-labelled] [spec:project-registry/working
     const editor = window.getByTestId('command-editor')
     await editor.getByLabel('Name', { exact: true }).fill('dev')
     await editor.getByRole('radio', { name: 'Shell script', exact: true }).check()
-    await expect(editor.getByTestId('editor-shell-label')).toHaveText('Shell command — runs through /bin/sh')
+    // The shell offered first is the platform's default (/bin/sh, or cmd.exe on Windows).
+    await expect(editor.getByTestId('editor-shell-label')).toHaveText(`Shell command — runs through ${(await appInfo(window)).defaultShell ?? ''}`)
     await editor.getByLabel('Shell', { exact: true }).fill('/bin/bash')
     await expect(editor.getByTestId('editor-shell-label')).toHaveText('Shell command — runs through /bin/bash')
     await editor.getByLabel('Script', { exact: true }).fill('echo "$HOME" | cat')
@@ -135,7 +137,10 @@ test('[spec:project-registry/shell-mode-labelled] [spec:project-registry/working
   })
 })
 
-test('[spec:project-registry/desktop-launch-resolves-login-path] [spec:project-registry/runtime-variables-not-leaked] [spec:project-registry/override-applied] a started command gets the login environment with overrides, no runtime variables, and only descriptors 0–2', async () => {
+// The Windows environment (inherited, names merged regardless of case, no ELECTRON_*) is checked by
+// windows-commands.test.ts against the real helper.
+test('[linux-only: login shell] [spec:project-registry/desktop-launch-resolves-login-path] [spec:project-registry/runtime-variables-not-leaked] [spec:project-registry/override-applied] a started command gets the login environment with overrides, no runtime variables, and only descriptors 0–2', async () => {
+  test.skip(process.platform !== 'linux', '[linux-only: login shell]')
   await withVeydr(async ({ veydr, window, work, tag }) => {
     const out = join(work, 'env.json')
     await window.getByRole('button', { name: 'Add command to shop', exact: true }).click()
@@ -203,23 +208,62 @@ test('[spec:project-registry/desktop-launch-resolves-login-path] [spec:project-r
   })
 })
 
+/** Sets the editor in Settings to `file` with `args`, and saves it. */
+async function setEditor(window: Page, file: string, args: readonly string[]): Promise<void> {
+  await window.getByRole('button', { name: 'Settings', exact: true }).click()
+  await window.getByLabel('Editor executable', { exact: true }).fill(file)
+  for (const [index, arg] of args.entries()) {
+    if (index > 0) await window.getByRole('button', { name: 'Add argument', exact: true }).click()
+    await window.getByLabel(`Editor argument ${index + 1}`, { exact: true }).fill(arg)
+  }
+  await window.getByRole('button', { name: 'Save editor', exact: true }).click()
+  await expect(window.getByRole('status')).toHaveText('Saved.')
+  await window.getByRole('button', { name: 'Projects', exact: true }).click()
+}
+
 test('[spec:project-registry/launch-editor] [spec:project-registry/editor-survives-veydr-quit] opens a project in the configured editor, which keeps running after Veydr quits', async () => {
-  const work = mkdtempSync(join(tmpdir(), 'veydr-e2e-editor-'))
+  const work = tempDir('veydr-e2e-editor-')
+  const out = join(work, 'editor.json')
+  try {
+    await withVeydr(async ({ veydr, window, shop }) => {
+      // The editor is Node running the inspect fixture, which reports its arguments and PID, then stays.
+      await setEditor(window, process.execPath, [fixture('inspect'), '--out', out, '--stay', '--', '--goto={path}', '{path}'])
+      await window.getByRole('button', { name: 'Open shop in editor', exact: true }).click()
+      await waitUntil(() => existsSync(out), 'editor started')
+      // inspect.mjs writes its report in one call; a partly written file is read again.
+      const report = (): { argv: string[]; pid: number } | null => {
+        try {
+          return JSON.parse(readFileSync(out, 'utf8')) as { argv: string[]; pid: number }
+        } catch {
+          return null
+        }
+      }
+      await expect.poll(report).not.toBeNull()
+      const { argv, pid } = report() ?? { argv: [], pid: 0 }
+      expect(argv).toEqual([`--goto=${shop}`, shop])
+      const editor = processIdentity(pid)
+      expect(editor).not.toBeNull()
+
+      expectNoOutboundConnections(await veydr.close())
+      // Veydr has quit; the editor is untouched.
+      expect(isAlive(pid, editor?.starttime)).toBe(true)
+      return 'closed'
+    })
+  } finally {
+    removeDir(work)
+  }
+})
+
+test('[linux-only: shebang scripts and POSIX sessions] an editor that is a shell script runs, in a session of its own', async () => {
+  test.skip(process.platform !== 'linux', '[linux-only: shebang scripts and POSIX sessions]')
+  const work = tempDir('veydr-e2e-editor-')
   const editorPath = join(work, 'fake-editor')
   const argsOut = join(work, 'editor-args.txt')
   writeFileSync(editorPath, `#!/bin/sh\nprintf '%s\\0' "$@" > '${argsOut}.tmp' && mv '${argsOut}.tmp' '${argsOut}'\nexec sleep 120\n`)
   chmodSync(editorPath, 0o755)
   try {
     await withVeydr(async ({ veydr, window, shop, tag }) => {
-      await window.getByRole('button', { name: 'Settings', exact: true }).click()
-      await window.getByLabel('Editor executable', { exact: true }).fill(editorPath)
-      await window.getByLabel('Editor argument 1', { exact: true }).fill('--goto={path}')
-      await window.getByRole('button', { name: 'Add argument', exact: true }).click()
-      await window.getByLabel('Editor argument 2', { exact: true }).fill('{path}')
-      await window.getByRole('button', { name: 'Save editor', exact: true }).click()
-      await expect(window.getByRole('status')).toHaveText('Saved.')
-
-      await window.getByRole('button', { name: 'Projects', exact: true }).click()
+      await setEditor(window, editorPath, ['--goto={path}', '{path}'])
       await window.getByRole('button', { name: 'Open shop in editor', exact: true }).click()
       await waitUntil(() => existsSync(argsOut), 'editor started')
       expect(readFileSync(argsOut, 'utf8').split('\0').slice(0, -1)).toEqual([`--goto=${shop}`, shop])
@@ -227,12 +271,11 @@ test('[spec:project-registry/launch-editor] [spec:project-registry/editor-surviv
       const [editor] = commandProcesses(veydr, tag)
 
       expectNoOutboundConnections(await veydr.close())
-      // Veydr has quit; the editor is untouched.
       expect(editor !== undefined && isAlive(editor.pid, editor.starttime)).toBe(true)
-      expect(readProcess(editor?.pid ?? 0)?.sid).toBe(editor?.pid)
+      expect(linuxProcess(editor?.pid ?? 0)?.sid).toBe(editor?.pid)
       return 'closed'
     })
   } finally {
-    rmSync(work, { recursive: true, force: true })
+    removeDir(work)
   }
 })

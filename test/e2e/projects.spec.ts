@@ -1,12 +1,13 @@
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { mkdirSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { join, sep } from 'node:path'
 import type { Page } from '@playwright/test'
 import type { VeydrApi } from '../../src/shared/api'
 import type { Config } from '../../src/shared/config'
-import { fixture, killTagged, TAG_VARIABLE, taggedProcesses } from '../support/proc'
+import { fixture, TAG_VARIABLE } from '../support/proc'
+import { killTagged, taggedProcesses } from '../support/processes'
 import { expect, expectNoOutboundConnections, launchVeydr, test, type VeydrApp } from './support/fixtures'
 import { seed } from './support/seed'
+import { removeDir, tempDir } from './support/temp'
 
 // Task 6.1/6.2: registering, renaming, removing, and relocating projects from the UI.
 
@@ -22,7 +23,7 @@ interface Harness {
 }
 
 async function withVeydr(run: (h: Harness) => Promise<void>, options: { config?: (work: string) => Config; tag?: string } = {}): Promise<void> {
-  const work = mkdtempSync(join(tmpdir(), 'veydr-e2e-projects-'))
+  const work = tempDir('veydr-e2e-projects-')
   const pickFile = join(work, 'pick.txt')
   writeFileSync(pickFile, '')
   const seeded = seed(options.config === undefined ? {} : { 'config.json': JSON.stringify(options.config(work)) })
@@ -39,9 +40,9 @@ async function withVeydr(run: (h: Harness) => Promise<void>, options: { config?:
   } finally {
     await veydr.app.close().catch(() => undefined)
     if (options.tag !== undefined) killTagged(options.tag)
-    rmSync(veydr.workDir, { recursive: true, force: true })
-    rmSync(seeded.root, { recursive: true, force: true })
-    rmSync(work, { recursive: true, force: true })
+    removeDir(veydr.workDir)
+    removeDir(seeded.root)
+    removeDir(work)
   }
 }
 
@@ -85,7 +86,8 @@ test('[spec:project-registry/reject-non-directory] [spec:project-registry/reject
   await withVeydr(async ({ window, work, pick, config }) => {
     const shop = join(work, 'shop')
     mkdirSync(shop)
-    symlinkSync(shop, join(work, 'shop-link'))
+    // A junction on Windows, where it needs no privilege; Node ignores the type elsewhere (a symlink).
+    symlinkSync(shop, join(work, 'shop-link'), 'junction')
     writeFileSync(join(work, 'notes.txt'), 'x')
     pick(shop)
     await addProject(window, 'shop')
@@ -95,7 +97,7 @@ test('[spec:project-registry/reject-non-directory] [spec:project-registry/reject
       [join(work, 'notes.txt'), `${join(work, 'notes.txt')} is not a folder.`],
       [join(work, 'gone'), `${join(work, 'gone')} does not exist.`],
       [join(work, 'shop-link'), `This folder is already registered as project "shop" (${shop}).`],
-      [`${shop}/`, `This folder is already registered as project "shop" (${shop}).`],
+      [`${shop}${sep}`, `This folder is already registered as project "shop" (${shop}).`],
     ]
     for (const [path, message] of cases) {
       pick(path)

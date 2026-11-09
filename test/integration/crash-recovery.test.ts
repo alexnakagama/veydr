@@ -11,11 +11,12 @@ import { linuxIdentity } from '../../src/main/platform/linux/procfs'
 import type { LedgerEntry } from '../../src/main/platform/types'
 import { createRunLedger, ledgerPath } from '../../src/main/supervisor/ledger'
 import { command, project, quietLog } from '../unit/support/config'
-import { fixture, REPETITIONS, scenario, startSentinel, TAG_VARIABLE, taggedProcesses, treeSize, type Scenario, type Sentinel } from '../support/proc'
+import { fixture, REPETITIONS, scenario, startSentinel, TAG_VARIABLE, treeSize, type Scenario, type Sentinel } from '../support/proc'
+import { taggedProcesses } from '../support/processes'
 import type { HostOptions } from './support/supervisor-host'
 
 // Tasks 5.1 and 5.2: the runtime ledger written by a real supervisor process, and survivors found
-// after that process is SIGKILLed. Cleanup is checked by tag enumeration (test/support/proc.ts),
+// after that process is SIGKILLed. Cleanup is checked by tag enumeration (test/support/processes.ts),
 // independently of Veydr's bookkeeping, and a sentinel started outside must stay untouched.
 
 let bundleDir: string

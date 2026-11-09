@@ -767,7 +767,7 @@ describe('ci.yml (design D4)', () => {
     expect(conditions('e2e')).toEqual([undefined, undefined, undefined, 'failure()'])
     expect(conditions('package')).toEqual([undefined, undefined, undefined, undefined])
     const afterHelper = "${{ !cancelled() && steps.setup.outcome == 'success' && steps.helper.outcome == 'success' }}"
-    expect(conditions('windows')).toEqual([undefined, undefined, guard, guard, guard, guard, afterHelper])
+    expect(conditions('windows')).toEqual([undefined, undefined, guard, guard, guard, guard, afterHelper, afterHelper, 'failure()'])
     // The guard refers to the setup step by its id, so the setup step must keep it.
     for (const name of ['static', 'windows']) {
       const setup = stepsOf(lines, job(name)).map((s) => stepField(lines, s))[1]
@@ -776,17 +776,20 @@ describe('ci.yml (design D4)', () => {
     }
   })
 
-  it('uploads the E2E results on failure and the packages for seven days', () => {
+  it('uploads the E2E results on failure, on Linux and on Windows, and the packages for seven days', () => {
     const upload = (name: string): { start: number; end: number } => {
       const steps = stepsOf(lines, job(name)).filter((s) => /^actions\/upload-artifact@[0-9a-f]{40}\s/.test(stepField(lines, s)('uses')?.value ?? ''))
       expect(steps, `uploads in ${name}`).toHaveLength(1)
       return steps[0] as { start: number; end: number }
     }
-    const results = upload('e2e')
-    expect(stepField(lines, results)('if')?.value).toBe('failure()')
-    expect(withValue(results, 'name')).toBe('e2e-test-results')
-    expect(withValue(results, 'path')).toBe('test-results/')
-    expect(withValue(results, 'retention-days')).toBe('7')
+    for (const [name, artifact] of [['e2e', 'e2e-test-results'], ['windows', 'windows-e2e-test-results']] as const) {
+      const results = upload(name)
+      expect(stepField(lines, results)('if')?.value, name).toBe('failure()')
+      expect(withValue(results, 'name'), name).toBe(artifact)
+      expect(withValue(results, 'path'), name).toBe('test-results/')
+      expect(withValue(results, 'retention-days'), name).toBe('7')
+      expect(withValue(results, 'if-no-files-found'), name).toBe('ignore')
+    }
     const packages = upload('package')
     expect(stepField(lines, packages)('if')).toBeUndefined()
     expect(withValue(packages, 'name')).toBe('linux-packages')
@@ -812,7 +815,8 @@ describe('ci.yml (design D4)', () => {
     ]
     for (const [check, name, command] of commands) expect(scripts(name), check).toContain(command)
     // Typecheck, lint, and unit tests also run on Windows, against the same commit, followed by the
-    // Windows integration tests on the helper built there.
+    // Windows integration tests on the helper built there and the Windows end-to-end tests against
+    // the app built there.
     expect(jobField('windows', 'runs-on')?.value).toBe('windows-2025')
     expect(scripts('windows')).toEqual([
       'npm run typecheck',
@@ -820,6 +824,7 @@ describe('ci.yml (design D4)', () => {
       'npm test',
       'node scripts/build-windows-helper.mjs',
       'npm run test:windows',
+      'npm run test:e2e',
     ])
     const actionlint = stepsOf(lines, job('static')).map((s) => stepField(lines, s)('uses')?.value ?? '')
     expect(actionlint).toContainEqual(expect.stringMatching(/^docker:\/\/rhysd\/actionlint@sha256:[0-9a-f]{64}$/))
@@ -828,12 +833,32 @@ describe('ci.yml (design D4)', () => {
     expect(lines.filter((l) => l.kind === 'node' && (l.key === 'ref' || l.key === 'continue-on-error'))).toEqual([])
   })
 
-  it('runs the Windows checks with read-only contents and without Electron (design D6)', () => {
+  it('[spec:quality-gates/windows-end-to-end-tests-keep-the-sandbox] runs the Windows end-to-end tests with the sandbox on and without the offline skip', () => {
+    const windows = within(lines, job('windows')).filter((l) => l.kind !== 'comment')
+    expect(windows.length).toBeGreaterThan(10)
+    for (const weakening of ['--no-sandbox', 'VEYDR_ALLOW_SKIP_OFFLINE', 'ELECTRON_DISABLE_SANDBOX', 'chromiumSandbox']) {
+      expect(windows.filter((l) => l.body.includes(weakening)).map((l) => l.body), weakening).toEqual([])
+    }
+    expect(scripts('windows')).toContain('npm run test:e2e')
+    // The offline test stays required in the Linux e2e job, which runs the same suite.
+    expect(scripts('e2e')).toContain('xvfb-run --auto-servernum npm run test:e2e')
+    // Every app the suite launches has the sandbox on (Playwright's default would turn it off), and
+    // the suite itself checks the renderer's sandbox state on Windows (security.spec.ts).
+    const harness = readFileSync(join(root, 'test', 'e2e', 'support', 'fixtures.ts'), 'utf8')
+    expect(harness).toContain('chromiumSandbox: true')
+    expect(harness).not.toContain('chromiumSandbox: false')
+    expect(readFileSync(join(root, 'test', 'e2e', 'security.spec.ts'), 'utf8')).toContain('[windows-only: process sandbox state] [spec:quality-gates/windows-end-to-end-tests-keep-the-sandbox]')
+  })
+
+  it('runs the Windows checks with read-only contents, preparing Electron for the end-to-end tests', () => {
     expect(permissions('windows')).toEqual({ contents: 'read' })
     const setup = stepsOf(lines, job('windows'))[1]
     expect(setup).toBeDefined()
-    expect(withValue(setup ?? { start: 0, end: 0 }, 'electron')).toBeUndefined()
-    // No Windows job downloads Electron, so the setup action leaves its Linux cache out there.
+    // On Windows electron: "true" installs only the dependencies (the action's Linux-only steps are
+    // checked above); the e2e step downloads Electron with scripts/ensure-electron.cjs.
+    expect(withValue(setup ?? { start: 0, end: 0 }, 'electron')).toBe('"true"')
+    expect(jobField('windows', 'timeout-minutes')?.value).toBe('45')
+    // The setup action's Electron cache holds Linux paths, so it is left out on Windows.
     const action = parse(githubFiles().find((f) => f.path === '.github/actions/setup/action.yml')?.text ?? '')
     const cache = action.findIndex((l) => l.kind === 'node' && l.key === 'name' && l.value === 'Cache Electron and electron-builder downloads')
     expect(cache).toBeGreaterThan(0)
@@ -845,9 +870,10 @@ describe('ci.yml (design D4)', () => {
   it('[spec:quality-gates/helper-build-failure-fails-the-windows-check] runs the Windows integration tests only after a successful helper build (design D8)', () => {
     const steps = stepsOf(lines, job('windows')).map((s) => stepField(lines, s))
     const names = steps.map((field) => field('name')?.value)
-    // The build comes straight after the unit tests, and the integration tests straight after the build.
-    expect(names.slice(-3)).toEqual(['Unit tests', 'Build Windows helper', 'Windows integration tests'])
-    const [build, tests] = steps.slice(-2)
+    // The build comes straight after the unit tests, then the integration and end-to-end tests that
+    // use the helper, and the upload of the e2e results on failure.
+    expect(names.slice(-5)).toEqual(['Unit tests', 'Build Windows helper', 'Windows integration tests', 'Windows end-to-end tests', 'Upload test results'])
+    const [build, tests, e2e] = steps.slice(-4)
     expect(build?.('id')?.value).toBe('helper')
     expect(build?.('run')?.value).toBe('node scripts/build-windows-helper.mjs')
     expect(build?.('if')?.value).toBe("${{ !cancelled() && steps.setup.outcome == 'success' }}")
@@ -855,6 +881,9 @@ describe('ci.yml (design D4)', () => {
     // After a failed build this condition is false, so no integration test is reported at all (neither
     // passed nor skipped), while the failed build step fails the job. Neither step may tolerate a failure.
     expect(tests?.('if')?.value).toBe("${{ !cancelled() && steps.setup.outcome == 'success' && steps.helper.outcome == 'success' }}")
+    // The e2e step starts commands from the built app, which needs the helper too.
+    expect(e2e?.('run')?.value).toBe('npm run test:e2e')
+    expect(e2e?.('if')?.value).toBe("${{ !cancelled() && steps.setup.outcome == 'success' && steps.helper.outcome == 'success' }}")
     expect(stepsOf(lines, job('windows')).flatMap((s) => within(lines, s)).filter((l) => l.key === 'continue-on-error')).toEqual([])
     // The step the condition names is the helper build, and nothing else uses that id.
     expect(steps.filter((field) => field('id')?.value === 'helper')).toHaveLength(1)
@@ -867,7 +896,7 @@ describe('ci.yml (design D4)', () => {
     expect(branches('push')).toEqual(['master'])
     expect(jobField('windows', 'if')).toBeUndefined()
     expect(jobField('windows', 'runs-on')?.value).toBe('windows-2025')
-    expect(scripts('windows').at(-1)).toBe('npm run test:windows')
+    expect(scripts('windows')).toContain('npm run test:windows')
     expect(childNames(lines, childAt(lines, job('ci-ok').start, 'needs'))).toContain('windows')
     // That script selects the Windows process-tree tests, which run only on Windows (and skip, with
     // their reason, everywhere else), so a Linux run never stands in for them.

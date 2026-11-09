@@ -1,11 +1,11 @@
 import { spawnSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { connect } from 'node:net'
-import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { killTagged, taggedProcesses } from '../support/proc'
+import { killTagged, taggedProcesses } from '../support/processes'
 import { expect, expectNoOutboundConnections, launchVeydr, repoRoot, test } from './support/fixtures'
 import { fullSession, pickDirectoryPath } from './support/session'
+import { removeDir, tempDir } from './support/temp'
 
 // Spec desktop-shell "Offline operation": the outer test runs this file again inside a new
 // network namespace that has only a loopback interface (no route anywhere), where the inner
@@ -13,6 +13,10 @@ import { fullSession, pickDirectoryPath } from './support/session'
 // (refused e.g. under Ubuntu 24.04's AppArmor restriction) and `ip` (iproute2). Where they are
 // missing it fails with that reason; VEYDR_ALLOW_SKIP_OFFLINE=1 turns that failure into a skip,
 // so the scenario is never passed without having run.
+
+// Network namespaces exist on Linux only. The guard below skips the file on Windows; it adds no test,
+// so the runner's expected counts (1 passed, 1 skipped) are unchanged on Linux.
+test.skip(process.platform !== 'linux', '[linux-only: network namespaces]')
 
 const INNER = process.env['VEYDR_OFFLINE_INNER'] === '1'
 
@@ -43,12 +47,12 @@ function unreachable(): Promise<string> {
 test.describe('offline', () => {
   test.skip(!INNER, 'runs inside the network namespace started by the outer test')
 
-  test('[spec:desktop-shell/offline-operation] every feature works with no network connectivity', async () => {
+  test('[linux-only: network namespaces] [spec:desktop-shell/offline-operation] every feature works with no network connectivity', async () => {
     // The namespace really is offline: loopback only, and no route to any other address.
     expect(interfaces()).toEqual(['lo'])
     expect(await unreachable()).toBe('ENETUNREACH')
 
-    const work = mkdtempSync(join(tmpdir(), 'veydr-e2e-offline-'))
+    const work = tempDir('veydr-e2e-offline-')
     const project = join(work, 'shop')
     mkdirSync(project)
     const pickFile = join(work, 'pick.txt')
@@ -63,8 +67,8 @@ test.describe('offline', () => {
     } finally {
       await veydr.app.close().catch(() => undefined)
       killTagged(tag)
-      rmSync(veydr.workDir, { recursive: true, force: true })
-      rmSync(work, { recursive: true, force: true })
+      removeDir(veydr.workDir)
+      removeDir(work)
     }
   })
 })
@@ -72,9 +76,9 @@ test.describe('offline', () => {
 test.describe('offline runner', () => {
   test.skip(INNER, 'the outer test only')
 
-  test('[spec:desktop-shell/offline-operation] runs the offline session in a network namespace without connectivity', () => {
+  test('[linux-only: network namespaces] [spec:desktop-shell/offline-operation] runs the offline session in a network namespace without connectivity', () => {
     test.setTimeout(180_000)
-    const output = mkdtempSync(join(tmpdir(), 'veydr-e2e-offline-run-'))
+    const output = tempDir('veydr-e2e-offline-run-')
     const uid = process.getuid?.() ?? 0
     const gid = process.getgid?.() ?? 0
     const env = { ...process.env, PATH: `${process.env['PATH'] ?? ''}:/usr/sbin:/sbin`, VEYDR_OFFLINE_INNER: '1', VEYDR_UID: String(uid), VEYDR_GID: String(gid) }
@@ -102,7 +106,7 @@ test.describe('offline runner', () => {
       expect(report).toContain('1 passed')
       expect(report).toContain('1 skipped')
     } finally {
-      rmSync(output, { recursive: true, force: true })
+      removeDir(output)
     }
   })
 })

@@ -1,17 +1,8 @@
 import { spawn } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import { afterEach, describe, expect, it } from 'vitest'
-import {
-  fixture,
-  isAlive,
-  scenario,
-  startSentinel,
-  taggedProcesses,
-  treeSize,
-  waitForLedger,
-  waitUntil,
-  type Scenario,
-} from '../support/proc'
+import { fixture, scenario, startSentinel, treeSize, waitForLedger, waitUntil, type Scenario } from '../support/proc'
+import { isAlive, taggedProcesses } from '../support/processes'
 
 // Self-test of the process fixtures (task 4.1): the ledger must list every process a fixture
 // spawned, and the shapes the supervisor tests rely on (process groups, sessions) must be real.

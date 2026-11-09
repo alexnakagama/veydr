@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Page } from '@playwright/test'
-import { expect, repoRoot, test } from './support/fixtures'
+import { appInfo, expect, hostPlatform, repoRoot, test } from './support/fixtures'
 
 // The release runs these tests on a tree bumped to the version it releases.
 const { version } = JSON.parse(readFileSync(join(repoRoot, 'package.json'), 'utf8')) as { version: string }
@@ -17,7 +17,10 @@ test('the window renders the empty-project state with app info', async ({ window
   await expect(window).toHaveTitle('Veydr')
   await expect(window.getByRole('heading', { level: 1, name: 'Projects' })).toBeVisible()
   await expect(window.getByTestId('empty-projects')).toContainText('No projects yet')
-  await expect(window.getByTestId('app-info-summary')).toHaveText(`Veydr ${version} · linux`)
+  // The platform label is what the app reports for this system (linux, windows).
+  const { platform } = await appInfo(window)
+  expect(platform).toBe(hostPlatform)
+  await expect(window.getByTestId('app-info-summary')).toHaveText(`Veydr ${version} · ${platform}`)
   await expect(window.getByRole('alert')).toHaveCount(0)
 })
 
@@ -37,7 +40,7 @@ test('the shell is keyboard navigable in a stable focus order', async ({ window 
   await expect(window.getByRole('heading', { level: 1, name: 'About' })).toBeVisible()
   await expect(window.getByRole('button', { name: 'About' })).toHaveAttribute('aria-current', 'page')
   const info = window.getByTestId('app-info')
-  await expect(info).toContainText('linux')
+  await expect(info).toContainText((await appInfo(window)).platform)
   await expect(info).toContainText(/Electron\s*44\.9\.3/)
 
   await window.keyboard.press('Shift+Tab')

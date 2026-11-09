@@ -1,8 +1,9 @@
-import { readdirSync, readFileSync, rmSync, statSync } from 'node:fs'
+import { readdirSync, readFileSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { fixture } from '../support/proc'
 import { expect, expectNoOutboundConnections, launchVeydr, test } from './support/fixtures'
-import { sh, withLogs } from './support/logs'
+import { print, type PrintStep, withLogs } from './support/logs'
+import { removeDir } from './support/temp'
 
 // Task group L6: the output view of a running command (spec: process-logs).
 
@@ -13,27 +14,28 @@ const SECRET = 'tok-1234-secret'
 
 // Everything a hostile or careless program might print: markup, colors, and sequences that would
 // change the title, write the clipboard, add hyperlinks, or move the cursor in a terminal.
-const OUTPUT_SCRIPT = [
-  "printf 'plain out\\n'",
-  "printf 'to stderr\\n' >&2",
-  "printf 'crlf line\\r\\n'",
-  'printf \'<script>window.__pwned=1</script><img src=x onerror="window.__pwned=2">\\n\'',
-  "printf '\\033[31mred text\\033[0m normal\\n'",
-  "printf '\\033]0;evil title\\007title gone\\n'",
-  "printf '\\033]52;c;ZXZpbA==\\007clipboard gone\\n'",
-  "printf '\\033]8;;https://example.invalid/\\033\\\\link text\\033]8;;\\033\\\\\\n'",
-  "printf 'cursor\\033[2J\\033[H moved\\n'",
-  "head -c 20000 /dev/zero | tr '\\000' y; echo",
-  'printf \'secret is %s\\n\' "$API_TOKEN"',
-  "printf 'partial without newline'",
-  'exec sleep 60',
-].join('; ')
+const ESC = '\u001b'
+const BEL = '\u0007'
+const OUTPUT_STEPS: readonly PrintStep[] = [
+  { stream: 'out', text: 'plain out\n' },
+  { stream: 'err', text: 'to stderr\n' },
+  { stream: 'out', text: 'crlf line\r\n' },
+  { stream: 'out', text: '<script>window.__pwned=1</script><img src=x onerror="window.__pwned=2">\n' },
+  { stream: 'out', text: `${ESC}[31mred text${ESC}[0m normal\n` },
+  { stream: 'out', text: `${ESC}]0;evil title${BEL}title gone\n` },
+  { stream: 'out', text: `${ESC}]52;c;ZXZpbA==${BEL}clipboard gone\n` },
+  { stream: 'out', text: `${ESC}]8;;https://example.invalid/${ESC}\\link text${ESC}]8;;${ESC}\\\n` },
+  { stream: 'out', text: `cursor${ESC}[2J${ESC}[H moved\n` },
+  { stream: 'out', text: `${'y'.repeat(20_000)}\n` },
+  { stream: 'out', text: 'secret is %s\n', env: 'API_TOKEN' },
+  { stream: 'out', text: 'partial without newline' },
+]
 
 /** Line numbers of copied `lines.mjs` output (each line starts with its zero-padded number). */
 const seqsOf = (text: string): number[] => text.split('\n').map((line) => Number(line.slice(0, 9)))
 const range = (from: number, to: number): number[] => Array.from({ length: to - from + 1 }, (_, i) => from + i)
 
-const outputCommand = sh(OUTPUT_ID, 'output', OUTPUT_SCRIPT, [{ key: 'API_TOKEN', value: SECRET, secret: true }])
+const outputCommand = print(OUTPUT_ID, 'output', OUTPUT_STEPS, { stay: true, env: [{ key: 'API_TOKEN', value: SECRET, secret: true }] })
 
 test('[spec:process-logs/stream-distinguished] [spec:process-logs/markup-in-output] [spec:process-logs/color-codes] [spec:process-logs/dangerous-escape-sequences] shows output as text only, with stream, capture time, and styling', async () => {
   await withLogs([outputCommand], async ({ window, view, start, renderedTexts, copyEvents }) => {
@@ -101,8 +103,14 @@ test('[spec:process-logs/secret-printed-by-process] a printed secret is redacted
 })
 
 test('[spec:process-logs/filter-by-text] [spec:process-logs/copy] [spec:process-logs/clear] filters by text and stream, copies plain text, and clears while capture continues', async () => {
-  const script = "printf 'alpha \\033[1mneedle\\033[0m one\\n'; printf 'beta\\n'; sleep 0.3; printf 'gamma needle two\\n' >&2; i=0; while :; do sleep 0.3; i=$((i+1)); printf 'tick %s\\n' \"$i\"; done"
-  await withLogs([sh(TICK_ID, 'ticker', script)], async ({ window, view, start, renderedTexts, copied }) => {
+  const steps: readonly PrintStep[] = [
+    { stream: 'out', text: `alpha ${ESC}[1mneedle${ESC}[0m one\n` },
+    { stream: 'out', text: 'beta\n' },
+    { sleepMs: 300 },
+    { stream: 'err', text: 'gamma needle two\n' },
+    { everyMs: 300, stream: 'out', text: 'tick %d\n' },
+  ]
+  await withLogs([print(TICK_ID, 'ticker', steps)], async ({ window, view, start, renderedTexts, copied }) => {
     await start(TICK_ID, 'ticker')
     await expect(view.getByTestId('log-text').filter({ hasText: 'tick 1' })).toHaveCount(1)
 
@@ -162,8 +170,10 @@ test('[spec:process-logs/filter-by-text] [spec:process-logs/copy] [spec:process-
 
 test('[spec:process-logs/pause-following] pauses following on scroll-up, indicates new output, and resumes', async () => {
   // 2,000 numbered lines, then one line every 200 ms.
-  const script = `"$0" "$1" --rate 4000 --count 2000; i=0; while :; do sleep 0.2; i=$((i+1)); printf 'later %s\\n' "$i"; done`
-  const stream = { id: TICK_ID, name: 'stream', execution: { mode: 'direct' as const, file: '/bin/sh', args: ['-c', script, process.execPath, fixture('lines')] } }
+  const stream = print(TICK_ID, 'stream', [
+    { run: [fixture('lines'), '--rate', '4000', '--count', '2000'] },
+    { everyMs: 200, stream: 'out', text: 'later %d\n' },
+  ])
   await withLogs([stream], async ({ view, start, renderedTexts }) => {
     await start(TICK_ID, 'stream')
     const scroll = view.getByTestId('log-scroll')
@@ -247,7 +257,7 @@ test('[spec:process-logs/retention-limit-reached] keeps the newest 10,000 lines 
 test('[spec:process-logs/output-not-persisted] output is kept in memory only: not shown after a restart and not written to disk', async () => {
   const marker = crypto.randomUUID()
   // The printed text (`printed-<marker>`) differs from the configured value (`<marker>`).
-  const command = sh(TICK_ID, 'marker', `printf 'printed-%s\\n' "$MARKER"; exec sleep 60`, [{ key: 'MARKER', value: marker, secret: false }])
+  const command = print(TICK_ID, 'marker', [{ stream: 'out', text: 'printed-%s\n', env: 'MARKER' }], { stay: true, env: [{ key: 'MARKER', value: marker, secret: false }] })
   await withLogs([command], async ({ start, renderedTexts, seeded, veydr }) => {
     await start(TICK_ID, 'marker')
     await expect.poll(renderedTexts).toEqual([`printed-${marker}`])
@@ -265,7 +275,7 @@ test('[spec:process-logs/output-not-persisted] output is kept in memory only: no
       expectNoOutboundConnections(await again.close())
     } finally {
       await again.app.close().catch(() => undefined)
-      rmSync(again.workDir, { recursive: true, force: true })
+      removeDir(again.workDir)
     }
     return 'closed'
   })

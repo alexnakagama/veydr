@@ -1,7 +1,8 @@
-import { readFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { declaredOperations } from '../../src/shared/api/channels'
+import { commandLines } from '../support/processes'
 import { expect, expectNoOutboundConnections, launchVeydr, repoRoot, test } from './support/fixtures'
+import { removeDir } from './support/temp'
 
 const APP_URL = 'app://veydr/index.html'
 
@@ -180,9 +181,10 @@ test('[spec:desktop-shell/only-declared-operations-are-available] window.veydr e
   })
   expect(unsubscribe).toBe('function')
 
-  // Every operation answers with a typed result, not a rejected promise.
-  const listed = await window.evaluate(() => globalThis.window.veydr.ports.list())
-  expect(listed).toMatchObject({ ok: true, value: { refreshedAt: expect.any(Number) as unknown, ports: expect.any(Array) as unknown } })
+  // Every operation answers with a typed result, not a rejected promise. (Ports, which Windows does
+  // not list yet, answer there with a typed refusal: windows-ports.spec.ts.)
+  const listed = await window.evaluate(() => globalThis.window.veydr.processes.snapshot())
+  expect(listed).toMatchObject({ ok: true, value: { commands: expect.any(Array) as unknown } })
   const invalid = await window.evaluate(() =>
     globalThis.window.veydr.processes.start({ commandId: 'not-a-uuid' }),
   )
@@ -194,12 +196,12 @@ test('the Chromium sandbox is active for every process (not launched with --no-s
   expect(mainArgv).not.toContain('--no-sandbox')
 
   const processes = await veydr.app.evaluate(({ app }) => app.getAppMetrics().map((m) => ({ type: m.type, pid: m.pid })))
-  const cmdlines = processes.map((p) => ({
-    type: p.type,
-    // Chromium child processes rewrite their title, so match on the whole command line.
-    cmdline: readFileSync(`/proc/${p.pid}/cmdline`, 'utf8').replaceAll('\0', ' '),
-  }))
-  expect(cmdlines.some((p) => p.cmdline.includes('--type=renderer'))).toBe(true)
+  // Chromium child processes rewrite their title, so match on the whole command line, read by the
+  // test from the system (/proc on Linux, Win32_Process on Windows). Every process must be found.
+  const lines = commandLines(processes.map((p) => p.pid))
+  const cmdlines = processes.map((p) => ({ type: p.type, cmdline: lines.get(p.pid) }))
+  expect(cmdlines.filter((p) => p.cmdline === undefined).map((p) => p.type)).toEqual([])
+  expect(cmdlines.some((p) => p.cmdline?.includes('--type=renderer'))).toBe(true)
   for (const p of cmdlines) expect(p.cmdline, `${p.type} process`).not.toContain('--no-sandbox')
 
   const prefs = await veydr.app.evaluate(({ BrowserWindow }) => {
@@ -275,9 +277,28 @@ test('a dev-server URL in the environment is ignored by non-dev builds', async (
     expect((await veydr.window.evaluate(() => globalThis.window.veydr.app.getInfo())).ok).toBe(true)
     expectNoOutboundConnections(await veydr.close())
   } finally {
-    rmSync(veydr.workDir, { recursive: true, force: true })
+    removeDir(veydr.workDir)
   }
 })
 
-// add-windows-environment-and-commands group 7 (design D7) implements this.
-test.fixme('[spec:quality-gates/windows-end-to-end-tests-keep-the-sandbox] renderer runs sandboxed on Windows', () => {})
+// Windows reports the sandbox state of each process (Linux does not: there the test above checks the
+// command lines, and the e2e job's user namespaces let Chromium's sandbox start at all).
+test('[windows-only: process sandbox state] [spec:quality-gates/windows-end-to-end-tests-keep-the-sandbox] every renderer runs in the OS sandbox on Windows, below medium integrity', async () => {
+  test.skip(process.platform !== 'win32', '[windows-only: process sandbox state]')
+  const veydr = await launchVeydr()
+  try {
+    const metrics = await veydr.app.evaluate(({ app }) => app.getAppMetrics().map((m) => ({ type: m.type, sandboxed: m.sandboxed, integrityLevel: m.integrityLevel })))
+    const renderers = metrics.filter((m) => m.type === 'Tab')
+    expect(renderers.length).toBeGreaterThan(0)
+    for (const renderer of renderers) {
+      expect(renderer.sandboxed, 'renderer sandboxed').toBe(true)
+      // Chromium lowers a sandboxed renderer to untrusted once it is locked down (low before that).
+      expect(['untrusted', 'low'], 'renderer integrity level').toContain(renderer.integrityLevel)
+    }
+    expect(await veydr.app.evaluate(() => process.argv)).not.toContain('--no-sandbox')
+    expectNoOutboundConnections(await veydr.close())
+  } finally {
+    await veydr.app.close().catch(() => undefined)
+    removeDir(veydr.workDir)
+  }
+})

@@ -1,92 +1,35 @@
-// Test-side view of real processes. Deliberately independent of Veydr's own /proc code and
-// bookkeeping (design D14): cleanup is proven by enumerating /proc here, not by asking Veydr.
+// Process-test fixtures: the fixture scripts, their ledger, scenarios, and the sentinel (foundation
+// design D14). Which processes exist is read by test/support/processes.ts, independently of Veydr's
+// own process code and bookkeeping, on Linux and on Windows.
 import { spawn, type ChildProcess } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
+import { isAlive, killTagged, TAG_VARIABLE } from './processes'
+
+export { TAG_VARIABLE } from './processes'
 
 export const fixturesDir = resolve(__dirname, '../fixtures/proc')
-export const fixture = (name: 'tree' | 'escape' | 'flood' | 'lines' | 'listen' | 'sentinel' | 'inspect'): string => join(fixturesDir, `${name}.mjs`)
-
-/** Environment variable every fixture process inherits; its value identifies one test's processes. */
-export const TAG_VARIABLE = 'VEYDR_FIXTURE_TAG'
+export const fixture = (name: 'tree' | 'escape' | 'flood' | 'lines' | 'listen' | 'sentinel' | 'inspect' | 'print'): string => join(fixturesDir, `${name}.mjs`)
 
 /** Repetitions of each process-tree scenario: 50 with `VEYDR_STRESS=1`, 5 otherwise (design D14). */
 export const REPETITIONS = process.env['VEYDR_STRESS'] === '1' ? 50 : 5
 
+/**
+ * One line of a fixture ledger (`test/fixtures/proc/ledger.mjs`). `pid`, `ppid` and `role` are
+ * recorded everywhere; the process group, session and start time come from `/proc/self/stat` and
+ * are recorded only where it exists, so only `[linux-only: /proc]` tests may read them.
+ */
 export interface LedgerEntry {
   readonly pid: number
   readonly ppid: number
-  readonly pgid: number
-  readonly sid: number
-  readonly starttime: string
+  readonly pgid?: number
+  readonly sid?: number
+  readonly starttime?: string
   readonly role: string
   readonly port?: number | null
   readonly ports?: readonly number[]
-}
-
-export interface ProcessView {
-  readonly pid: number
-  readonly ppid: number
-  readonly pgid: number
-  readonly sid: number
-  readonly state: string
-  readonly starttime: string
-}
-
-export function readProcess(pid: number): ProcessView | null {
-  let text: string
-  try {
-    text = readFileSync(`/proc/${pid}/stat`, 'utf8')
-  } catch {
-    return null
-  }
-  const fields = text.slice(text.lastIndexOf(')') + 2).trim().split(' ')
-  return {
-    pid,
-    state: fields[0] ?? '?',
-    ppid: Number(fields[1]),
-    pgid: Number(fields[2]),
-    sid: Number(fields[3]),
-    starttime: fields[19] ?? '',
-  }
-}
-
-/** True if the process `pid` started at `starttime` exists and is not a zombie. */
-export function isAlive(pid: number, starttime: string): boolean {
-  const view = readProcess(pid)
-  return view !== null && view.starttime === starttime && view.state !== 'Z' && view.state !== 'X'
-}
-
-/** Every live (non-zombie) process whose environment carries `VEYDR_FIXTURE_TAG=<tag>`. */
-export function taggedProcesses(tag: string): ProcessView[] {
-  const needle = `${TAG_VARIABLE}=${tag}`
-  const found: ProcessView[] = []
-  for (const name of readdirSync('/proc')) {
-    if (!/^\d+$/.test(name)) continue
-    let environ: string
-    try {
-      environ = readFileSync(`/proc/${name}/environ`, 'latin1')
-    } catch {
-      continue
-    }
-    if (!environ.split('\0').includes(needle)) continue
-    const view = readProcess(Number(name))
-    if (view !== null && view.state !== 'Z' && view.state !== 'X') found.push(view)
-  }
-  return found.sort((a, b) => a.pid - b.pid)
-}
-
-/** SIGKILLs every tagged process (test cleanup; never used to prove anything). */
-export function killTagged(tag: string): void {
-  for (const view of taggedProcesses(tag)) {
-    try {
-      process.kill(view.pid, 'SIGKILL')
-    } catch {
-      // Already gone.
-    }
-  }
 }
 
 export function readLedger(path: string): LedgerEntry[] {
@@ -168,12 +111,13 @@ export async function startSentinel(): Promise<Sentinel> {
     stdio: 'ignore',
   })
   const [entry] = await waitForLedger(own.ledger, 1)
-  if (entry === undefined) throw new Error('sentinel did not start')
+  if (entry?.starttime === undefined) throw new Error('sentinel did not start, or recorded no start time')
+  const { pid, starttime } = entry
   return {
-    pid: entry.pid,
-    starttime: entry.starttime,
+    pid,
+    starttime,
     signals: () => (existsSync(signalsFile) ? readFileSync(signalsFile, 'utf8').split('\n').filter((s) => s !== '') : []),
-    alive: () => isAlive(entry.pid, entry.starttime),
+    alive: () => isAlive(pid, starttime),
     stop() {
       child.kill('SIGKILL')
       own.cleanup()

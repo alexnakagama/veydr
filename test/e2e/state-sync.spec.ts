@@ -1,9 +1,10 @@
-import { existsSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Page } from '@playwright/test'
 import type { Config } from '../../src/shared/config'
 import { expect, expectNoOutboundConnections, launchVeydr, test, type VeydrApp } from './support/fixtures'
 import { seed, type Seeded } from './support/seed'
+import { removeDir } from './support/temp'
 
 const SECRET = 'hunter2-e2e-secret-value'
 
@@ -48,8 +49,8 @@ async function withApp(seeded: Seeded, run: (veydr: VeydrApp, stderr: () => stri
     expectNoOutboundConnections(await veydr.close())
   } finally {
     await veydr.app.close().catch(() => undefined)
-    rmSync(veydr.workDir, { recursive: true, force: true })
-    rmSync(seeded.root, { recursive: true, force: true })
+    removeDir(veydr.workDir)
+    removeDir(seeded.root)
   }
 }
 

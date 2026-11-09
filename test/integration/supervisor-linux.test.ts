@@ -11,7 +11,8 @@ import { createSupervisor, type LaunchTarget, type OutputSink } from '../../src/
 import type { ProcessStateEvent } from '../../src/shared/api'
 import type { CommandConfig } from '../../src/shared/config'
 import { command, project, quietLog } from '../unit/support/config'
-import { fixture, scenario, TAG_VARIABLE, taggedProcesses, waitForLedger, waitUntil, type Scenario } from '../support/proc'
+import { fixture, scenario, TAG_VARIABLE, waitForLedger, waitUntil, type Scenario } from '../support/proc'
+import { taggedProcesses } from '../support/processes'
 
 // The supervisor driving real Linux process trees through the interim planner.
 

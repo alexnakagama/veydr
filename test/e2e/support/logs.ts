@@ -1,11 +1,10 @@
-import { mkdtempSync, rmSync } from 'node:fs'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
 import type { Locator, Page } from '@playwright/test'
 import type { CommandConfig, Config } from '../../../src/shared/config'
-import { killTagged, TAG_VARIABLE } from '../../support/proc'
+import { fixture, TAG_VARIABLE } from '../../support/proc'
+import { killTagged } from '../../support/processes'
 import { expect, expectNoOutboundConnections, launchVeydr, type VeydrApp } from './fixtures'
 import { seed, type Seeded } from './seed'
+import { removeDir, tempDir } from './temp'
 
 export const PROJECT_ID = '7a2e9b5d-4d2f-4f66-8b8c-1e7e2a3c0b12'
 
@@ -33,13 +32,35 @@ export interface LogHarness {
   readonly copyEvents: () => Promise<number>
 }
 
-/** A shell-mode command run by `/bin/sh -c`. */
-export const sh = (id: string, name: string, script: string, env: CommandConfig['env'] = []): CommandSpec => ({ id, name, execution: { mode: 'shell', shell: '/bin/sh', script }, env })
+/** One step of the print fixture (`test/fixtures/proc/print.mjs`, which documents them). */
+export type PrintStep =
+  | { readonly stream: 'out' | 'err'; readonly text: string; readonly env?: string }
+  | { readonly sleepMs: number }
+  | { readonly run: readonly string[] }
+  | { readonly everyMs: number; readonly stream: 'out' | 'err'; readonly text: string }
+
+/**
+ * A direct-mode command that runs the print fixture with Node: scripted output that is the same on
+ * every system, where a test would otherwise need a POSIX shell. With `stay`, it keeps running
+ * after the last step until it is stopped.
+ */
+export function printExecution(steps: readonly PrintStep[], options: { readonly stay?: boolean } = {}): Extract<CommandConfig['execution'], { mode: 'direct' }> {
+  const encoded = Buffer.from(JSON.stringify(steps), 'utf8').toString('base64url')
+  return { mode: 'direct', file: process.execPath, args: [fixture('print'), '--steps', encoded, ...(options.stay === true ? ['--stay'] : [])] }
+}
+
+/** A command that runs the print fixture (`printExecution`). */
+export const print = (id: string, name: string, steps: readonly PrintStep[], options: { readonly stay?: boolean; readonly env?: CommandConfig['env'] } = {}): CommandSpec => ({
+  id,
+  name,
+  execution: printExecution(steps, options),
+  env: options.env ?? [],
+})
 
 /** Launches Veydr with one project whose commands carry the scenario tag, runs `body`, and cleans up. */
 export async function withLogs(commands: readonly CommandSpec[], body: (h: LogHarness) => Promise<void | 'closed'>, options: { configHome?: string } = {}): Promise<void> {
   const tag = crypto.randomUUID()
-  const work = mkdtempSync(join(tmpdir(), 'veydr-e2e-logs-'))
+  const work = tempDir('veydr-e2e-logs-')
   const config: Config = {
     schemaVersion: 1,
     projects: [
@@ -102,8 +123,8 @@ export async function withLogs(commands: readonly CommandSpec[], body: (h: LogHa
     await veydr.app.evaluate(({ clipboard }, text) => clipboard.writeText(text), savedClipboard).catch(() => undefined)
     await veydr.app.close().catch(() => undefined)
     killTagged(tag)
-    rmSync(veydr.workDir, { recursive: true, force: true })
-    rmSync(seeded.root, { recursive: true, force: true })
-    rmSync(work, { recursive: true, force: true })
+    removeDir(veydr.workDir)
+    removeDir(seeded.root)
+    removeDir(work)
   }
 }
