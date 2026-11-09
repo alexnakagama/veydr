@@ -340,7 +340,7 @@ Group 6 review (2026-11-08): reviewer2 found no high items, 1 medium, 5 low and 
   - **`offline.spec.ts` counts itself:** its runner re-runs the file in a network namespace and requires exactly `1 passed` and `1 skipped`. Every test added to that file, a guard or a placeholder, changes those counts, so update the runner's expectation with it. Group 1's placeholder broke the `e2e` job on #37 this way, and now sits in `ports.spec.ts`.
 
   Verify: `npm run test:e2e` passes on Linux, and the table lists every spec file.
-- [ ] 7.3 In `ci.yml`'s `windows` job:
+- [x] 7.3 In `ci.yml`'s `windows` job:
   - set `electron: "true"`;
   - add "Windows end-to-end tests" (`npm run test:e2e`) after the integration tests, with `if:` requiring the helper build's success;
   - add an `upload-artifact` step for `test-results/` on failure;
@@ -413,6 +413,13 @@ Review of the first-run fixes (2026-11-09): reviewer2 found no high items, 1 med
   - `exited()` rejects after 30 s with the PID.
 - nits: the `commandProcesses` comment is reworded. No other editor field has a hint inside its label.
 - Verified on Linux: typecheck, lint, `npm test` (1281 passed), and the affected e2e specs (commands, quit, recovery, keyboard: 16 passed).
+
+Group 7 on Windows (#45, run 42571528735, 2026-11-09): every check passed, `ci-ok` included.
+- The `windows` job ran the e2e step: 59 passed, 18 skipped, none failed.
+- Every skip carries a `[linux-only: …]` reason: network namespaces, POSIX signals, POSIX file modes, port inspection, a POSIX shell, the login shell, shebang scripts and POSIX sessions, and processes outliving a crashed Veydr. None was skipped for lack of porting.
+- The Windows-only tests passed: `windows-recovery` (`veydr-ends-abnormally-on-windows`), `windows-ports`, `windows-app`, and the renderer sandbox test (`windows-end-to-end-tests-keep-the-sandbox`).
+- `--no-proxy-server` removed the `wpad` lookup and the IPv6 probe.
+- In the same job: 1209 unit tests passed (79 skipped, the Linux-only ones), and the 44 Windows integration tests passed. No process query was reported slower than 5 s.
 
 ## 8. Integration check
 
