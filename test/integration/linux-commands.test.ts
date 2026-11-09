@@ -10,7 +10,8 @@ import { createLinuxProcessTree } from '../../src/main/platform/linux/process-tr
 import { createLinuxCommandResolver } from '../../src/main/platform/linux/resolver'
 import type { CommandSpec, Env, ManagedProcess, SpawnPlan } from '../../src/main/platform/types'
 import type { Config } from '../../src/shared/config'
-import { fixture, readProcess, scenario, taggedProcesses, TAG_VARIABLE, waitUntil, type Scenario } from '../support/proc'
+import { fixture, scenario, TAG_VARIABLE, waitUntil, type Scenario } from '../support/proc'
+import { linuxProcess, taggedProcesses } from '../support/processes'
 
 const scenarios: Scenario[] = []
 afterEach(() => {
@@ -306,7 +307,7 @@ describe('desktop actions', () => {
     expect(readFileSync(out, 'utf8').split('\0').slice(0, -1)).toEqual(['--new-window', project, `--goto=${project}:1`])
     const [editor] = taggedProcesses(s.tag)
     expect(editor).toBeDefined()
-    const info = readProcess(editor?.pid ?? 0)
+    const info = linuxProcess(editor?.pid ?? 0)
     // Its own session (so no group signal of Veydr reaches it) and not a child Veydr waits on.
     expect(info?.sid).toBe(editor?.pid)
   })

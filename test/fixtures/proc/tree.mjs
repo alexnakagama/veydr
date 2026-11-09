@@ -4,7 +4,8 @@
 //   node tree.mjs --ledger <file> [--depth N] [--fanout N] [--ignore-term]
 //                 [--setpgid] [--escape] [--exit-after MS] [--exit-code N]
 //
-// --ignore-term   every process ignores SIGTERM (an uncooperative tree)
+// --ignore-term   every process ignores SIGTERM, and on Windows Ctrl+Break (SIGBREAK), which is how
+//                 Veydr asks a command to stop there: an uncooperative tree on both systems
 // --setpgid       the root's first child moves to its own process group (same session), through
 //                 `bash -c 'set -m; …'`; the bash in between stays in the root's group
 // --escape        the root's first child (its second with --setpgid) starts a new session
@@ -32,7 +33,8 @@ const ledger = values.ledger
 if (ledger === undefined) throw new Error('--ledger is required')
 const depth = Number(values.depth)
 const fanout = Number(values.fanout)
-if (values['ignore-term']) process.on('SIGTERM', () => undefined)
+// A SIGBREAK listener is accepted on Linux too, where nothing can send it.
+if (values['ignore-term']) for (const signal of ['SIGTERM', 'SIGBREAK']) process.on(signal, () => undefined)
 
 const childArgs = (role) => [
   import.meta.filename,

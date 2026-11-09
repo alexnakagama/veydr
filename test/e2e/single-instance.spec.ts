@@ -1,9 +1,9 @@
 import { spawn, spawnSync } from 'node:child_process'
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { join } from 'node:path'
-import { appDirFor, appEnv, expect, test } from './support/fixtures'
+import { appDirFor, appEnv, configHomePath, expect, test } from './support/fixtures'
+import { removeDir, tempDir } from './support/temp'
 
 const electronBinary = createRequire(__filename)('electron') as string
 /** Records Node `fs` calls on paths inside a directory (see the file header). */
@@ -44,7 +44,7 @@ function launchSecondInstance(
   guard: { dir: string; log: string },
 ): Promise<{ code: number | null; signal: string | null }> {
   return new Promise((resolve, reject) => {
-    const child = spawn(electronBinary, ['-r', fsGuardPath, appDirFor('out')], {
+    const child = spawn(electronBinary, ['-r', fsGuardPath, '-r', configHomePath, appDirFor('out')], {
       env: appEnv(configHome, { VEYDR_FS_GUARD_DIR: guard.dir, VEYDR_FS_GUARD_LOG: guard.log }),
       stdio: 'ignore',
     })
@@ -61,7 +61,7 @@ function launchSecondInstance(
 }
 
 test('the fs guard records configuration access (control for the single-instance check)', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'veydr-fs-guard-'))
+  const dir = tempDir('veydr-fs-guard-')
   try {
     const configFile = join(dir, 'config.json')
     writeFileSync(configFile, '{}')
@@ -81,7 +81,7 @@ test('the fs guard records configuration access (control for the single-instance
     expect(calls.map((e) => e.api)).toEqual(expect.arrayContaining(['fs.readFileSync', 'fs.promises.writeFile', 'fs.stat']))
     expect(new Set(calls.map((e) => e.path))).toEqual(new Set([configFile]))
   } finally {
-    rmSync(dir, { recursive: true, force: true })
+    removeDir(dir)
   }
 })
 

@@ -1,20 +1,24 @@
-import { mkdtempSync, rmSync } from 'node:fs'
-import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { fixture, killTagged, readLedger, taggedProcesses, treeSize } from '../support/proc'
+import { fixture, readLedger, treeSize } from '../support/proc'
+import { killTagged, taggedProcesses } from '../support/processes'
 import { expect, expectNoOutboundConnections, launchVeydr, test, type VeydrApp } from './support/fixtures'
 import { exited, recordedRuns, taggedConfig } from './support/runs'
 import { seed } from './support/seed'
+import { removeDir, tempDir } from './support/temp'
 
 // Task 5.3: processes that outlive a crash of Veydr are shown on the next launch and terminated
 // only after the user confirms; nothing is started on launch.
+//
+// Linux-only: on Windows a command's processes are in a Job Object that ends with Veydr's helper, so
+// nothing outlives a crash; windows-recovery.spec.ts checks that instead.
+test.skip(process.platform !== 'linux', '[linux-only: processes outliving a crashed Veydr]')
 
 const TREE_ID = '6f1f8a4c-3c1e-4e55-9a7b-0d6d1f2b9a01'
 const OTHER_ID = '0b7c9f7e-2a64-4d1a-8f0e-5f7d8c9b1a22'
 
-test('[spec:process-supervision/survivors-after-crash] [spec:desktop-shell/startup-does-not-start-commands] after a crash, survivors are listed and terminated only on confirmation; nothing is started', async () => {
+test('[linux-only: processes outliving a crashed Veydr] [spec:process-supervision/survivors-after-crash] [spec:desktop-shell/startup-does-not-start-commands] after a crash, survivors are listed and terminated only on confirmation; nothing is started', async () => {
   const tag = crypto.randomUUID()
-  const projectDir = mkdtempSync(join(tmpdir(), 'veydr-e2e-project-'))
+  const projectDir = tempDir('veydr-e2e-project-')
   const ledger = join(projectDir, 'ledger.jsonl')
   const treeArgs = [fixture('tree'), '--ledger', ledger, '--depth', '2', '--fanout', '2', '--escape']
   const seeded = seed({
@@ -37,7 +41,7 @@ test('[spec:process-supervision/survivors-after-crash] [spec:desktop-shell/start
     await expect.poll(() => recordedRuns(seeded.configHome)?.[0]?.descendants.length, { timeout: 15_000 }).toBe(treeSize(2, 2) - 1)
     const survivors = taggedProcesses(tag).map((p) => p.pid)
     expect(survivors).toHaveLength(treeSize(2, 2))
-    first.app.process().kill('SIGKILL')
+    first.kill()
     await exited(first.app)
     expect(taggedProcesses(tag).map((p) => p.pid)).toEqual(survivors)
 
@@ -72,16 +76,16 @@ test('[spec:process-supervision/survivors-after-crash] [spec:desktop-shell/start
     killTagged(tag)
     for (const veydr of apps) {
       await veydr.app.close().catch(() => undefined)
-      rmSync(veydr.workDir, { recursive: true, force: true })
+      removeDir(veydr.workDir)
     }
-    rmSync(seeded.root, { recursive: true, force: true })
-    rmSync(projectDir, { recursive: true, force: true })
+    removeDir(seeded.root)
+    removeDir(projectDir)
   }
 })
 
-test('survivors can be left running; they are then forgotten', async () => {
+test('[linux-only: processes outliving a crashed Veydr] survivors can be left running; they are then forgotten', async () => {
   const tag = crypto.randomUUID()
-  const projectDir = mkdtempSync(join(tmpdir(), 'veydr-e2e-project-'))
+  const projectDir = tempDir('veydr-e2e-project-')
   const ledger = join(projectDir, 'ledger.jsonl')
   const seeded = seed({
     'config.json': JSON.stringify(
@@ -96,7 +100,7 @@ test('survivors can be left running; they are then forgotten', async () => {
     await tree.getByRole('button', { name: 'Start tree', exact: true }).click()
     await expect(tree.getByTestId('command-status')).toHaveText('Running')
     await expect.poll(() => recordedRuns(seeded.configHome)?.length).toBe(1)
-    first.app.process().kill('SIGKILL')
+    first.kill()
     await exited(first.app)
 
     const second = await launchVeydr({ configHome: seeded.configHome })
@@ -114,9 +118,9 @@ test('survivors can be left running; they are then forgotten', async () => {
     killTagged(tag)
     for (const veydr of apps) {
       await veydr.app.close().catch(() => undefined)
-      rmSync(veydr.workDir, { recursive: true, force: true })
+      removeDir(veydr.workDir)
     }
-    rmSync(seeded.root, { recursive: true, force: true })
-    rmSync(projectDir, { recursive: true, force: true })
+    removeDir(seeded.root)
+    removeDir(projectDir)
   }
 })

@@ -1,12 +1,13 @@
-import { mkdtempSync, rmSync } from 'node:fs'
-import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { Locator, Page } from '@playwright/test'
 import { shortcuts } from '../../src/renderer/src/shortcuts'
 import type { Config } from '../../src/shared/config'
-import { fixture, killTagged, TAG_VARIABLE } from '../support/proc'
+import { fixture, TAG_VARIABLE } from '../support/proc'
+import { killTagged } from '../support/processes'
 import { expect, expectNoOutboundConnections, launchVeydr, test } from './support/fixtures'
+import { printExecution } from './support/logs'
 import { seed } from './support/seed'
+import { removeDir, tempDir } from './support/temp'
 
 // Task 10.3: accessibility and keyboard pass over every view and dialog: every control has an
 // accessible name, Tab reaches controls in document order with a visible focus indicator, focus
@@ -28,7 +29,7 @@ function seededConfig(dir: string, tag: string): Config {
         path: dir,
         commands: [
           { id: '6f1f8a4c-3c1e-4e55-9a7b-0d6d1f2b9a01', name: 'web', execution: { mode: 'direct', file: process.execPath, args: [fixture('listen'), '--ledger', join(dir, 'ledger.jsonl')] }, cwd: '.', env, stopTimeoutMs: 5000 },
-          { id: '0b7c9f7e-2a64-4d1a-8f0e-5f7d8c9b1a22', name: 'worker', execution: { mode: 'shell', shell: '/bin/sh', script: 'while true; do echo "\u001b[32mok\u001b[0m"; sleep 0.2; done' }, cwd: '.', env, stopTimeoutMs: 5000 },
+          { id: '0b7c9f7e-2a64-4d1a-8f0e-5f7d8c9b1a22', name: 'worker', execution: printExecution([{ everyMs: 200, stream: 'out', text: '\u001b[32mok\u001b[0m\n' }]), cwd: '.', env, stopTimeoutMs: 5000 },
         ],
       },
       { id: '1c2d3e4f-5a6b-4c7d-8e9f-0a1b2c3d4e5f', name: 'blog', path: join(dir, 'missing'), commands: [] },
@@ -118,7 +119,7 @@ async function audit(window: Page, what: string, dialog?: Locator): Promise<void
 
 test('every view and dialog has named controls, document-order focus, and a visible focus indicator', async () => {
   test.setTimeout(120_000)
-  const dir = mkdtempSync(join(tmpdir(), 'veydr-e2e-a11y-'))
+  const dir = tempDir('veydr-e2e-a11y-')
   const tag = crypto.randomUUID()
   const config = seededConfig(dir, tag)
   // A damaged primary file shows the recovery notice (with Dismiss) as well.
@@ -175,7 +176,9 @@ test('every view and dialog has named controls, document-order focus, and a visi
     for (const view of ['Ports', 'Settings', 'About']) {
       await window.getByRole('button', { name: view, exact: true }).click()
       await expect(window.getByRole('heading', { level: 1, name: view })).toBeVisible()
-      if (view === 'Ports') await expect(window.getByTestId('ports-refreshed')).toBeVisible()
+      // The Ports view once loaded: its port list, or where port inspection is not yet available
+      // (Windows, before W3), the notice saying so. Either is audited as shown.
+      if (view === 'Ports') await expect(window.getByTestId('ports-refreshed').or(window.getByTestId('ports-unsupported'))).toBeVisible()
       // The editor form replaces "Loading…" once the settings arrive; audit the loaded view.
       if (view === 'Settings') await expect(window.getByLabel('Editor executable', { exact: true })).toBeVisible()
       await audit(window, view)
@@ -188,8 +191,8 @@ test('every view and dialog has named controls, document-order focus, and a visi
   } finally {
     await veydr.app.close().catch(() => undefined)
     killTagged(tag)
-    rmSync(veydr.workDir, { recursive: true, force: true })
-    rmSync(seeded.root, { recursive: true, force: true })
-    rmSync(dir, { recursive: true, force: true })
+    removeDir(veydr.workDir)
+    removeDir(seeded.root)
+    removeDir(dir)
   }
 })

@@ -1,11 +1,11 @@
 import { spawn } from 'node:child_process'
-import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, cpSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
-import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { SMOKE_REPORT_PREFIX, type SmokeReport } from '../../src/main/app/smoke'
-import { appEnv, expect, launchVeydr, noDialogPath, repoRoot, test } from './support/fixtures'
+import { appEnv, configHomePath, expect, launchVeydr, noDialogPath, repoRoot, test } from './support/fixtures'
 import { seed } from './support/seed'
+import { removeDir, tempDir } from './support/temp'
 
 const electronBinary = createRequire(__filename)('electron') as string
 
@@ -20,9 +20,18 @@ const readText = (path: string): string => {
 /**
  * What a hang looks like from outside, for the failure message: the kernel's core dump handler,
  * every process descended from `root` (state, kernel wait channel, Chromium process type), and
- * any crash handler process that is running.
+ * any crash handler process that is running. Read from /proc; where it cannot be read (Windows),
+ * the message says so, and the hang still fails the test.
  */
 function hangReport(root: number | undefined): string {
+  try {
+    return procHangReport(root)
+  } catch (error) {
+    return `no process report: ${String(error)}`
+  }
+}
+
+function procHangReport(root: number | undefined): string {
   const procs = readdirSync('/proc')
     .filter((name) => /^\d+$/.test(name))
     .map((name) => {
@@ -69,12 +78,12 @@ test('a crashed renderer is reported and the app exits with an error', async () 
     expect(output).toContain('window.renderer-gone')
     expect(output).toContain('ERRORBOX Veydr cannot continue')
   } finally {
-    rmSync(veydr.workDir, { recursive: true, force: true })
+    removeDir(veydr.workDir)
   }
 })
 
 test('an incomplete installation (renderer bundle missing) is reported and exits with an error', async () => {
-  const dir = mkdtempSync(join(tmpdir(), 'veydr-e2e-broken-'))
+  const dir = tempDir('veydr-e2e-broken-')
   try {
     cpSync(join(repoRoot, 'out/main'), join(dir, 'app/main'), { recursive: true })
     cpSync(join(repoRoot, 'out/preload'), join(dir, 'app/preload'), { recursive: true })
@@ -83,7 +92,7 @@ test('an incomplete installation (renderer bundle missing) is reported and exits
     cpSync(join(repoRoot, 'node_modules/zod'), join(dir, 'app/node_modules/zod'), { recursive: true })
 
     const result = await new Promise<{ code: number | null; output: string }>((resolve, reject) => {
-      const child = spawn(electronBinary, ['-r', noDialogPath, join(dir, 'app')], {
+      const child = spawn(electronBinary, ['-r', noDialogPath, '-r', configHomePath, join(dir, 'app')], {
         env: appEnv(join(dir, 'config')),
         stdio: ['ignore', 'ignore', 'pipe'],
       })
@@ -103,14 +112,14 @@ test('an incomplete installation (renderer bundle missing) is reported and exits
     expect(result.output).toContain('renderer bundle missing')
   } finally {
     // Chromium helper processes may still write into the profile briefly after the main process exited.
-    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
+    removeDir(dir)
   }
 })
 
 /** Runs the built app with `args` (after the app directory) until it exits. */
 function runBuiltApp(args: readonly string[], configHome: string): Promise<{ code: number | null; stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
-    const child = spawn(electronBinary, ['-r', noDialogPath, repoRoot, ...args], {
+    const child = spawn(electronBinary, ['-r', noDialogPath, '-r', configHomePath, repoRoot, ...args], {
       env: appEnv(configHome),
       stdio: ['ignore', 'pipe', 'pipe'],
     })
@@ -130,7 +139,7 @@ function runBuiltApp(args: readonly string[], configHome: string): Promise<{ cod
 }
 
 test('refuses to run with --no-sandbox (task 9.4): explains why and exits with an error before reading the configuration', async () => {
-  const dir = mkdtempSync(join(tmpdir(), 'veydr-e2e-nosandbox-'))
+  const dir = tempDir('veydr-e2e-nosandbox-')
   try {
     const result = await runBuiltApp(['--no-sandbox'], join(dir, 'config'))
     expect(result.code).toBe(1)
@@ -139,12 +148,12 @@ test('refuses to run with --no-sandbox (task 9.4): explains why and exits with a
     expect(existsSync(join(dir, 'config/Veydr/config.json'))).toBe(false)
     expect(existsSync(join(dir, 'config/Veydr/runtime'))).toBe(false)
   } finally {
-    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
+    removeDir(dir)
   }
 })
 
 test('--smoke-test (task 9.2) passes for the built app, leaves the configuration untouched, and starts no command', async () => {
-  const projectDir = mkdtempSync(join(tmpdir(), 'veydr-e2e-smoke-project-'))
+  const projectDir = tempDir('veydr-e2e-smoke-project-')
   const marker = join(projectDir, 'started')
   const config = {
     schemaVersion: 1,
@@ -183,13 +192,13 @@ test('--smoke-test (task 9.2) passes for the built app, leaves the configuration
     expect(readdirSync(seeded.configDir).filter((name) => name.startsWith('config') || name.startsWith('.smoke-test') || name === 'runtime')).toEqual(['config.json'])
     expect(existsSync(marker)).toBe(false)
   } finally {
-    rmSync(seeded.root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
-    rmSync(projectDir, { recursive: true, force: true })
+    removeDir(seeded.root)
+    removeDir(projectDir)
   }
 })
 
 test('--smoke-test fails at once with --no-sandbox', async () => {
-  const dir = mkdtempSync(join(tmpdir(), 'veydr-e2e-smoke-nosandbox-'))
+  const dir = tempDir('veydr-e2e-smoke-nosandbox-')
   try {
     const result = await runBuiltApp(['--smoke-test', '--no-sandbox'], join(dir, 'config'))
     const line = result.stdout.split('\n').find((l) => l.startsWith(SMOKE_REPORT_PREFIX)) ?? ''
@@ -198,12 +207,13 @@ test('--smoke-test fails at once with --no-sandbox', async () => {
     expect(report.checks).toHaveLength(1)
     expect(result.code).toBe(1)
   } finally {
-    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
+    removeDir(dir)
   }
 })
 
-test('--smoke-test fails when the configuration directory cannot be written', async () => {
-  const dir = mkdtempSync(join(tmpdir(), 'veydr-e2e-smoke-ro-'))
+test('[linux-only: POSIX file modes] --smoke-test fails when the configuration directory cannot be written', async () => {
+  test.skip(process.platform !== 'linux', '[linux-only: POSIX file modes]')
+  const dir = tempDir('veydr-e2e-smoke-ro-')
   const configDir = join(dir, 'config/Veydr')
   try {
     mkdirSync(configDir, { recursive: true })
@@ -215,6 +225,6 @@ test('--smoke-test fails when the configuration directory cannot be written', as
     expect(result.stdout).not.toContain(SMOKE_REPORT_PREFIX)
   } finally {
     chmodSync(configDir, 0o700)
-    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
+    removeDir(dir)
   }
 })

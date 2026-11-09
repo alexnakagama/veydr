@@ -4,7 +4,8 @@ import { readFileSync } from 'node:fs'
 import { release } from 'node:os'
 import { afterEach, describe, expect, it } from 'vitest'
 import { createLinuxProcessTree, SCAN_INTERVAL_MS } from '../../src/main/platform/linux/process-tree'
-import { fixture, isAlive, scenario, taggedProcesses, waitForLedger, waitUntil, type Scenario } from '../support/proc'
+import { fixture, scenario, waitForLedger, waitUntil, type Scenario } from '../support/proc'
+import { isAlive, taggedProcesses } from '../support/processes'
 
 // Measurements for task 4.9 and gate G-3 (`npm run measure`). Not part of `verify`: the numbers
 // are recorded in tasks.md, and nothing here asserts a threshold. systemd is only exercised from

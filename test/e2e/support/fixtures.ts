@@ -1,14 +1,24 @@
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { writeFileSync } from 'node:fs'
+import { createRequire } from 'node:module'
 import { join, resolve } from 'node:path'
 import { _electron as electron, expect, test as base, type ElectronApplication, type Page } from '@playwright/test'
-import { type ProcessView, taggedProcesses } from '../../support/proc'
+import { selectPlatform } from '../../../src/main/platform'
+import type { AppInfo, PlatformName } from '../../../src/shared/api'
+import { commandLines, type ProcessView, taggedProcesses } from '../../support/processes'
 import { collectNetworkReport, type NetworkReport } from './network'
+import { removeDir, tempDir } from './temp'
 
 export const repoRoot = resolve(__dirname, '../../..')
+/** The Electron executable the suite launches. */
+const electronExecutable = createRequire(__filename)('electron') as string
 const netGuardPath = join(__dirname, 'net-guard.cjs')
 /** Replaces the blocking native error dialog with a stderr line so fatal paths can be tested. */
 export const noDialogPath = join(__dirname, 'no-dialog.cjs')
+/**
+ * Keeps the configuration directory below `XDG_CONFIG_HOME` on every system (see the file). Every
+ * Electron a test starts loads it with `-r`; `launchVeydr` does so itself.
+ */
+export const configHomePath = join(__dirname, 'config-home.cjs')
 
 export type Build = 'out' | 'out-probe'
 
@@ -27,6 +37,13 @@ export interface VeydrApp {
   /** Value of `XDG_CONFIG_HOME`; the app's config directory is `<configHome>/Veydr`. */
   readonly configHome: string
   readonly workDir: string
+  /**
+   * PID of Veydr's main process. Not `app.process().pid`: on Windows Playwright starts Electron
+   * through `cmd.exe` (`shell: true`), so `app.process()` is that wrapper.
+   */
+  readonly mainPid: number
+  /** Ends Veydr's main process at once (SIGKILL; TerminateProcess on Windows), as a crash would. */
+  kill(): void
   /** Closes the app and returns what the network observers saw. */
   close(): Promise<NetworkReport>
 }
@@ -53,7 +70,7 @@ export function appEnv(configHome: string, extra: Readonly<Record<string, string
 }
 
 export async function launchVeydr(options: LaunchOptions = {}): Promise<VeydrApp> {
-  const workDir = mkdtempSync(join(tmpdir(), 'veydr-e2e-'))
+  const workDir = tempDir('veydr-e2e-')
   const configHome = options.configHome ?? join(workDir, 'config')
   const nodeLog = join(workDir, 'node-net.jsonl')
   const netLog = join(workDir, 'netlog.json')
@@ -62,7 +79,7 @@ export async function launchVeydr(options: LaunchOptions = {}): Promise<VeydrApp
     // Playwright defaults to --no-sandbox for Electron; the OS sandbox is part of what is under test.
     chromiumSandbox: true,
     // Playwright drops NODE_OPTIONS, so the guard is preloaded with `-r` like its own loader.
-    args: ['-r', netGuardPath, ...(options.preloads ?? []).flatMap((p) => ['-r', p]), appDirFor(options.build ?? 'out'), `--log-net-log=${netLog}`, '--net-log-capture-mode=Everything'],
+    args: ['-r', netGuardPath, '-r', configHomePath, ...(options.preloads ?? []).flatMap((p) => ['-r', p]), appDirFor(options.build ?? 'out'), `--log-net-log=${netLog}`, '--net-log-capture-mode=Everything'],
     env: appEnv(configHome, {
       VEYDR_NET_GUARD_LOG: nodeLog,
       ...options.env,
@@ -70,10 +87,20 @@ export async function launchVeydr(options: LaunchOptions = {}): Promise<VeydrApp
   })
   const window = await app.firstWindow()
   await window.waitForLoadState('domcontentloaded')
+  const mainPid = await app.evaluate(() => process.pid)
+  // The configuration really is the test's own (config-home.cjs): never the user's or the runner's.
+  const userData = await app.evaluate(({ app: electronApp }) => electronApp.getPath('userData'))
+  if (userData !== join(configHome, 'Veydr')) {
+    await app.close().catch(() => undefined)
+    removeDir(workDir)
+    throw new Error(`the app's configuration directory is ${userData}, not below the test's ${configHome}`)
+  }
 
   return {
     app,
     window,
+    mainPid,
+    kill: () => process.kill(mainPid, 'SIGKILL'),
     configHome,
     workDir,
     async close() {
@@ -84,13 +111,37 @@ export async function launchVeydr(options: LaunchOptions = {}): Promise<VeydrApp
 }
 
 /**
- * Tagged processes other than Veydr's own main process, for tests that launch Veydr itself with
- * the tag so its commands inherit it. Whether /proc shows the main process's environment varies
- * (Electron may overwrite that memory), so it is left out explicitly instead of by chance.
+ * Tagged processes other than Veydr's own, for tests that launch Veydr itself with the tag so its
+ * commands inherit it. Left out by PID: Veydr's main process (`mainPid`), and on Windows the
+ * `cmd.exe` Playwright starts it through (`app.process()`). Left out as processes of Electron's own
+ * executable started with a `--type=` switch: Chromium's helper processes (renderer, GPU, utility,
+ * crash handler), which inherit the tag too, whether or not their environment can be read. A
+ * command's own `--type=` argument does not hide it, since a command does not run Electron.
  */
 export function commandProcesses(veydr: VeydrApp, tag: string): ProcessView[] {
-  const main = veydr.app.process().pid
-  return taggedProcesses(tag).filter((p) => p.pid !== main)
+  // Veydr's main process, and on Windows the cmd.exe Playwright starts it through (the same PID on Linux).
+  const own = new Set([veydr.mainPid, veydr.app.process().pid])
+  const tagged = taggedProcesses(tag).filter((p) => !own.has(p.pid))
+  const lines = commandLines(tagged.map((p) => p.pid))
+  // A process that exited since it was listed has no command line, and is no longer one of them.
+  return tagged.filter((p) => {
+    const line = lines.get(p.pid)
+    if (line === undefined) return false
+    return !(line.toLowerCase().includes(electronExecutable.toLowerCase()) && /(?:^|\s)--type=/.test(line))
+  })
+}
+
+/** The platform the composition root selects on this system, read independently of the running app. */
+export const hostPlatform: PlatformName = selectPlatform().name
+
+/**
+ * What the running app reports about its platform (`app.getInfo`). Tests read values that differ by
+ * system from here, such as the platform label or the default shell, instead of branching.
+ */
+export async function appInfo(window: Page): Promise<AppInfo> {
+  const result = await window.evaluate(() => globalThis.window.veydr.app.getInfo())
+  if (!result.ok) throw new Error(`app.getInfo failed: ${result.error.message}`)
+  return result.value
 }
 
 export function expectNoOutboundConnections(report: NetworkReport): void {
@@ -116,7 +167,7 @@ export const test = base.extend<Fixtures>({
       expectNoOutboundConnections(await veydr.close())
     } finally {
       await veydr.app.close().catch(() => undefined)
-      rmSync(veydr.workDir, { recursive: true, force: true })
+      removeDir(veydr.workDir)
     }
   },
   window: async ({ veydr }, use) => {

@@ -1,14 +1,19 @@
 import { spawn } from 'node:child_process'
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Locator, Page } from '@playwright/test'
 import type { Config } from '../../src/shared/config'
-import { fixture, killTagged, readLedger, TAG_VARIABLE, taggedProcesses, type LedgerEntry } from '../support/proc'
+import { fixture, readLedger, TAG_VARIABLE, type LedgerEntry } from '../support/proc'
+import { killTagged, taggedProcesses } from '../support/processes'
 import { expect, expectNoOutboundConnections, launchVeydr, test, type VeydrApp } from './support/fixtures'
 import { seed } from './support/seed'
+import { removeDir, tempDir } from './support/temp'
 
 // Task 8.3: the ports view against real listeners, managed and not.
+//
+// Linux-only until W3 (add-windows-port-inspection): on Windows the Ports view says that port
+// inspection is not yet available, which windows-ports.spec.ts checks.
+test.skip(process.platform !== 'linux', '[linux-only: port inspection]')
 
 const PROJECT_ID = '7a2e9b5d-4d2f-4f66-8b8c-1e7e2a3c0b12'
 const DEV_ID = '6f1f8a4c-3c1e-4e55-9a7b-0d6d1f2b9a01'
@@ -23,7 +28,7 @@ interface Scene {
 }
 
 function scene(): Scene {
-  const dir = mkdtempSync(join(tmpdir(), 'veydr-e2e-ports-'))
+  const dir = tempDir('veydr-e2e-ports-')
   const tag = crypto.randomUUID()
   const env: Record<string, string> = {}
   for (const [key, value] of Object.entries(process.env)) if (value !== undefined) env[key] = value
@@ -75,11 +80,11 @@ async function openPorts(window: Page): Promise<void> {
 async function cleanup(veydr: VeydrApp | null, s: Scene, extra: readonly string[] = []): Promise<void> {
   await veydr?.app.close().catch(() => undefined)
   killTagged(s.tag)
-  if (veydr !== null) rmSync(veydr.workDir, { recursive: true, force: true })
-  for (const path of [s.dir, ...extra]) rmSync(path, { recursive: true, force: true })
+  if (veydr !== null) removeDir(veydr.workDir)
+  for (const path of [s.dir, ...extra]) removeDir(path)
 }
 
-test('[spec:port-inspection/dev-server-port-shown] [spec:port-inspection/port-opened-by-a-child-process] shows the ports of running commands, including one opened by a grandchild', async () => {
+test('[linux-only: port inspection] [spec:port-inspection/dev-server-port-shown] [spec:port-inspection/port-opened-by-a-child-process] shows the ports of running commands, including one opened by a grandchild', async () => {
   const s = scene()
   const seeded = seed({ 'config.json': JSON.stringify(seededConfig(s)) })
   let veydr: VeydrApp | null = null
@@ -128,7 +133,7 @@ test('[spec:port-inspection/dev-server-port-shown] [spec:port-inspection/port-op
   }
 })
 
-test('[spec:port-inspection/unmanaged-listener-owned-by-user] [spec:port-inspection/no-actions-on-unrelated-processes] [spec:port-inspection/refresh] lists unmanaged listeners without actions and refreshes on demand and every 3 s', async () => {
+test('[linux-only: port inspection] [spec:port-inspection/unmanaged-listener-owned-by-user] [spec:port-inspection/no-actions-on-unrelated-processes] [spec:port-inspection/refresh] lists unmanaged listeners without actions and refreshes on demand and every 3 s', async () => {
   const s = scene()
   const reads = join(s.dir, 'port-reads.log')
   let veydr: VeydrApp | null = null
@@ -202,7 +207,7 @@ test('[spec:port-inspection/unmanaged-listener-owned-by-user] [spec:port-inspect
   }
 })
 
-test('[spec:port-inspection/port-owned-by-another-user] shows a port whose owner is hidden from the user as restricted', async () => {
+test('[linux-only: port inspection] [spec:port-inspection/port-owned-by-another-user] shows a port whose owner is hidden from the user as restricted', async () => {
   const s = scene()
   let veydr: VeydrApp | null = null
   try {
@@ -242,7 +247,7 @@ test('[spec:port-inspection/port-owned-by-another-user] shows a port whose owner
   }
 })
 
-test('the ports view is reachable by keyboard and its refresh time is announced as text', async () => {
+test('[linux-only: port inspection] the ports view is reachable by keyboard and its refresh time is announced as text', async () => {
   const s = scene()
   let veydr: VeydrApp | null = null
   try {
@@ -262,7 +267,3 @@ test('the ports view is reachable by keyboard and its refresh time is announced 
     await cleanup(veydr, s)
   }
 })
-
-// add-windows-environment-and-commands group 7 (design D7) implements this on the Linux-only guards.
-// Not in offline.spec.ts: its runner counts that file's own passed and skipped tests.
-test.fixme('[spec:quality-gates/linux-only-end-to-end-test-on-windows] Linux-only end-to-end tests are skipped on Windows with the facility named', () => {})

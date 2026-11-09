@@ -14,7 +14,8 @@ import { createSupervisor, type LaunchTarget } from '../../src/main/supervisor/s
 import type { ListeningPort } from '../../src/shared/api'
 import type { CommandConfig } from '../../src/shared/config'
 import { command, project, quietLog } from '../unit/support/config'
-import { fixture, readProcess, REPETITIONS, scenario, TAG_VARIABLE, taggedProcesses, waitUntil, readLedger, type LedgerEntry, type Scenario } from '../support/proc'
+import { fixture, REPETITIONS, scenario, TAG_VARIABLE, waitUntil, readLedger, type LedgerEntry, type Scenario } from '../support/proc'
+import { linuxProcess, taggedProcesses } from '../support/processes'
 
 // Tasks 8.2 and 8.4: port inspection against real sockets and real process trees.
 
@@ -73,7 +74,7 @@ describe('Linux port inspection', () => {
       const state = await supervisor.start(commandId)
       const listener = await listening(s)
       // The listener is a grandchild of the command's leader.
-      const parent = readProcess(listener.ppid)
+      const parent = linuxProcess(listener.ppid)
       expect(parent?.ppid).toBe(state.pid)
       expect(listener.pid).not.toBe(state.pid)
 

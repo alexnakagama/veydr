@@ -1,10 +1,11 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { fixture, killTagged, readLedger, taggedProcesses, treeSize } from '../support/proc'
+import { fixture, readLedger, treeSize } from '../support/proc'
+import { killTagged, taggedProcesses } from '../support/processes'
 import { expect, expectNoOutboundConnections, launchVeydr, test, type VeydrApp } from './support/fixtures'
 import { exited, networkReportOf, recordedRuns, taggedConfig } from './support/runs'
 import { seed } from './support/seed'
+import { removeDir, tempDir } from './support/temp'
 
 // Tasks 5.4 and 5.5: quitting stops every running command first (design D10), and so does a
 // termination signal (design D9).
@@ -24,7 +25,7 @@ interface Fixture {
 
 async function withFixture(commands: (f: Pick<Fixture, 'ledger'>) => Parameters<typeof taggedConfig>[2], body: (f: Fixture) => Promise<void>): Promise<void> {
   const tag = crypto.randomUUID()
-  const projectDir = mkdtempSync(join(tmpdir(), 'veydr-e2e-project-'))
+  const projectDir = tempDir('veydr-e2e-project-')
   const ledger = join(projectDir, 'ledger.jsonl')
   const seeded = seed({ 'config.json': JSON.stringify(taggedConfig(projectDir, tag, commands({ ledger }))) })
   const f: Fixture = { tag, projectDir, ledger, seeded, apps: [] }
@@ -35,10 +36,10 @@ async function withFixture(commands: (f: Pick<Fixture, 'ledger'>) => Parameters<
     killTagged(tag)
     for (const veydr of f.apps) {
       await veydr.app.close().catch(() => undefined)
-      rmSync(veydr.workDir, { recursive: true, force: true })
+      removeDir(veydr.workDir)
     }
-    rmSync(seeded.root, { recursive: true, force: true })
-    rmSync(projectDir, { recursive: true, force: true })
+    removeDir(seeded.root)
+    removeDir(projectDir)
   }
 }
 
@@ -69,7 +70,7 @@ test('[spec:process-supervision/quit-with-running-commands] quitting shows progr
 
       const exit = exited(veydr.app)
       await quit(veydr)
-      // The stubborn command ignores SIGTERM, so stopping takes its 1.5 s stop timeout.
+      // The stubborn command ignores SIGTERM (Ctrl+Break on Windows), so stopping takes its 1.5 s stop timeout.
       const overlay = veydr.window.getByTestId('quit-overlay')
       await expect(overlay).toContainText('Stopping running commands before quitting…')
       await expect(overlay).toContainText('stubborn')
@@ -99,7 +100,10 @@ test('closing the window quits the same way', async () => {
   )
 })
 
-test('[spec:process-supervision/stop-failures-on-quit] processes that cannot be stopped are listed with Retry / Quit anyway; quitting anyway keeps them in the ledger for the next launch', async () => {
+// unkillable.cjs makes `process.kill` fail with EPERM for the escaped subtree, as for a setuid
+// program; on Windows a command is stopped through its Job Object, not with signals.
+test('[linux-only: POSIX signals] [spec:process-supervision/stop-failures-on-quit] processes that cannot be stopped are listed with Retry / Quit anyway; quitting anyway keeps them in the ledger for the next launch', async () => {
+  test.skip(process.platform !== 'linux', '[linux-only: POSIX signals]')
   await withFixture(
     ({ ledger }) => [{ id: TREE_ID, name: 'tree', execution: node([fixture('tree'), '--ledger', ledger, '--depth', '1', '--escape']), stopTimeoutMs: 300 }],
     async (f) => {
@@ -151,7 +155,8 @@ test('[spec:process-supervision/stop-failures-on-quit] processes that cannot be 
 })
 
 for (const [signal, number] of [['SIGTERM', 15], ['SIGINT', 2], ['SIGHUP', 1]] as const) {
-  test(`${signal} to Veydr stops every running command before it exits`, async () => {
+  test(`[linux-only: POSIX signals] ${signal} to Veydr stops every running command before it exits`, async () => {
+    test.skip(process.platform !== 'linux', '[linux-only: POSIX signals]')
     await withFixture(
       ({ ledger }) => [{ id: TREE_ID, name: 'tree', execution: node([fixture('tree'), '--ledger', ledger, '--depth', '2', '--fanout', '2']), stopTimeoutMs: 5000 }],
       async (f) => {
@@ -165,7 +170,7 @@ for (const [signal, number] of [['SIGTERM', 15], ['SIGINT', 2], ['SIGHUP', 1]] a
 
         const exit = exited(veydr.app)
         const started = Date.now()
-        veydr.app.process().kill(signal)
+        process.kill(veydr.mainPid, signal)
         expect(await exit).toBe(128 + number)
         expect(Date.now() - started).toBeLessThan(10_000 + 2_000)
         expect(stderr.join('')).toContain(`app.signal {"signal":"${signal}"}`)
@@ -177,7 +182,8 @@ for (const [signal, number] of [['SIGTERM', 15], ['SIGINT', 2], ['SIGHUP', 1]] a
   })
 }
 
-test('a second signal exits at once, keeping what is not verified as stopped in the ledger', async () => {
+test('[linux-only: POSIX signals] a second signal exits at once, keeping what is not verified as stopped in the ledger', async () => {
+  test.skip(process.platform !== 'linux', '[linux-only: POSIX signals]')
   await withFixture(
     ({ ledger }) => [{ id: STUBBORN_ID, name: 'stubborn', execution: node([fixture('tree'), '--ledger', ledger, '--ignore-term']), stopTimeoutMs: 8000 }],
     async (f) => {
@@ -189,10 +195,10 @@ test('a second signal exits at once, keeping what is not verified as stopped in 
 
       const exit = exited(veydr.app)
       const started = Date.now()
-      veydr.app.process().kill('SIGTERM')
+      process.kill(veydr.mainPid, 'SIGTERM')
       // The command ignores SIGTERM and has an 8 s stop timeout; the second signal does not wait for it.
       await veydr.window.getByTestId('quit-overlay').waitFor()
-      veydr.app.process().kill('SIGTERM')
+      process.kill(veydr.mainPid, 'SIGTERM')
       expect(await exit).toBe(143)
       expect(Date.now() - started).toBeLessThan(5_000)
       expect(taggedProcesses(f.tag)).toHaveLength(1)

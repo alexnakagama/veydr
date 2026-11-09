@@ -6,14 +6,14 @@ Veydr's checks run on GitHub Actions, on GitHub-hosted `ubuntu-24.04` runners; o
 
 | Workflow | Triggers | Purpose | Blocks |
 |---|---|---|---|
-| `ci.yml` | `pull_request` to `master`, `push` to `master`, `merge_group` | Quality gate: typecheck, lint, spec coverage, production audit, workflow lint, unit, integration, E2E, packaging; typecheck, lint, unit tests, and the Windows process-tree integration tests also on Windows | Merge, through the aggregate check `ci-ok` |
+| `ci.yml` | `pull_request` to `master`, `push` to `master`, `merge_group` | Quality gate: typecheck, lint, spec coverage, production audit, workflow lint, unit, integration, E2E, packaging; typecheck, lint, unit tests, the Windows integration tests, and the E2E tests also on Windows | Merge, through the aggregate check `ci-ok` |
 | `security.yml` | `pull_request`, `push` to `master`, weekly schedule | CodeQL analysis; dependency review (pull requests only) | Merge (dependency review is required; CodeQL alerts go to the Security tab) |
 | `nightly.yml` | Daily schedule, manual run with a `ref` | Performance scenarios P1–P4, `scripts/smoke-linux.sh`, `scripts/acceptance-linux.sh` | Nothing; failures are reported in one tracking issue |
 | `build.yml` | Manual run with a `ref` and a `smoke` option | Packages any ref into downloadable `.deb` and AppImage artifacts with `SHA256SUMS` | Nothing |
 | `release.yml` | Manual run with a `version` | Validates the version, runs the full gate on the bumped tree, then pushes the bump commit and tag and creates a draft release | n/a |
 | `windows-probe.yml` | Manual run with a `negative-control` option | Probes how Windows behaves on the `windows-2025` runner and records the answers as evidence for the Windows platform work; a run never changes what Veydr claims for Windows | Nothing; never a required check |
 
-Every job prepares the runner with the local composite action `.github/actions/setup`. It sets up Node from `.nvmrc`, installs npm 11.19.0 (the version [dependencies.md](dependencies.md) was verified with; the step fails if `npm --version` reports anything else), runs `npm ci`, and restores the npm, Electron and electron-builder caches, keyed on `package-lock.json`. On Windows the Electron and electron-builder cache is left out: no Windows job downloads Electron. Its inputs:
+Every job prepares the runner with the local composite action `.github/actions/setup`. It sets up Node from `.nvmrc`, installs npm 11.19.0 (the version [dependencies.md](dependencies.md) was verified with; the step fails if `npm --version` reports anything else), runs `npm ci`, and restores the npm, Electron and electron-builder caches, keyed on `package-lock.json`. On Windows the Electron and electron-builder cache is left out, since its paths are Linux ones: the `windows` job's end-to-end step downloads Electron each run, with `node scripts/ensure-electron.cjs`. Its inputs:
 
 | Input | Default | Effect |
 |---|---|---|
@@ -36,7 +36,7 @@ When a pull request gets a new push while its checks are still running, the olde
 | `integration` | `xvfb-run --auto-servernum npm run test:integration` | `npm run test:integration` (with `xvfb-run --auto-servernum` in front on a machine without a display) | None | 30 min |
 | `e2e` | `xvfb-run --auto-servernum npm run test:e2e` | `npm run test:e2e` (with `xvfb-run --auto-servernum` in front on a machine without a display) | `e2e-test-results`: Playwright's `test-results/`, only when the job fails, kept 7 days | 45 min |
 | `package` | `xvfb-run --auto-servernum npm run test:packaging` | `npm run test:packaging` | `linux-packages`: `dist/*.deb` and `dist/*.AppImage`, kept 7 days | 45 min |
-| `windows` | On `windows-2025`: `npm run typecheck`, `npm run lint`, `npm test`, `node scripts/build-windows-helper.mjs`, `npm run test:windows` | The same commands on Windows | None | 30 min |
+| `windows` | On `windows-2025`: `npm run typecheck`, `npm run lint`, `npm test`, `node scripts/build-windows-helper.mjs`, `npm run test:windows`, `npm run test:e2e` | The same commands on Windows | `windows-e2e-test-results`: Playwright's `test-results/`, only when the job fails, kept 7 days | 45 min |
 | `ci-ok` | Checks the result of every job above | n/a | None | 5 min |
 
 Notes on the jobs:
@@ -49,11 +49,49 @@ Notes on the jobs:
   docker run --rm -v "$PWD:/repo" -w /repo rhysd/actionlint@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 -color
   ```
 
-- **Electron jobs** (`integration`, `e2e`, `package`) run the setup action with `electron: "true"`, which installs Xvfb and enables unprivileged user namespaces (see [User namespaces on runners](#user-namespaces-on-runners)). On Ubuntu 24.04 or later, reproducing an E2E failure locally needs the same `sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0`; Debian 13 needs nothing.
-- **`windows` checks shared code and the Windows process tree on Windows; Windows is still not supported.** Like `static`, it runs each check even after one fails. It catches path-separator, case, and line-ending assumptions in the code and the tests, and it builds the Windows helper and runs the Windows process-tree integration tests (see below). It does not cover: the other integration tests, end-to-end, and packaging tests (they need Linux and are not run there), the unit tests that need a Linux facility (skipped, see below), and starting a command from the app, which still fails on Windows.
+- **Electron jobs** (`integration`, `e2e`, `package`, `windows`) run the setup action with `electron: "true"`. On Linux it installs Xvfb and enables unprivileged user namespaces (see [User namespaces on runners](#user-namespaces-on-runners)); on Windows it installs only the dependencies. On Ubuntu 24.04 or later, reproducing an E2E failure locally needs the same `sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0`; Debian 13 needs nothing.
+- **`windows` checks shared code, the Windows platform, and the app on Windows (a preview).** Like `static`, it runs each check even after one fails. It catches path-separator, case, and line-ending assumptions in the code and the tests, builds the Windows helper, runs the Windows integration tests (see below), and runs the end-to-end suite against the app built there (see [End-to-end tests on Windows](#end-to-end-tests-on-windows)). It does not cover: the other integration tests and the packaging tests (they need Linux and are not run there), and the unit and end-to-end tests that need a Linux facility (skipped with their reason, see below).
 - **The `windows` job builds the Windows helper, then tests with it.** `node scripts/build-windows-helper.mjs` ("Build Windows helper") compiles `src/main/platform/windows/helper/veydr-helper.cs` with the `csc.exe` of .NET Framework 4.8 into `out-helper/veydr-helper.exe`, which is git-ignored. No helper binary is ever committed, and `workflow-policy.test.ts` fails if `git ls-files` lists a `*.exe`, `*.dll` or `*.pdb` under `src/main/platform/windows/` or `out-helper/`. `npm run test:windows` ("Windows integration tests", `vitest run --project integration windows-`) runs `test/integration/windows-process-tree.test.ts`, whose title is `[windows-only: Job Objects]`. Its step requires the build step's success: if the helper does not compile, the job fails at the build step and the test step does not run, so no Windows integration test is reported as passed or skipped. On Linux the same file is part of `npm run test:integration` and is reported as skipped, with that title as the reason. To reproduce a Windows failure locally, run the two commands on Windows; the build needs only the `csc.exe` that Windows ships, and stops with "the Windows helper can only be built on Windows" anywhere else.
 - **Tests that need Linux are skipped with a reason.** A unit test that needs a Linux facility (`/proc`, POSIX signals, POSIX file modes, the AppImage runtime) is guarded with `describe.skipIf(process.platform !== 'linux')` or `it.skipIf(...)`, and its title starts with `[linux-only: <facility>]`, for example `'[linux-only: /proc] /proc reader'`. On Windows the runner reports it as skipped, and its title names the facility; on Linux it runs as usual. A test whose assumption is incidental, such as a path joined with `/`, is fixed instead of skipped. `test/unit/test-platform-policy.test.ts` scans every script under `test/` and fails on a platform skip (`skipIf`, `runIf`, or a conditional `skip(condition, reason)`) without such a reason, on a guard that does not run its test on exactly the system its reason names (it evaluates the condition for Linux, Windows, and macOS), and on any other branch on the platform in test code (`if`, `?:`, `&&`, `||`, `switch`), which could let a test pass without running. It checks that a reason is present, not that it names the right facility; that is for review. `[windows-only: <facility>]` with `process.platform !== 'win32'` is the counterpart for later Windows work.
 - **Downloading artifacts.** Use the run's summary page, or `gh run download <run-id> --name linux-packages`.
+
+### End-to-end tests on Windows
+
+The `windows` job runs the whole end-to-end suite (`npm run test:e2e`, "Windows end-to-end tests") after the integration tests, against the app built in the same step. Like the integration tests, the step requires the helper build's success: the built app finds the helper at `out-helper/veydr-helper.exe` below its application path, which is the repository root (`windows-app.spec.ts` checks both). Chromium's sandbox stays on, as in the Linux `e2e` job: the policy test rejects `--no-sandbox` and `VEYDR_ALLOW_SKIP_OFFLINE` in the workflow, the harness launches with `chromiumSandbox: true`, and `security.spec.ts` checks on Windows that every renderer runs sandboxed below medium integrity. On failure, Playwright's `test-results/` is uploaded as `windows-e2e-test-results`. The step is the slowest of the job, so its timeout is 45 minutes.
+
+The harness works the same way on both systems:
+
+- **Processes** are read by `test/support/processes.ts` (`taggedProcesses`, `isAlive`, `killTagged`, `processIdentity`, `commandLines`), through `/proc` on Linux and one `Get-CimInstance Win32_Process` call per query on Windows, where each candidate's environment is read from its process environment block (Win32_Process does not expose it). A process is identified by its PID and its start time. A failed or unparsable query throws, so a "no process remains" check never passes without having looked. On Windows each query first checks the reader on its own environment, a process that has exited but is still listed does not count as alive, and a process that could not be read but was started by a tagged one fails the query (an elevated, protected, or 32-bit child would otherwise be missed). On Windows the console hosts (`conhost.exe`) and Veydr's helper are not counted as a command's processes; the helper's own exit is checked by `windows-process-tree.test.ts`. Where a test starts Veydr itself with the tag, Chromium's own processes inherit it too, and are left out by the `--type=` switch they are started with (`commandProcesses`). This file holds the only platform dispatch in the test code, which `test-platform-policy.test.ts` pins by file and count.
+- **The configuration directory** follows the test's `XDG_CONFIG_HOME` on both systems: every Electron the suite starts loads `test/e2e/support/config-home.cjs`, because on Windows Electron would otherwise use the runner's `%APPDATA%\Veydr` for every test.
+- **Fixtures are Node scripts.** Output that a POSIX shell would print (`printf`, `sleep`, loops) comes from `test/fixtures/proc/print.mjs` in direct mode, and an uncooperative tree ignores Ctrl+Break as well as SIGTERM. Values that differ by system, such as the platform label or the default shell, are read from the app's `AppInfo`; no test branches on the platform.
+- **Temporary paths** are real paths (`test/e2e/support/temp.ts`): the runner's `%TEMP%` is an 8.3 short path, while Veydr reports long ones.
+- **Veydr's own process** is `VeydrApp.mainPid`, read from the app, not `app.process()`: on Windows Playwright starts Electron through `cmd.exe` (`shell: true`), so `app.process()` is that wrapper. A test that simulates a crash ends the real main process with `VeydrApp.kill()`. On Windows a process Veydr starts also inherits Veydr's inheritable handles, among them the stdio pipes Playwright waits on, so a test that leaves such a process running (the editor) quits Veydr itself instead of waiting for `close()`.
+
+Every spec is classified below, and `test-platform-policy.test.ts` checks this table against the specs: each spec has one row, a Linux-only or Windows-specific spec has a file-wide guard for its system, and the reasons listed are exactly those of the spec's guards. A portable spec runs on both systems; a single test in it may still be skipped on one, with the facility it needs named in its title and its skip reason. A Linux-only test is never made to pass on Windows by doing nothing, and a Windows-specific spec (`windows-*.spec.ts`) asserts what Windows does differently.
+
+| Spec | Kind | Skipped on one system |
+|---|---|---|
+| `accessibility.spec.ts` | portable | none |
+| `commands.spec.ts` | portable | `[linux-only: login shell]` (the login environment; the Windows environment is checked by `windows-commands.test.ts`), `[linux-only: shebang scripts and POSIX sessions]` (an editor that is a shell script, in its own session) |
+| `failure.spec.ts` | portable | `[linux-only: POSIX file modes]` (an unwritable configuration directory) |
+| `keyboard.spec.ts` | portable | none |
+| `logs.spec.ts` | portable | none |
+| `no-network.spec.ts` | portable | `[linux-only: port inspection and a POSIX shell]` (the full session reads a port in the Ports view) |
+| `offline.spec.ts` | Linux-only | `[linux-only: network namespaces]` |
+| `ports.spec.ts` | Linux-only | `[linux-only: port inspection]` (until W3; `windows-ports.spec.ts` checks the Windows view) |
+| `processes.spec.ts` | portable | `[linux-only: POSIX signals]` (the signal that ended a stopped run) |
+| `projects.spec.ts` | portable | none |
+| `quit.spec.ts` | portable | `[linux-only: POSIX signals]` (signals to Veydr, and processes that refuse them) |
+| `recovery.spec.ts` | Linux-only | `[linux-only: processes outliving a crashed Veydr]` (`windows-recovery.spec.ts` checks that nothing survives on Windows) |
+| `security.spec.ts` | portable | `[windows-only: process sandbox state]` (Windows reports each process's sandbox and integrity level) |
+| `shell.spec.ts` | portable | none |
+| `single-instance.spec.ts` | portable | none |
+| `state-sync.spec.ts` | portable | none |
+| `windows-app.spec.ts` | Windows-specific | `[windows-only: the process-tree helper]` |
+| `windows-ports.spec.ts` | Windows-specific | `[windows-only: no port inspection before W3]` |
+| `windows-recovery.spec.ts` | Windows-specific | `[windows-only: Job Objects]` |
+
+`offline.spec.ts` counts itself: its runner re-runs the file in a network namespace and requires exactly `1 passed` and `1 skipped`, so a test, guard or placeholder added to that file changes what the runner must expect. Its Linux-only guard adds no test, so the counts are unchanged.
 
 ### `ci-ok`, the aggregate check
 

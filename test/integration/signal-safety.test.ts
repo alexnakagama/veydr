@@ -2,7 +2,8 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
 import { createProcReader, type ProcReader } from '../../src/main/platform/linux/proc-reader'
 import { createLinuxProcessTree } from '../../src/main/platform/linux/process-tree'
 import type { SpawnPlan } from '../../src/main/platform/types'
-import { fixture, REPETITIONS, scenario, startSentinel, taggedProcesses, treeSize, waitForLedger, type Scenario, type Sentinel } from '../support/proc'
+import { fixture, REPETITIONS, scenario, startSentinel, treeSize, waitForLedger, type Scenario, type Sentinel } from '../support/proc'
+import { taggedProcesses } from '../support/processes'
 
 // Signal safety with real processes and the real `kill` (task 4.7). Run under VEYDR_STRESS=1 for
 // 50 repetitions. The sentinels are started by the test runner without `detached`, so they share

@@ -9,7 +9,7 @@ Veydr is local-only: no telemetry, no update checks, no remote content (spec `de
 | Renderer content | Only `app://veydr/` is loaded; navigation, redirects, subframe navigation, `<webview>` and new windows are denied (`src/main/app/security.ts`). |
 | Renderer requests | CSP `connect-src 'none'`, `default-src 'none'` (`src/main/app/csp.ts`). |
 | WebRTC | CSP does not govern WebRTC, so `setWebRTCIPHandlingPolicy('disable_non_proxied_udp')` is applied to every web contents. |
-| Chromium services | Spellchecker (dictionary downloads from a Google CDN) disabled at session creation; permission, device and display-capture requests denied. |
+| Chromium services | Spellchecker (dictionary downloads from a Google CDN) disabled at session creation; permission, device and display-capture requests denied. Proxy discovery off (`--no-proxy-server`, set before `ready`): Veydr makes no requests, so it needs no proxy, and on Windows Chromium would otherwise follow "Automatically detect settings" and look up the host `wpad` on the local network at startup (seen by the Windows end-to-end tests). |
 | Dev server | `ELECTRON_RENDERER_URL` is honored only in `electron-vite dev` builds (`__VEYDR_DEV__`), only for plain-http loopback URLs, and is compiled out of every other build. |
 
 ## What the E2E guard observes

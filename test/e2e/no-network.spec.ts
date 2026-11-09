@@ -1,10 +1,10 @@
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Page } from '@playwright/test'
-import { killTagged, taggedProcesses } from '../support/proc'
+import { killTagged, taggedProcesses } from '../support/processes'
 import { expect, expectNoOutboundConnections, launchVeydr, repoRoot, test } from './support/fixtures'
 import { fullSession, pickDirectoryPath } from './support/session'
+import { removeDir, tempDir } from './support/temp'
 
 const fsGuardPath = join(__dirname, 'support', 'fs-guard.cjs')
 
@@ -44,7 +44,7 @@ test('the smoke flow opens no outbound connections', async () => {
     await smokeFlow(veydr.window)
     expectNoOutboundConnections(await veydr.close())
   } finally {
-    rmSync(veydr.workDir, { recursive: true, force: true })
+    removeDir(veydr.workDir)
   }
 })
 
@@ -67,7 +67,7 @@ for (const { kind, source } of probes) {
       expect(hits.length).toBeGreaterThan(0)
       expect(() => expectNoOutboundConnections(report)).toThrow()
     } finally {
-      rmSync(veydr.workDir, { recursive: true, force: true })
+      removeDir(veydr.workDir)
     }
   })
 }
@@ -87,7 +87,7 @@ test('the production build blocks WebRTC STUN traffic from the renderer', async 
     expect(outcome).toBe('attempted')
     expectNoOutboundConnections(await veydr.close())
   } finally {
-    rmSync(veydr.workDir, { recursive: true, force: true })
+    removeDir(veydr.workDir)
   }
 })
 
@@ -102,8 +102,11 @@ test('the production build contains no network probe', () => {
   expect(main).not.toContain('ELECTRON_RENDERER_URL')
 })
 
-test('[spec:desktop-shell/no-outbound-connections] [spec:config-storage/project-directories-untouched] a full session opens no outbound connections and leaves the project folder untouched', async () => {
-  const work = mkdtempSync(join(tmpdir(), 'veydr-e2e-session-'))
+// The full session (support/session.ts) reads a listener's port in the Ports view and runs POSIX
+// shell scripts; port inspection reaches Windows with W3.
+test('[linux-only: port inspection and a POSIX shell] [spec:desktop-shell/no-outbound-connections] [spec:config-storage/project-directories-untouched] a full session opens no outbound connections and leaves the project folder untouched', async () => {
+  test.skip(process.platform !== 'linux', '[linux-only: port inspection and a POSIX shell]')
+  const work = tempDir('veydr-e2e-session-')
   const project = join(work, 'shop')
   mkdirSync(join(project, 'src'), { recursive: true })
   writeFileSync(join(project, 'package.json'), '{}\n')
@@ -137,7 +140,7 @@ test('[spec:desktop-shell/no-outbound-connections] [spec:config-storage/project-
   } finally {
     await veydr.app.close().catch(() => undefined)
     killTagged(tag)
-    rmSync(veydr.workDir, { recursive: true, force: true })
-    rmSync(work, { recursive: true, force: true })
+    removeDir(veydr.workDir)
+    removeDir(work)
   }
 })

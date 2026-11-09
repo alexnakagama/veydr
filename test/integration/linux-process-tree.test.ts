@@ -5,22 +5,11 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
 import { SpawnError } from '../../src/main/platform/errors'
 import { createLinuxProcessTree, type LinuxProcessTreeOptions } from '../../src/main/platform/linux/process-tree'
 import type { ExitInfo, ManagedProcess, SpawnPlan } from '../../src/main/platform/types'
-import {
-  fixture,
-  isAlive,
-  REPETITIONS,
-  scenario,
-  startSentinel,
-  taggedProcesses,
-  treeSize,
-  waitForLedger,
-  waitUntil,
-  type Scenario,
-  type Sentinel,
-} from '../support/proc'
+import { fixture, REPETITIONS, scenario, startSentinel, treeSize, waitForLedger, waitUntil, type Scenario, type Sentinel } from '../support/proc'
+import { isAlive, taggedProcesses } from '../support/processes'
 
 // Real process trees against the Linux implementation (tasks 4.5, 4.6). Every cleanup claim is
-// checked by enumerating /proc independently (test/support/proc.ts), and a sentinel started
+// checked by enumerating /proc independently (test/support/processes.ts), and a sentinel started
 // outside the supervisor must survive every scenario untouched (design D14).
 
 let sentinel: Sentinel

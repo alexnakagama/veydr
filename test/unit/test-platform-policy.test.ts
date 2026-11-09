@@ -3,6 +3,7 @@ import { extname, join, relative, resolve } from 'node:path'
 import { runInNewContext } from 'node:vm'
 import ts from 'typescript'
 import { describe, expect, it } from 'vitest'
+import { selectProcessBackend } from '../support/processes'
 
 // Design D7: a test that cannot run on an operating system is skipped there with a reason in its
 // title (`[linux-only: <facility>]`), never made to pass by doing nothing.
@@ -39,6 +40,10 @@ interface PlatformGuard {
   readonly condition: string
   /** The operating system its reason names, or `null` without a reason. */
   readonly os: GuardedOs | null
+  /** The reason as written, e.g. `[linux-only: /proc]`, or `null` without one. */
+  readonly reason: string | null
+  /** Whether the guard is a statement of the file itself, so it guards every test in the file. */
+  readonly fileLevel: boolean
   /** Whether the guarded test runs on each platform, or `null` if the condition cannot be evaluated. */
   readonly runs: Readonly<Record<EvaluatedPlatform, boolean>> | null
 }
@@ -176,6 +181,8 @@ function scan(file: string, source: string): { guards: PlatformGuard[]; violatio
       kind,
       condition: conditionText,
       os: reason === null ? null : (reason[1] as GuardedOs),
+      reason: reason === null ? null : reason[0],
+      fileLevel: ts.isExpressionStatement(node.parent) && ts.isSourceFile(node.parent.parent),
       runs: evaluate(conditionText, aliasDeclarations),
     })
     if (reason === null) {
@@ -249,10 +256,26 @@ const describeViolation = (v: Violation): string => `${v.file}:${v.line} ${v.mes
 const labelled = (guards: readonly PlatformGuard[]): (PlatformGuard & { os: GuardedOs })[] =>
   guards.filter((g): g is PlatformGuard & { os: GuardedOs } => g.os !== null)
 
+/**
+ * The one platform dispatch allowed in test code (add-windows-environment-and-commands design D7):
+ * the process backend of test/support/processes.ts, which reads processes through /proc on Linux and
+ * Win32_Process on Windows. It is pinned by file and by count, so a second dispatch anywhere,
+ * including in that file, fails the policy.
+ */
+const PROCESS_DISPATCH = { file: 'test/support/processes.ts', count: 1 } as const
+
+/** The policy's findings, apart from the allowed process dispatch. */
+function unexpectedViolations(violations: readonly Violation[]): Violation[] {
+  const dispatch = violations.filter((v) => v.file === PROCESS_DISPATCH.file && v.message === PLATFORM_BRANCH)
+  return dispatch.length === PROCESS_DISPATCH.count ? violations.filter((v) => !dispatch.includes(v)) : [...violations]
+}
+
 describe('platform skip policy (design D7)', () => {
   it('[spec:quality-gates/linux-only-test-on-windows] every platform skip in the tests names the missing facility, and no test branches on the platform', () => {
     const { files, guards, violations } = scanRepository()
-    expect(violations.map(describeViolation)).toEqual([])
+    expect(unexpectedViolations(violations).map(describeViolation)).toEqual([])
+    // The allowed dispatch is the one in processes.ts, and nothing else there branches on the platform.
+    expect(violations.filter((v) => v.file === PROCESS_DISPATCH.file).map(describeViolation)).toHaveLength(PROCESS_DISPATCH.count)
     // The scan is not passing vacuously: it sees every test tree and the guarded Linux-only suites.
     for (const tree of ['test/unit/', 'test/integration/', 'test/e2e/', 'test/packaging/']) {
       expect(files.some((f) => f.startsWith(tree)), tree).toBe(true)
@@ -265,6 +288,116 @@ describe('platform skip policy (design D7)', () => {
     const { guards } = scanRepository()
     expect(labelled(guards).some((g) => g.os === 'linux')).toBe(true)
     expect(labelled(guards).filter((g) => !runsOnlyOnNamedSystem(g)).map(describeGuard)).toEqual([])
+  })
+
+  it('allows the process dispatch only once, and only in test/support/processes.ts', () => {
+    const at = (file: string, line: number): Violation => ({ file, line, message: PLATFORM_BRANCH })
+    const dispatch = at(PROCESS_DISPATCH.file, 10)
+    expect(unexpectedViolations([dispatch])).toEqual([])
+    // A second dispatch in the same file, or one anywhere else, is a finding (with the first one).
+    expect(unexpectedViolations([dispatch, at(PROCESS_DISPATCH.file, 20)])).toEqual([dispatch, at(PROCESS_DISPATCH.file, 20)])
+    expect(unexpectedViolations([dispatch, at('test/e2e/support/fixtures.ts', 5)])).toEqual([at('test/e2e/support/fixtures.ts', 5)])
+    // Another finding in that file is not excused by the dispatch.
+    const missingReason = { file: PROCESS_DISPATCH.file, line: 30, message: `skipIf ${MISSING_REASON}` }
+    expect(unexpectedViolations([dispatch, missingReason])).toEqual([missingReason])
+  })
+
+  it('the process dispatch throws on a system other than Linux and Windows, instead of reading nothing', () => {
+    const platform = Object.getOwnPropertyDescriptor(process, 'platform')
+    if (platform === undefined) throw new Error('process.platform has no descriptor')
+    try {
+      for (const other of ['darwin', 'freebsd', 'aix']) {
+        Object.defineProperty(process, 'platform', { ...platform, value: other })
+        expect(() => selectProcessBackend(), other).toThrow(`cannot inspect processes on ${other}`)
+      }
+    } finally {
+      Object.defineProperty(process, 'platform', platform)
+    }
+    // On this system (Linux or Windows) it selects a backend.
+    expect(selectProcessBackend()).toBeDefined()
+  })
+})
+
+/** A row of the table of end-to-end specs in docs/ci.md. */
+interface SpecRow {
+  readonly spec: string
+  readonly kind: 'portable' | 'Linux-only' | 'Windows-specific'
+  /** The skip reasons the row lists for the spec's tests, e.g. `[linux-only: POSIX signals]`. */
+  readonly reasons: readonly string[]
+}
+
+/** The classification table under "End-to-end tests on Windows" in docs/ci.md (design D7). */
+function specTable(markdown: string): SpecRow[] {
+  const section = markdown.split(/^### End-to-end tests on Windows$/m)[1]?.split(/^#{2,3} /m)[0]
+  if (section === undefined) throw new Error('docs/ci.md has no "### End-to-end tests on Windows" section')
+  const rows: SpecRow[] = []
+  for (const line of section.split('\n')) {
+    const row = /^\| `([\w.-]+\.spec\.ts)` \| (portable|Linux-only|Windows-specific) \| (.*) \|$/.exec(line)
+    if (row === null) continue
+    const reasons = row[3] === 'none' ? [] : [...(row[3] ?? '').matchAll(/`(\[[^\]`]+\])`/g)].map((m) => m[1] ?? '')
+    rows.push({ spec: row[1] ?? '', kind: row[2] as SpecRow['kind'], reasons })
+  }
+  return rows
+}
+
+describe('end-to-end tests by system (design D7)', () => {
+  it('[spec:quality-gates/linux-only-end-to-end-test-on-windows] every e2e spec is classified in docs/ci.md, and every skip there names the facility the table names', () => {
+    const { guards } = scanRepository()
+    const specs = readdirSync(join(testRoot, 'e2e')).filter((name) => name.endsWith('.spec.ts')).sort()
+    const table = specTable(readFileSync(join(repoRoot, 'docs', 'ci.md'), 'utf8'))
+    // Every spec file has exactly one row, and every row a spec file: none is left unclassified.
+    expect(table.map((row) => row.spec).sort()).toEqual(specs)
+    expect(specs.length).toBeGreaterThan(15)
+    for (const row of table) {
+      const own = guards.filter((g) => g.file === `test/e2e/${row.spec}`)
+      // The reasons the table lists are exactly those of the spec's guards.
+      expect([...new Set(own.map((g) => g.reason))].sort(), row.spec).toEqual([...new Set(row.reasons)].sort())
+      const fileLevel = own.filter((g) => g.fileLevel)
+      if (row.kind === 'portable') {
+        // Runs on both systems; single tests may be skipped on one, with their reason.
+        expect(fileLevel.map(describeGuard), row.spec).toEqual([])
+      } else {
+        const os: GuardedOs = row.kind === 'Linux-only' ? 'linux' : 'windows'
+        expect(fileLevel.map((g) => g.os), row.spec).toEqual([os])
+        expect(own.every((g) => g.os === os), row.spec).toBe(true)
+        // Windows-specific specs, and only those, are named windows-*.spec.ts.
+        expect(row.spec.startsWith('windows-'), row.spec).toBe(row.kind === 'Windows-specific')
+      }
+    }
+    // Not vacuous: Linux-only tests on Windows exist, each with its facility named.
+    expect(table.filter((row) => row.reasons.some((reason) => reason.startsWith('[linux-only: '))).length).toBeGreaterThan(3)
+  })
+
+  it('reads the classification table', () => {
+    const markdown = [
+      '## CI',
+      '### End-to-end tests on Windows',
+      '| Spec | Kind | Skipped on one system |',
+      '|---|---|---|',
+      '| `a.spec.ts` | portable | none |',
+      '| `b.spec.ts` | Linux-only | `[linux-only: network namespaces]` |',
+      '| `windows-c.spec.ts` | Windows-specific | `[windows-only: Job Objects]`, `[windows-only: x]` |',
+      '### Next',
+      '| `d.spec.ts` | portable | none |',
+    ].join('\n')
+    expect(specTable(markdown)).toEqual([
+      { spec: 'a.spec.ts', kind: 'portable', reasons: [] },
+      { spec: 'b.spec.ts', kind: 'Linux-only', reasons: ['[linux-only: network namespaces]'] },
+      { spec: 'windows-c.spec.ts', kind: 'Windows-specific', reasons: ['[windows-only: Job Objects]', '[windows-only: x]'] },
+    ])
+    expect(() => specTable('## CI')).toThrow('no "### End-to-end tests on Windows" section')
+  })
+
+  it('records whether a guard guards its whole file', () => {
+    const { guards } = scan(
+      'example.spec.ts',
+      `test.skip(process.platform !== 'linux', '[linux-only: network namespaces]')
+test('a', () => { test.skip(process.platform !== 'linux', '[linux-only: POSIX signals]') })`,
+    )
+    expect(guards.map((g) => [g.reason, g.fileLevel])).toEqual([
+      ['[linux-only: network namespaces]', true],
+      ['[linux-only: POSIX signals]', false],
+    ])
   })
 })
 
@@ -280,8 +413,8 @@ it.runIf(process.platform === 'win32')(\`[windows-only: job objects] \${name}\`,
     )
     expect(violations).toEqual([])
     expect(guards).toEqual([
-      { file: 'example.test.ts', line: 1, kind: 'skipIf', condition: "process.platform !== 'linux'", os: 'linux', runs: { linux: false, win32: true, darwin: true } },
-      { file: 'example.test.ts', line: 2, kind: 'runIf', condition: "process.platform === 'win32'", os: 'windows', runs: { linux: false, win32: true, darwin: false } },
+      { file: 'example.test.ts', line: 1, kind: 'skipIf', condition: "process.platform !== 'linux'", os: 'linux', reason: '[linux-only: /proc]', fileLevel: false, runs: { linux: false, win32: true, darwin: true } },
+      { file: 'example.test.ts', line: 2, kind: 'runIf', condition: "process.platform === 'win32'", os: 'windows', reason: '[windows-only: job objects]', fileLevel: false, runs: { linux: false, win32: true, darwin: false } },
     ])
   })
 

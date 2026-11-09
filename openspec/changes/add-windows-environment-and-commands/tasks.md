@@ -320,7 +320,7 @@ Group 6 review (2026-11-08): reviewer2 found no high items, 1 medium, 5 low and 
 
 ## 7. End-to-end tests on Windows
 
-- [ ] 7.1 Add `test/support/processes.ts` (design D7):
+- [x] 7.1 Add `test/support/processes.ts` (design D7):
   - `taggedProcesses`, `isAlive`, `killTagged` and `processIdentity`, through `/proc` on Linux and one `Get-CimInstance` call on Windows;
   - it throws on any other system, and on a failed or unparsable query; it never returns an empty list for a failure;
   - a sanity test on both systems requires a started tagged process to be seen;
@@ -329,7 +329,7 @@ Group 6 review (2026-11-08): reviewer2 found no high items, 1 medium, 5 low and 
   `test-platform-policy.test.ts` allows exactly this file and exactly one dispatch, and asserts that the dispatch throws for an unknown platform. Verify:
   - the Linux e2e suite passes unchanged in the `e2e` job;
   - `test-platform-policy.test.ts` passes, and fails on a temporary platform branch added elsewhere (checked once, then reverted).
-- [ ] 7.2 Classify every e2e spec in a table in `docs/ci.md` (design D7) as portable, Linux-only, or Windows-specific, then port them:
+- [x] 7.2 Classify every e2e spec in a table in `docs/ci.md` (design D7) as portable, Linux-only, or Windows-specific, then port them:
   - **Portable specs:** use the portable helper and Node fixtures instead of `sh`, `sleep`, `trap` and `kill`, and read platform values from `AppInfo`.
   - **Linux-only tests:** get `skipIf` guards with `[linux-only: <facility>]` titles (network namespaces, the login shell, port inspection until W3), tagged `[spec:quality-gates/linux-only-end-to-end-test-on-windows]` where checked.
   - **Windows-only specs** (`windows-*.spec.ts`) assert behavior that differs:
@@ -340,7 +340,7 @@ Group 6 review (2026-11-08): reviewer2 found no high items, 1 medium, 5 low and 
   - **`offline.spec.ts` counts itself:** its runner re-runs the file in a network namespace and requires exactly `1 passed` and `1 skipped`. Every test added to that file, a guard or a placeholder, changes those counts, so update the runner's expectation with it. Group 1's placeholder broke the `e2e` job on #37 this way, and now sits in `ports.spec.ts`.
 
   Verify: `npm run test:e2e` passes on Linux, and the table lists every spec file.
-- [ ] 7.3 In `ci.yml`'s `windows` job:
+- [x] 7.3 In `ci.yml`'s `windows` job:
   - set `electron: "true"`;
   - add "Windows end-to-end tests" (`npm run test:e2e`) after the integration tests, with `if:` requiring the helper build's success;
   - add an `upload-artifact` step for `test-results/` on failure;
@@ -350,6 +350,76 @@ Group 6 review (2026-11-08): reviewer2 found no high items, 1 medium, 5 low and 
   - the `windows` job runs the e2e step;
   - every Windows e2e test is reported as passed or as skipped with a `[linux-only: …]` reason, and none fails for lack of porting;
   - `ci-ok` passes.
+
+Group 7 implementation note (2026-11-09):
+- `test/support/processes.ts` reads processes through `/proc` on Linux and one `Get-CimInstance Win32_Process` call per query on Windows. The tag is an environment variable, which Win32_Process does not expose, so each candidate's environment block is read from its PEB by a small C# reader, compiled once per test process into a private temporary directory. A Windows query must first read its own environment, or it throws. Console hosts and `veydr-helper.exe` carry a command's environment, but they are not counted as its processes. `commandLines` was added for the sandbox test, and `linuxProcess` keeps the `/proc/<pid>/stat` fields for `[linux-only: /proc]` tests.
+- The fixture ledger records `pgid`, `sid` and `starttime` only where `/proc` exists, and `LedgerEntry` marks them optional. `isAlive` throws without a start time.
+- Two harness gaps that design D7 did not name, both fixed in test code only:
+  - **The configuration directory.** On Windows, Electron ignores `XDG_CONFIG_HOME`, so every test would share `%APPDATA%\Veydr`. `test/e2e/support/config-home.cjs` sets `appData`, and only that: a `-r` preload runs before Electron derives `userData`, and setting `userData` too pinned `<home>/Electron`. That first attempt failed 40 Linux tests, and the fix was checked by launching Electron directly.
+  - **Temporary paths.** The runner's `%TEMP%` is an 8.3 short path, so `test/e2e/support/temp.ts` uses real paths, and its cleanup retries for files Chromium still holds.
+- `commandProcesses` leaves out Chromium's `--type=` processes, which inherit a tag that a test gives Veydr itself. Their environment is readable on Windows.
+- POSIX shell output in the portable specs comes from the new `test/fixtures/proc/print.mjs`. `tree.mjs --ignore-term` also ignores Ctrl+Break.
+- The classification table is in `docs/ci.md` ("End-to-end tests on Windows"). `test-platform-policy.test.ts` checks it against the specs' guards: one row per spec, a file-wide guard for Linux-only and Windows-specific specs, and the listed reasons equal to the guards' reasons. That test is tagged `[spec:quality-gates/linux-only-end-to-end-test-on-windows]`. The policy allows exactly one dispatch, in `processes.ts`, and a test checks that the dispatch throws on darwin, freebsd and aix. A temporary branch added in `test/e2e/support/temp.ts`, and a second one in `processes.ts`, each failed the policy (checked once, then reverted).
+- Windows-specific specs:
+  - `windows-recovery.spec.ts` (`veydr-ends-abnormally-on-windows`);
+  - `windows-ports.spec.ts`;
+  - `windows-app.spec.ts` (the app path is the repository root, the helper is found, and a command starts, logs and stops).
+
+  `security.spec.ts` checks on Windows that every renderer is sandboxed below medium integrity (`windows-end-to-end-tests-keep-the-sandbox`, together with `workflow-policy.test.ts`).
+- Verified on Linux: typecheck, lint, `npm test` (1279 passed), the Linux integration tests (50 passed), `npm run test:e2e` (72 passed; 5 skipped: the inner offline test, as before, and 4 Windows-only tests), spec coverage 166/166, `openspec validate --strict`, and actionlint. Task 7.3's Windows verification runs on the pull request. No Windows e2e test has run yet.
+
+Group 7 review (2026-11-09): reviewer2 found 1 high, 4 medium, 6 low and 3 nits. Every Windows claim was checked by reading the code; nothing ran on Windows.
+- high: the C# matcher threw on the empty entries that end every environment block, which would have failed every Windows query. Entries shorter than two characters are skipped now. Each tag query also first checks the matcher on its own environment: it must find an entry under another letter case, and must not find a different value.
+- medium:
+  - a process that could not be read was dropped silently. `Status` now tells Gone from Unreadable, and `taggedFromRows` fails the query when an unreadable process was started by a tagged one, unit-tested on every system;
+  - an exited process could still count as alive. Queries by PID now keep only live processes (`Exists`: `GetExitCodeProcess`);
+  - `commandLines` on Linux now tolerates `ESRCH`;
+  - query latency: a query slower than 5 s is reported on stderr, for the first Windows run.
+- low:
+  - the compiled reader is written to a temporary name, then copied and renamed;
+  - PowerShell writes its output as UTF-8;
+  - `commandProcesses` leaves out only Electron's own executable started with `--type=`;
+  - the Windows stop text (`Exited with code 3221225786`, STATUS_CONTROL_C_EXIT) is pinned in `windows-app.spec.ts`;
+  - `launchVeydr` fails unless `userData` is `<configHome>/Veydr`, on every system;
+  - the sandbox metrics are read after the window loaded.
+- nits: the comment on the temporary directory no longer calls it private. The other two needed no change.
+- reviewer2 judged both harness additions (`config-home.cjs` and `temp.ts`) justified.
+- Verified on Linux after the fixes: typecheck, lint, `npm test` (1280 passed), and `npm run test:e2e` (72 passed, 5 skipped).
+
+Group 7 re-review (2026-11-09): reviewer2 confirmed every finding fixed and raised 2 new mediums-to-lows, both fixed:
+- N1 (medium): the unreadable-child check could fail on Chromium's own sandboxed processes when a test starts Veydr with the tag. Processes of `electron.exe` started with `--type=` are exempt, and a unit test covers both the exemption and a command process that only carries the argument.
+- N2 (low): a null `CreationDate` would have ended the query. A tag query now prints only unreadable processes that a tagged one started, and the timestamp is guarded.
+- N3 is documented in `taggedFromRows`: the check is one level deep. N4 is the first thing to check on the pull request: whether the Windows stop text was pinned right.
+- Verified on Linux: lint, `npm test`. Everything Windows-specific waits for the pull request's `windows` job.
+
+Group 7, first Windows run (#45, 2026-11-09): typecheck, lint, the unit tests (the process-helper sanity test included) and the Windows integration tests passed; the e2e step failed, with 48 failed, 11 passed and 18 skipped. Every Linux-only skip carried its reason. No process query was slower than 5 s. Causes:
+- **Product: outbound activity on Windows.** 44 tests passed their own assertions and failed only the closing network check. Chromium followed the runner's "Automatically detect settings" and resolved the host `wpad` (WPAD), probing IPv6 reachability with a UDP connect to Google's public DNS on the way. This violates desktop-shell "No outbound connections" on Windows. Fix: `disableProxyDiscovery` appends `--no-proxy-server` before `ready`. Veydr makes no requests, so it needs no proxy. Unit-tested, and documented in `network-isolation.md`.
+- **Product: the shell field's accessible name.** On Windows it was "Shell cmd.exe only", because the hint inside the label was read as part of the name as well as being the description. The field is now named by its caption (`aria-labelledby`), and a renderer test pins it.
+- **Harness: Playwright starts Electron through `cmd.exe` on Windows** (`shell: true`), so `app.process()` is the wrapper.
+  - `windows-recovery` killed the wrapper, not Veydr, so the tree rightly stayed. There was no product fault.
+  - `keyboard` counted Veydr's main process as a command.
+
+  `VeydrApp.mainPid` (read from the app) and `VeydrApp.kill()` now target the real process, and `commandProcesses` leaves out both PIDs.
+- **Harness: handle inheritance.** On Windows, Node starts children with every inheritable handle, so the detached editor inherited the stdio pipes Playwright waits on. `close()` then hung for as long as the editor ran. The editor test now quits Veydr itself and waits for the main process to end. In production this only matters when Veydr's own stdio are pipes, which happens when it is run from source. Noted, not changed.
+- Confirmed on the runner: the stop text `Exited with code 3221225786`, the environment reader, `config-home.cjs`, the real-path temporary directories, and the Windows-only Ports and sandbox assertions (each of those tests reached its closing network check).
+- Verified on Linux after the fixes: typecheck, lint, `npm test` (1281 passed), `npm run test:e2e` (72 passed, 5 skipped), spec coverage 166/166.
+
+Review of the first-run fixes (2026-11-09): reviewer2 found no high items, 1 medium, 4 low and 3 nits.
+- medium: `--no-proxy-server` is the right single fix, so `session.setProxy` is not added. If the IPv6 probe still shows on the next run, use the host-resolver rule `MAP * ~NOTFOUND, EXCLUDE localhost`.
+- low:
+  - the editor test now ends the editor in `finally`, so a failed assertion cannot hang the cleanup;
+  - a rejected `app.quit()` evaluation is tolerated;
+  - the handle-inheritance limit is recorded in `docs/deferred-checks.md`;
+  - `exited()` rejects after 30 s with the PID.
+- nits: the `commandProcesses` comment is reworded. No other editor field has a hint inside its label.
+- Verified on Linux: typecheck, lint, `npm test` (1281 passed), and the affected e2e specs (commands, quit, recovery, keyboard: 16 passed).
+
+Group 7 on Windows (#45, run 42571528735, 2026-11-09): every check passed, `ci-ok` included.
+- The `windows` job ran the e2e step: 59 passed, 18 skipped, none failed.
+- Every skip carries a `[linux-only: …]` reason: network namespaces, POSIX signals, POSIX file modes, port inspection, a POSIX shell, the login shell, shebang scripts and POSIX sessions, and processes outliving a crashed Veydr. None was skipped for lack of porting.
+- The Windows-only tests passed: `windows-recovery` (`veydr-ends-abnormally-on-windows`), `windows-ports`, `windows-app`, and the renderer sandbox test (`windows-end-to-end-tests-keep-the-sandbox`).
+- `--no-proxy-server` removed the `wpad` lookup and the IPv6 probe.
+- In the same job: 1209 unit tests passed (79 skipped, the Linux-only ones), and the 44 Windows integration tests passed. No process query was reported slower than 5 s.
 
 ## 8. Integration check
 

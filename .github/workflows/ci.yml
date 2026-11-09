@@ -132,22 +132,26 @@ jobs:
           if-no-files-found: error
 
   # Typecheck, lint, and unit tests on Windows (design D6), so path, case, and line-ending assumptions
-  # surface before the Windows platform is implemented, then the Windows process-tree integration
-  # tests against the helper built here. The other integration tests, end-to-end, and packaging tests
-  # need Linux and do not run here; unit tests that need a Linux facility are skipped with a stated
-  # reason (design D7, docs/ci.md).
+  # surface, then the Windows integration tests against the helper built here, and the end-to-end
+  # tests against the app built here (add-windows-environment-and-commands design D7). The other
+  # integration tests and the packaging tests need Linux and do not run here; unit and end-to-end
+  # tests that need a Linux facility are skipped with a stated reason (design D7, docs/ci.md).
   windows:
     name: windows
     runs-on: windows-2025
-    timeout-minutes: 30
+    timeout-minutes: 45
     permissions:
       contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # On Windows, electron: "true" installs only the dependencies; the e2e step downloads Electron
+      # itself (scripts/ensure-electron.cjs), as on a developer's machine.
       - id: setup
         uses: ./.github/actions/setup
+        with:
+          electron: "true"
       # As in static: each check runs even if an earlier one failed; the job fails if any does. The
       # run steps use the runner's default shell (PowerShell); they only call npm scripts.
       - name: Typecheck
@@ -169,6 +173,20 @@ jobs:
       - name: Windows integration tests
         if: ${{ !cancelled() && steps.setup.outcome == 'success' && steps.helper.outcome == 'success' }}
         run: npm run test:windows
+      # The e2e suite starts commands from the built app, which needs the helper below the
+      # repository root (out-helper/), so it too runs only after a successful helper build. Chromium's
+      # sandbox stays on, as in the Linux e2e job, which alone runs the offline test.
+      - name: Windows end-to-end tests
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' && steps.helper.outcome == 'success' }}
+        run: npm run test:e2e
+      - name: Upload test results
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: windows-e2e-test-results
+          path: test-results/
+          retention-days: 7
+          if-no-files-found: ignore
 
   # The one required check. It runs whatever happened to the jobs above and fails unless every one
   # of them succeeded: a plain needs: would let a skipped or cancelled job through.
