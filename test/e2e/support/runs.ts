@@ -23,11 +23,21 @@ export function recordedRuns(configHome: string): RecordedRun[] | null {
   return (JSON.parse(readFileSync(path, 'utf8')) as { entries: RecordedRun[] }).entries
 }
 
-/** Resolves with the exit code once the app's main process has exited. */
-export function exited(app: ElectronApplication): Promise<number | null> {
+/**
+ * Resolves with the exit code once the app's process has exited: Electron itself, or on Windows the
+ * `cmd.exe` Playwright starts it through, which exits with it. Rejects after `timeoutMs`, so a
+ * process that does not end fails with this message instead of a bare test timeout.
+ */
+export function exited(app: ElectronApplication, timeoutMs = 30_000): Promise<number | null> {
   const child = app.process()
   if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve(child.exitCode)
-  return new Promise((resolve) => child.once('exit', (code) => resolve(code)))
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`the app's process (PID ${String(child.pid)}) did not exit within ${timeoutMs} ms`)), timeoutMs)
+    child.once('exit', (code) => {
+      clearTimeout(timer)
+      resolve(code)
+    })
+  })
 }
 
 /** What the network observers saw for an app that already exited on its own. */

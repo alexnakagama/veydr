@@ -5,6 +5,7 @@ import type { Config } from '../../src/shared/config'
 import { fixture, TAG_VARIABLE, waitUntil } from '../support/proc'
 import { isAlive, killTagged, linuxProcess, processIdentity } from '../support/processes'
 import { appInfo, commandProcesses, expect, expectNoOutboundConnections, launchVeydr, test, type VeydrApp } from './support/fixtures'
+import { networkReportOf } from './support/runs'
 import { seed } from './support/seed'
 import { removeDir, tempDir } from './support/temp'
 
@@ -244,9 +245,25 @@ test('[spec:project-registry/launch-editor] [spec:project-registry/editor-surviv
       const editor = processIdentity(pid)
       expect(editor).not.toBeNull()
 
-      expectNoOutboundConnections(await veydr.close())
-      // Veydr has quit; the editor is untouched.
-      expect(isAlive(pid, editor?.starttime)).toBe(true)
+      // Quit Veydr and wait for its main process to end. Not `veydr.close()`: on Windows a process
+      // Veydr starts inherits Veydr's inheritable handles, among them the stdio pipes Playwright
+      // waits on, so `close()` would wait for the editor to exit.
+      try {
+        const main = processIdentity(veydr.mainPid)
+        // The connection may close before the answer arrives; the real exit is awaited next.
+        await veydr.app.evaluate(({ app }) => app.quit()).catch(() => undefined)
+        await waitUntil(() => !isAlive(veydr.mainPid, main?.starttime), 'Veydr to quit', 30_000)
+        expectNoOutboundConnections(networkReportOf(veydr.workDir))
+        // Veydr has quit; the editor is untouched.
+        expect(isAlive(pid, editor?.starttime)).toBe(true)
+      } finally {
+        // Ended here in any case: it holds those pipes, so a leftover editor would hang the cleanup.
+        try {
+          process.kill(pid, 'SIGKILL')
+        } catch {
+          // Already gone.
+        }
+      }
       return 'closed'
     })
   } finally {

@@ -9,7 +9,7 @@ import { watchWindowHealth } from './app/health'
 import { createNoticeCenter, noticeFromConfig } from './app/notices'
 import { APP_ENTRY_URL, APP_ORIGIN, APP_SCHEME, createAppProtocolHandler } from './app/protocol'
 import { createQuitOrchestrator, SIGNAL_DEADLINE_MS, type QuitChoice } from './app/quit'
-import { hardenSession, hardenWebContents } from './app/security'
+import { disableProxyDiscovery, hardenSession, hardenWebContents } from './app/security'
 import { formatSmokeReport, runSmokeTest, SMOKE_TEST_SWITCH, type SmokeReport, type SmokeUi } from './app/smoke'
 import { createMainWindow, preloadPathFor, rendererRootFor } from './app/window'
 import { createConfigStore } from './config'
@@ -61,6 +61,7 @@ function helperPath(): string {
 /** Settings shared by the app and the smoke test; must run before `ready`. */
 function prepareApp(log: DiagnosticLog): void {
   app.enableSandbox()
+  disableProxyDiscovery(app.commandLine)
   protocol.registerSchemesAsPrivileged([
     { scheme: APP_SCHEME, privileges: { standard: true, secure: true, supportFetchAPI: false } },
   ])

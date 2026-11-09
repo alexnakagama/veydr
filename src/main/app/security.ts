@@ -1,4 +1,4 @@
-import type { Session, WebContents } from 'electron'
+import type { CommandLine, Session, WebContents } from 'electron'
 import type { DiagnosticLog } from './diagnostics'
 
 /**
@@ -47,4 +47,15 @@ export function hardenSession(session: Session, log: DiagnosticLog): void {
   // operation requires it off before the session initializes it.
   session.setSpellCheckerEnabled(false)
   session.setSpellCheckerLanguages([])
+}
+
+/**
+ * Turns off proxy discovery; must run before `ready` (desktop-shell "No outbound connections").
+ * Veydr makes no network requests, so it needs no proxy. Without this, Chromium follows the
+ * system's proxy settings: on Windows, "Automatically detect settings" (on by default) makes it look
+ * up the host `wpad` on the local network at startup (WPAD), and probe IPv6 reachability first.
+ * `--no-proxy-server` makes every connection direct and so never resolves a proxy.
+ */
+export function disableProxyDiscovery(commandLine: Pick<CommandLine, 'appendSwitch'>): void {
+  commandLine.appendSwitch('no-proxy-server')
 }

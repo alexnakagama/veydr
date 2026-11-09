@@ -392,6 +392,28 @@ Group 7 re-review (2026-11-09): reviewer2 confirmed every finding fixed and rais
 - N3 is documented in `taggedFromRows`: the check is one level deep. N4 is the first thing to check on the pull request: whether the Windows stop text was pinned right.
 - Verified on Linux: lint, `npm test`. Everything Windows-specific waits for the pull request's `windows` job.
 
+Group 7, first Windows run (#45, 2026-11-09): typecheck, lint, the unit tests (the process-helper sanity test included) and the Windows integration tests passed; the e2e step failed, with 48 failed, 11 passed and 18 skipped. Every Linux-only skip carried its reason. No process query was slower than 5 s. Causes:
+- **Product: outbound activity on Windows.** 44 tests passed their own assertions and failed only the closing network check. Chromium followed the runner's "Automatically detect settings" and resolved the host `wpad` (WPAD), probing IPv6 reachability with a UDP connect to Google's public DNS on the way. This violates desktop-shell "No outbound connections" on Windows. Fix: `disableProxyDiscovery` appends `--no-proxy-server` before `ready`. Veydr makes no requests, so it needs no proxy. Unit-tested, and documented in `network-isolation.md`.
+- **Product: the shell field's accessible name.** On Windows it was "Shell cmd.exe only", because the hint inside the label was read as part of the name as well as being the description. The field is now named by its caption (`aria-labelledby`), and a renderer test pins it.
+- **Harness: Playwright starts Electron through `cmd.exe` on Windows** (`shell: true`), so `app.process()` is the wrapper.
+  - `windows-recovery` killed the wrapper, not Veydr, so the tree rightly stayed. There was no product fault.
+  - `keyboard` counted Veydr's main process as a command.
+
+  `VeydrApp.mainPid` (read from the app) and `VeydrApp.kill()` now target the real process, and `commandProcesses` leaves out both PIDs.
+- **Harness: handle inheritance.** On Windows, Node starts children with every inheritable handle, so the detached editor inherited the stdio pipes Playwright waits on. `close()` then hung for as long as the editor ran. The editor test now quits Veydr itself and waits for the main process to end. In production this only matters when Veydr's own stdio are pipes, which happens when it is run from source. Noted, not changed.
+- Confirmed on the runner: the stop text `Exited with code 3221225786`, the environment reader, `config-home.cjs`, the real-path temporary directories, and the Windows-only Ports and sandbox assertions (each of those tests reached its closing network check).
+- Verified on Linux after the fixes: typecheck, lint, `npm test` (1281 passed), `npm run test:e2e` (72 passed, 5 skipped), spec coverage 166/166.
+
+Review of the first-run fixes (2026-11-09): reviewer2 found no high items, 1 medium, 4 low and 3 nits.
+- medium: `--no-proxy-server` is the right single fix, so `session.setProxy` is not added. If the IPv6 probe still shows on the next run, use the host-resolver rule `MAP * ~NOTFOUND, EXCLUDE localhost`.
+- low:
+  - the editor test now ends the editor in `finally`, so a failed assertion cannot hang the cleanup;
+  - a rejected `app.quit()` evaluation is tolerated;
+  - the handle-inheritance limit is recorded in `docs/deferred-checks.md`;
+  - `exited()` rejects after 30 s with the PID.
+- nits: the `commandProcesses` comment is reworded. No other editor field has a hint inside its label.
+- Verified on Linux: typecheck, lint, `npm test` (1281 passed), and the affected e2e specs (commands, quit, recovery, keyboard: 16 passed).
+
 ## 8. Integration check
 
 - [ ] 8.1 Run `npm run verify` on Linux, and check the `windows` job and `ci-ok` on the pull request. Verify:

@@ -175,6 +175,7 @@ export function CommandEditor({ projectId, projectName, command, conventions, ac
   }
 
   const shellHintId = useId()
+  const shellNameId = useId()
   const hint = shellHint(conventions.platform)
   const shellLabel = draft.shell.trim() === '' ? 'Shell command — enter the shell that runs it below' : `Shell command — runs through ${draft.shell.trim()}`
 
@@ -232,9 +233,12 @@ export function CommandEditor({ projectId, projectName, command, conventions, ac
               {shellLabel}
             </p>
             <label className="field">
-              <span>Shell</span>
+              <span id={shellNameId}>Shell</span>
+              {/* Named by its own caption only: the hint below is inside the label too, and is the
+                  field's description, so it must not also be read as part of its name. */}
               <input
                 type="text"
+                aria-labelledby={shellNameId}
                 value={draft.shell}
                 onChange={(e) => update({ shell: e.target.value })}
                 placeholder={conventions.defaultShell ?? 'Absolute path of the shell'}

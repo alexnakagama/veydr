@@ -34,7 +34,7 @@ test('[windows-only: Job Objects] [spec:process-supervision/veydr-ends-abnormall
     await expect.poll(() => recordedRuns(seeded.configHome)?.length, { timeout: 15_000 }).toBe(1)
     expect(taggedProcesses(tag)).toHaveLength(treeSize(2, 2))
     // TerminateProcess: Veydr gets no chance to stop anything itself.
-    first.app.process().kill('SIGKILL')
+    first.kill()
     await exited(first.app)
     // The helper sees Veydr's end and closes the job, which ends every process in it.
     await expect.poll(() => taggedProcesses(tag), { timeout: 20_000 }).toEqual([])

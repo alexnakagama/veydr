@@ -2,7 +2,7 @@ import { EventEmitter } from 'node:events'
 import type { Session, WebContents } from 'electron'
 import { describe, expect, it, vi } from 'vitest'
 import { createDiagnosticLog } from '../../src/main/app/diagnostics'
-import { hardenSession, hardenWebContents } from '../../src/main/app/security'
+import { disableProxyDiscovery, hardenSession, hardenWebContents } from '../../src/main/app/security'
 
 function fakeContents() {
   const emitter = new EventEmitter()
@@ -82,5 +82,13 @@ describe('hardenSession', () => {
     expect(display).toHaveBeenCalledWith({})
     expect(session.setSpellCheckerEnabled).toHaveBeenCalledWith(false)
     expect(session.setSpellCheckerLanguages).toHaveBeenCalledWith([])
+  })
+})
+
+describe('disableProxyDiscovery', () => {
+  it('[spec:desktop-shell/no-outbound-connections] makes every connection direct, so Chromium never looks for a proxy (WPAD on Windows)', () => {
+    const appendSwitch = vi.fn()
+    disableProxyDiscovery({ appendSwitch })
+    expect(appendSwitch.mock.calls).toEqual([['no-proxy-server']])
   })
 })

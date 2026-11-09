@@ -93,6 +93,10 @@ describe('the shell field on Windows', () => {
     const hint = /<span class="muted" id="([^"]+)" data-testid="editor-shell-hint">cmd.exe only<\/span>/.exec(html)
     expect(hint, html).not.toBeNull()
     expect(html).toContain(`aria-describedby="${hint?.[1] ?? ''}"`)
+    // Its name is the caption alone ("Shell"), not the caption followed by the hint it also wraps.
+    const name = /<span id="([^"]+)">Shell<\/span>/.exec(html)
+    expect(name, html).not.toBeNull()
+    expect(html).toContain(`aria-labelledby="${name?.[1] ?? ''}"`)
     expect(html).toContain('placeholder="C:\\Windows\\System32\\cmd.exe"')
     for (const conventions of [linux, { ...windowsPreview, platform: 'unsupported' as const }]) {
       const other = editor(shellCommand, conventions)

@@ -170,7 +170,7 @@ for (const [signal, number] of [['SIGTERM', 15], ['SIGINT', 2], ['SIGHUP', 1]] a
 
         const exit = exited(veydr.app)
         const started = Date.now()
-        veydr.app.process().kill(signal)
+        process.kill(veydr.mainPid, signal)
         expect(await exit).toBe(128 + number)
         expect(Date.now() - started).toBeLessThan(10_000 + 2_000)
         expect(stderr.join('')).toContain(`app.signal {"signal":"${signal}"}`)
@@ -195,10 +195,10 @@ test('[linux-only: POSIX signals] a second signal exits at once, keeping what is
 
       const exit = exited(veydr.app)
       const started = Date.now()
-      veydr.app.process().kill('SIGTERM')
+      process.kill(veydr.mainPid, 'SIGTERM')
       // The command ignores SIGTERM and has an 8 s stop timeout; the second signal does not wait for it.
       await veydr.window.getByTestId('quit-overlay').waitFor()
-      veydr.app.process().kill('SIGTERM')
+      process.kill(veydr.mainPid, 'SIGTERM')
       expect(await exit).toBe(143)
       expect(Date.now() - started).toBeLessThan(5_000)
       expect(taggedProcesses(f.tag)).toHaveLength(1)

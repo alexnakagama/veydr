@@ -41,7 +41,7 @@ test('[linux-only: processes outliving a crashed Veydr] [spec:process-supervisio
     await expect.poll(() => recordedRuns(seeded.configHome)?.[0]?.descendants.length, { timeout: 15_000 }).toBe(treeSize(2, 2) - 1)
     const survivors = taggedProcesses(tag).map((p) => p.pid)
     expect(survivors).toHaveLength(treeSize(2, 2))
-    first.app.process().kill('SIGKILL')
+    first.kill()
     await exited(first.app)
     expect(taggedProcesses(tag).map((p) => p.pid)).toEqual(survivors)
 
@@ -100,7 +100,7 @@ test('[linux-only: processes outliving a crashed Veydr] survivors can be left ru
     await tree.getByRole('button', { name: 'Start tree', exact: true }).click()
     await expect(tree.getByTestId('command-status')).toHaveText('Running')
     await expect.poll(() => recordedRuns(seeded.configHome)?.length).toBe(1)
-    first.app.process().kill('SIGKILL')
+    first.kill()
     await exited(first.app)
 
     const second = await launchVeydr({ configHome: seeded.configHome })

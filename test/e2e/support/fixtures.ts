@@ -37,6 +37,13 @@ export interface VeydrApp {
   /** Value of `XDG_CONFIG_HOME`; the app's config directory is `<configHome>/Veydr`. */
   readonly configHome: string
   readonly workDir: string
+  /**
+   * PID of Veydr's main process. Not `app.process().pid`: on Windows Playwright starts Electron
+   * through `cmd.exe` (`shell: true`), so `app.process()` is that wrapper.
+   */
+  readonly mainPid: number
+  /** Ends Veydr's main process at once (SIGKILL; TerminateProcess on Windows), as a crash would. */
+  kill(): void
   /** Closes the app and returns what the network observers saw. */
   close(): Promise<NetworkReport>
 }
@@ -80,6 +87,7 @@ export async function launchVeydr(options: LaunchOptions = {}): Promise<VeydrApp
   })
   const window = await app.firstWindow()
   await window.waitForLoadState('domcontentloaded')
+  const mainPid = await app.evaluate(() => process.pid)
   // The configuration really is the test's own (config-home.cjs): never the user's or the runner's.
   const userData = await app.evaluate(({ app: electronApp }) => electronApp.getPath('userData'))
   if (userData !== join(configHome, 'Veydr')) {
@@ -91,6 +99,8 @@ export async function launchVeydr(options: LaunchOptions = {}): Promise<VeydrApp
   return {
     app,
     window,
+    mainPid,
+    kill: () => process.kill(mainPid, 'SIGKILL'),
     configHome,
     workDir,
     async close() {
@@ -102,15 +112,16 @@ export async function launchVeydr(options: LaunchOptions = {}): Promise<VeydrApp
 
 /**
  * Tagged processes other than Veydr's own, for tests that launch Veydr itself with the tag so its
- * commands inherit it. Veydr's main process is left out by PID, and Chromium's helper processes
- * (renderer, GPU, utility, crash handler) as processes of Electron's own executable started with a
- * `--type=` switch: they inherit the tag too, and whether their environment can be read varies by
- * system (on Linux the sandboxed ones are not readable, on Windows they are). A command's own
- * `--type=` argument does not hide it, since a command does not run Electron's executable.
+ * commands inherit it. Left out by PID: Veydr's main process (`mainPid`), and on Windows the
+ * `cmd.exe` Playwright starts it through (`app.process()`). Left out as processes of Electron's own
+ * executable started with a `--type=` switch: Chromium's helper processes (renderer, GPU, utility,
+ * crash handler), which inherit the tag too, whether or not their environment can be read. A
+ * command's own `--type=` argument does not hide it, since a command does not run Electron.
  */
 export function commandProcesses(veydr: VeydrApp, tag: string): ProcessView[] {
-  const main = veydr.app.process().pid
-  const tagged = taggedProcesses(tag).filter((p) => p.pid !== main)
+  // Veydr's main process, and on Windows the cmd.exe Playwright starts it through (the same PID on Linux).
+  const own = new Set([veydr.mainPid, veydr.app.process().pid])
+  const tagged = taggedProcesses(tag).filter((p) => !own.has(p.pid))
   const lines = commandLines(tagged.map((p) => p.pid))
   // A process that exited since it was listed has no command line, and is no longer one of them.
   return tagged.filter((p) => {
