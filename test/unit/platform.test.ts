@@ -6,6 +6,8 @@ import { selectPlatform, UnsupportedPlatformError, windowsHelperPath, type Platf
 import { duplicateEnvName, envNameKey } from '../../src/shared/config'
 import type { CommandSpec, LedgerEntry, SpawnPlan } from '../../src/main/platform/types'
 import { createWindowsPlatform } from '../../src/main/platform/windows'
+import { batchCommandLine } from '../../src/main/platform/windows/command-line'
+import { windowsFs } from './support/windows-fs'
 
 // A full path on every system, so that only the helper's absence is what these tests meet.
 const plan: SpawnPlan = { file: process.execPath, args: [], cwd: '/tmp', env: {} }
@@ -36,14 +38,18 @@ function everyOperation(platform: Platform): Record<string, () => Promise<unknow
 describe('platform selection', () => {
   it('selects by OS name', () => {
     expect(selectPlatform('linux')).toMatchObject({ name: 'linux', supported: true })
-    expect(selectPlatform('win32')).toMatchObject({ name: 'windows', supported: false })
+    expect(selectPlatform('win32')).toMatchObject({ name: 'windows', supported: true })
     expect(selectPlatform('darwin')).toMatchObject({ name: 'unsupported', supported: false })
     expect(selectPlatform('freebsd')).toMatchObject({ name: 'unsupported', supported: false })
   })
 
   it('gives each selected platform its conventions', () => {
     expect(selectPlatform('linux').conventions).toEqual({ envNames: 'exact', defaultShell: '/bin/sh', directorySync: true })
-    expect(selectPlatform('win32').conventions).toEqual({ envNames: 'case-insensitive', defaultShell: null, directorySync: false })
+    expect(selectPlatform('win32', { inherited: { SystemRoot: 'C:\\Windows' } }).conventions).toEqual({
+      envNames: 'case-insensitive',
+      defaultShell: 'C:\\Windows\\System32\\cmd.exe',
+      directorySync: false,
+    })
     expect(selectPlatform('darwin').conventions).toEqual({ envNames: 'exact', defaultShell: null, directorySync: true })
     expect(selectPlatform('freebsd').conventions).toEqual({ envNames: 'exact', defaultShell: null, directorySync: true })
   })
@@ -72,7 +78,10 @@ describe('environment variable name keys', () => {
 describe('Windows platform', () => {
   // An absolute path on every system, under a directory that does not exist, so no helper is found.
   const missingHelper = join(tmpdir(), `veydr-no-helper-${process.pid}`, 'veydr-helper.exe')
-  const windows = createWindowsPlatform({ helperPath: missingHelper })
+  const windows = createWindowsPlatform({
+    helperPath: missingHelper,
+    inherited: { Path: 'C:\\Windows\\System32', SystemRoot: 'D:\\Win', ELECTRON_RUN_AS_NODE: '1', '=C:': 'C:\\' },
+  })
   const operations = everyOperation(windows)
   const windowsEntry: LedgerEntry = {
     commandId: 'c1',
@@ -86,22 +95,80 @@ describe('Windows platform', () => {
     expect(Object.keys(operations)).toHaveLength(7)
   })
 
-  it('is not supported yet and keeps the Windows conventions', () => {
-    expect(windows).toMatchObject({ name: 'windows', supported: false })
-    expect(windows.conventions).toEqual({ envNames: 'case-insensitive', defaultShell: null, directorySync: false })
+  it('is supported, as a preview, with the Windows conventions and cmd.exe as the default shell', () => {
+    expect(windows).toMatchObject({ name: 'windows', supported: true })
+    expect(windows.conventions).toEqual({ envNames: 'case-insensitive', defaultShell: 'D:\\Win\\System32\\cmd.exe', directorySync: false })
   })
 
-  // Not implemented until W2 (resolver, environment, launchDetached) and W3 (ports), design D6.
-  for (const name of ['processTree.launchDetached', 'commandResolver.resolve', 'envProvider.base', 'portInspector.list']) {
-    it(`${name} rejects with UnsupportedPlatformError`, async () => {
-      const error: unknown = await operations[name]?.().then(
-        () => null,
-        (e: unknown) => e,
-      )
-      expect(error).toBeInstanceOf(UnsupportedPlatformError)
-      expect(error).toMatchObject({ code: 'unsupported_platform', platform: 'win32', operation: name })
+  it('reads SystemRoot once, regardless of letter case, and falls back to C:\\Windows', () => {
+    const inherited: Record<string, string | undefined> = { SYSTEMROOT: 'E:\\WinNT' }
+    const platform = createWindowsPlatform({ helperPath: missingHelper, inherited })
+    inherited['SYSTEMROOT'] = 'F:\\Elsewhere'
+    expect(platform.conventions.defaultShell).toBe('E:\\WinNT\\System32\\cmd.exe')
+    // Unset, relative, or holding characters cmd.exe would read: the Windows directory's usual place.
+    for (const systemRoot of [undefined, 'Windows', '\\Windows', 'C:\\Win%dows%']) {
+      const records: [string, string, Record<string, unknown> | undefined][] = []
+      const log = { record: (level: 'info' | 'warn' | 'error', event: string, detail?: Record<string, unknown>) => void records.push([level, event, detail]) }
+      const fallback = createWindowsPlatform({ helperPath: missingHelper, inherited: { SystemRoot: systemRoot }, log })
+      expect(fallback.conventions.defaultShell).toBe('C:\\Windows\\System32\\cmd.exe')
+      // Logged once, without the rejected value.
+      expect(records).toEqual([['warn', 'platform.windows-system-root-fallback', { set: systemRoot !== undefined, cmdExe: 'C:\\Windows\\System32\\cmd.exe' }]])
+    }
+    const records: string[] = []
+    createWindowsPlatform({ helperPath: missingHelper, inherited: { SystemRoot: 'C:\\Windows' }, log: { record: (_level, event) => void records.push(event) } })
+    expect(records).toEqual([])
+  })
+
+  it('selectPlatform passes the inherited environment and the log on to the Windows platform', async () => {
+    const records: [string, string, Record<string, unknown> | undefined][] = []
+    const log = { record: (level: 'info' | 'warn' | 'error', event: string, detail?: Record<string, unknown>) => void records.push([level, event, detail]) }
+    const selected = selectPlatform('win32', { log, helperPath: missingHelper, inherited: { Path: 'C:\\a', PATH: 'C:\\b', SystemRoot: 'D:\\Win' } })
+    expect(selected.conventions.defaultShell).toBe('D:\\Win\\System32\\cmd.exe')
+    await expect(selected.envProvider.base()).resolves.toEqual({ env: { Path: 'C:\\a', SystemRoot: 'D:\\Win' }, warnings: [] })
+    expect(records).toEqual([['info', 'environment.names-merged', { kept: 'Path', merged: ['PATH'] }]])
+  })
+
+  it("starts commands from Veydr's inherited environment, without runtime variables, each name once", async () => {
+    const { env, warnings } = await windows.envProvider.base()
+    expect(warnings).toEqual([])
+    expect(env).toEqual({ Path: 'C:\\Windows\\System32', SystemRoot: 'D:\\Win' })
+  })
+
+  it('resolves commands with the Windows rules, and batch files through cmd.exe in the system directory', async () => {
+    const platform = createWindowsPlatform({
+      helperPath: missingHelper,
+      inherited: { SystemRoot: 'D:\\Win' },
+      resolverFs: windowsFs(['C:\\project\\README.md', 'C:\\nodejs\\npm.cmd', 'D:\\Win\\System32\\cmd.exe']),
     })
-  }
+    const windowsSpec: CommandSpec = { ...spec, file: 'npm', args: ['run', 'dev'], projectRoot: 'C:\\project' }
+    await expect(platform.commandResolver.resolve(windowsSpec, { Path: 'C:\\nodejs' })).resolves.toEqual({
+      ok: true,
+      plan: {
+        file: 'D:\\Win\\System32\\cmd.exe',
+        args: [],
+        cwd: 'C:\\project',
+        env: { Path: 'C:\\nodejs' },
+        // The candidate's spelling: the default `PATHEXT` extensions are upper case.
+        commandLine: batchCommandLine('D:\\Win\\System32\\cmd.exe', 'C:\\nodejs\\npm.CMD', ['run', 'dev']),
+      },
+    })
+    // Shell mode accepts cmd.exe only.
+    const shellSpec: CommandSpec = { ...windowsSpec, mode: 'shell', file: '', args: [], script: 'echo hi', shellPath: 'C:\\Program Files\\PowerShell\\7\\pwsh.exe' }
+    await expect(platform.commandResolver.resolve(shellSpec, {})).resolves.toMatchObject({ ok: false, diagnostics: [expect.stringContaining('cmd.exe only')] })
+  })
+
+  it('launchDetached refuses a batch file without cmd.exe before starting anything', async () => {
+    await expect(windows.processTree.launchDetached({ file: 'C:\\tools\\code.cmd', args: ['C:\\project'], cwd: 'C:\\project', env: {} })).rejects.toBeInstanceOf(SpawnError)
+  })
+
+  it('portInspector.list still rejects with UnsupportedPlatformError (W3)', async () => {
+    const error: unknown = await operations['portInspector.list']?.().then(
+      () => null,
+      (e: unknown) => e,
+    )
+    expect(error).toBeInstanceOf(UnsupportedPlatformError)
+    expect(error).toMatchObject({ code: 'unsupported_platform', platform: 'win32', operation: 'portInspector.list' })
+  })
 
   it('spawns through the helper, and refuses to start without it', async () => {
     const error: unknown = await windows.processTree.spawn(plan).then(
@@ -140,10 +207,10 @@ describe('Windows platform', () => {
   it('selectPlatform logs a Windows selection without a helper path once, at selection', () => {
     const records: [string, string][] = []
     const log = { record: (level: 'info' | 'warn' | 'error', event: string) => void records.push([level, event]) }
-    selectPlatform('win32', { log })
+    selectPlatform('win32', { log, inherited: { SystemRoot: 'C:\\Windows' } })
     expect(records).toEqual([['error', 'platform.windows-helper-unconfigured']])
     records.length = 0
-    selectPlatform('win32', { log, helperPath: missingHelper })
+    selectPlatform('win32', { log, helperPath: missingHelper, inherited: { SystemRoot: 'C:\\Windows' } })
     selectPlatform('linux', { log })
     expect(records).toEqual([])
   })

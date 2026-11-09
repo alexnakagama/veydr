@@ -54,9 +54,9 @@ describe('docs/logs.md', () => {
     for (const limitation of ['transformed values', 'split values', 'partial values']) expect(text).toContain(limitation)
   })
 
-  it('[spec:process-logs/ansi-output-on-windows] states the Windows output decoding, as not yet reachable from the app', () => {
-    const text = section('Windows (not yet available)')
-    expect(text).toContain('**Not yet reachable from the app.**')
+  it('[spec:process-logs/ansi-output-on-windows] states the Windows output decoding, labelled as the Windows preview', () => {
+    const text = section('Windows (preview)')
+    expect(text.slice(text.indexOf('\n')).trimStart().startsWith('**Windows: preview. Run from source; verified in CI on Windows Server 2025. No Windows package yet.**')).toBe(true)
     // The UTF-8 console, and what happens when it cannot be set.
     expect(text).toContain('output code page is set to UTF-8 (65001) before the command runs')
     expect(text).toContain('`process.windows-console-not-utf8`')

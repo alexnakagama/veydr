@@ -16,6 +16,20 @@ export interface WindowsEnvProviderOptions {
 const isPassableName = (name: string): boolean => name !== '' && !name.includes('=') && !name.includes('\0')
 
 /**
+ * The value of `name` in `env`, its name compared regardless of letter case as Windows compares it:
+ * the first entry in enumeration order, which is the one `GetEnvironmentVariableW` finds, and the
+ * one `windowsBaseEnvironment` keeps when it merges names. A plain object passed instead of
+ * `process.env` (whose own lookup ignores case on Windows) is read the same.
+ */
+export function inheritedValue(env: Readonly<Record<string, string | undefined>>, name: string): string | undefined {
+  const key = envNameKey(name, 'case-insensitive')
+  for (const [entry, value] of Object.entries(env)) {
+    if (value !== undefined && envNameKey(entry, 'case-insensitive') === key) return value
+  }
+  return undefined
+}
+
+/**
  * Veydr's inherited environment, as commands get it on Windows (design D3). It is what
  * `withoutRuntimeVariables` returns, and stricter:
  * - Veydr's runtime variables are removed, their names compared regardless of case, since Windows

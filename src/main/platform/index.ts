@@ -23,7 +23,10 @@ export function windowsHelperPath(appPath: string): string {
 
 export interface SelectPlatformOptions {
   readonly log?: PlatformLog
-  /** Veydr's own environment (Linux: the fallback and starting point of the login environment). */
+  /**
+   * Veydr's own environment. Linux: the fallback and starting point of the login environment.
+   * Windows: the environment commands start from, and where `SystemRoot` (for `cmd.exe`) is read.
+   */
   readonly inherited?: Readonly<Record<string, string | undefined>>
   /**
    * Full path of the Windows helper, `veydr-helper.exe`, from the composition root. Without it,
@@ -37,17 +40,14 @@ export interface SelectPlatformOptions {
  * this is the only module allowed to read `process.platform`.
  */
 export function selectPlatform(os: NodeJS.Platform = process.platform, options: SelectPlatformOptions = {}): Platform {
-  const { helperPath, ...linuxOptions } = options
+  const { helperPath, ...shared } = options
   switch (os) {
     case 'linux':
-      return createLinuxPlatform(linuxOptions)
+      return createLinuxPlatform(shared)
     case 'win32':
       // A composition mistake: shown at startup, not only at the first operation that needs the helper.
       if (helperPath === undefined) options.log?.record('error', 'platform.windows-helper-unconfigured')
-      return createWindowsPlatform({
-        helperPath: helperPath ?? '',
-        ...(options.log === undefined ? {} : { log: options.log }),
-      })
+      return createWindowsPlatform({ helperPath: helperPath ?? '', ...shared })
     default:
       return createUnsupportedPlatform('unsupported', os, UNSUPPORTED_CONVENTIONS)
   }

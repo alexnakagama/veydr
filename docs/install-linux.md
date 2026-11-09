@@ -1,6 +1,6 @@
 # Installing Veydr on Linux
 
-Veydr is built for **Linux x64** only; Windows and macOS are not supported yet. Two packages are produced by `npm run dist:linux` (in `dist/`):
+Veydr's packages are built for **Linux x64** only. Windows is a preview that runs from source, with no Windows package yet (see [Running from source on Windows](../README.md#running-from-source-on-windows)); macOS is not supported. Two packages are produced by `npm run dist:linux` (in `dist/`):
 
 | Package | File | Use it on |
 |---|---|---|
@@ -48,13 +48,13 @@ chmod +x Veydr-X.Y.Z-x86_64.AppImage
 |---|---|
 | `process-sandbox` | Veydr was not started with `--no-sandbox` (otherwise nothing else is checked) |
 | `config-dir-writable` | the configuration directory can be created and a file written to it (a temporary file, removed again) |
-| `platform` | the Linux implementation is available and can read `/proc` (it lists the listening sockets) |
+| `platform` | the Linux implementation is available, reads the environment commands start from (it runs your login shell once, as Veydr does before the first start; only the number of variables is reported, and a login shell that cannot be read is counted as a warning, not a failure), and can read `/proc` (it lists the listening sockets) |
 | `ui-loaded` | the interface loads from the package in a hidden window and renders |
 | `preload-bridge` | the page sees exactly the application API groups |
 | `renderer-isolation` | the window runs sandboxed with context isolation |
 | `devtools-disabled` | (packaged builds) DevTools do not open when requested |
 
-It never reads or changes `config.json` or the record of running commands, and starts no command. If another Veydr is running for the same user (or the configuration directory is not writable), it exits with 1 before checking anything. Messages about IPC handlers missing on standard error are expected: the smoke test loads the interface without its services.
+It never reads or changes `config.json` or the record of running commands, and starts no command: apart from its own processes, the only program it runs is your login shell, for the `platform` check. If another Veydr is running for the same user (or the configuration directory is not writable), it exits with 1 before checking anything. Messages about IPC handlers missing on standard error are expected: the smoke test loads the interface without its services.
 
 ## Supported distributions
 

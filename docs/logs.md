@@ -1,6 +1,6 @@
 # Logs (output of commands)
 
-This page describes how Veydr captures, keeps, and shows what your commands print, and what it does not guarantee. Veydr is Linux-only for now; Windows is not yet supported, and the [Windows (not yet available)](#windows-not-yet-available) section describes how output will be decoded there.
+This page describes how Veydr captures, keeps, and shows what your commands print, and what it does not guarantee. The [Windows (preview)](#windows-preview) section describes how output is decoded on Windows. **Windows: preview. Run from source; verified in CI on Windows Server 2025. No Windows package yet.**
 
 ## What is captured
 
@@ -13,7 +13,7 @@ Output becomes **lines**. Every line records which stream it came from (`out` or
 - Text without a newline is shown as a line of its own once the stream has been quiet for 100 ms (for example a prompt or a progress indicator). What the command prints after that starts a new line; a newline that follows right away only ends the shown text. If the text ends with what could be the start of a secret value (see [Secret values in output](#secret-values-in-output)), that part is held back until the line continues or ends; if neither happens, it stays hidden until the command closes its output (for example when it exits).
 - **Progress output** that redraws one line with `\r` behaves as follows: updates arriving less than 100 ms apart are not shown until the line ends or pauses (only the last state is shown); updates arriving further apart are each shown and kept as a separate line, so a long-running progress bar can take up much of a run's 10,000 lines and push out older output.
 - A line longer than 16 KiB (16,384 bytes) keeps its first 16 KiB and is marked **truncated at 16 KiB**; the rest of it, up to the next newline, is dropped.
-- Bytes that are not valid UTF-8 are shown as the replacement character `�`; capturing continues. On Windows, such a line is decoded with the system's code page instead (see [Windows](#windows-not-yet-available)).
+- Bytes that are not valid UTF-8 are shown as the replacement character `�`; capturing continues. On Windows, such a line is decoded with the system's code page instead (see [Windows](#windows-preview)).
 
 **Order across the two streams is best effort.** Standard output and standard error are separate pipes. Lines are ordered by the time Veydr read them, which can differ from the order the command wrote them when it writes to both streams quickly. A line shown after the 100 ms pause is numbered when it is shown, after lines of the other stream completed meanwhile.
 
@@ -70,9 +70,9 @@ A secret value that spans several lines (for example a key in PEM format, entere
 
 Values shorter than 4 characters are not redacted at all (they would match ordinary text too often); the command editor warns when you enter such a value and mark it as secret. It cannot warn about a short secret saved earlier while its value is hidden, because the window never receives hidden values; reveal it to check. When a line is cut at 16 KiB in the middle of a secret value, the cut-off start of the value is replaced if it is at least 4 characters long, so at most 3 characters of a secret can remain visible there.
 
-## Windows (not yet available)
+## Windows (preview)
 
-**Not yet reachable from the app.** Starting a command on Windows still fails as not supported. The rules below are implemented and tested on a native Windows runner in CI, and are the ones output will follow once commands can be started on Windows.
+**Windows: preview. Run from source; verified in CI on Windows Server 2025. No Windows package yet.** Output of commands on Windows follows the rules below, which are tested on a native Windows runner in CI. The runner's ANSI code page is 1252, so the other code pages are tested with synthetic bytes only (see [processes.md](processes.md#not-verified-on-the-ci-runner)).
 
 ### The console is set to UTF-8
 

@@ -1,6 +1,6 @@
 # Processes
 
-This page describes how Veydr starts, tracks, and stops the commands you configure, and what it cannot guarantee. Veydr is Linux-only for now; Windows is not yet supported. Everything below describes Linux, except the [Windows (not yet available)](#windows-not-yet-available) section, which describes groundwork you cannot use from the app yet.
+This page describes how Veydr starts, tracks, and stops the commands you configure, and what it cannot guarantee. Everything below describes Linux, except the [Windows (preview)](#windows-preview) section. **Windows: preview. Run from source; verified in CI on Windows Server 2025. No Windows package yet.**
 
 ## Starting
 
@@ -128,9 +128,9 @@ A process of the command that runs as another user (for example through `sudo` o
 
 Evidence: `test/unit/linux-process-tree.test.ts` › "reports a process it is not permitted to signal as a survivor"; `test/unit/linux-process-tree.test.ts` › "lists processes alive after the forced stop with PID and command name".
 
-## Windows (not yet available)
+## Windows (preview)
 
-**Not yet reachable from the app.** Windows is not yet supported: starting a command on Windows fails with "not supported on this platform", and no process is created, because finding executables and reading the environment on Windows are not implemented yet. The process-tree layer below is implemented and tested on a native Windows runner in CI, so that the remaining work can build on it. Everything in this section describes that layer, not something you can use today.
+**Windows: preview. Run from source; verified in CI on Windows Server 2025. No Windows package yet.** On Windows, commands start, stop and are recovered from the app as described below, and the process-tree behavior is tested on a native Windows runner (GitHub's `windows-2025`, Windows Server 2025) for every pull request and push to `master`. To run Veydr on Windows, see [Running from source on Windows](../README.md#running-from-source-on-windows). How the program is found, which environment a command gets, and how its output is decoded are in [commands.md](commands.md#windows-preview) and [logs.md](logs.md#windows-preview). Port inspection is not yet available on Windows. The limits below, and the conditions the runner cannot verify, are part of the preview.
 
 ### Containment
 
@@ -169,8 +169,14 @@ These tests run on GitHub's `windows-2025` runner, which cannot show the followi
 - a desktop session on Windows 10 or 11, including Windows Terminal as the default console;
 - logging off or shutting down Windows while commands run;
 - Veydr started with no Job Object around it, as when it is started from Explorer (the runner runs every step inside a job);
-- a standard user account: the CI job runs as the runner's administrator only.
+- a standard user account: the CI job runs as the runner's administrator only;
+- localized ANSI code pages: the runner uses code page 1252 (and OEM code page 437), so 932, 936, 949 and 950 are tested with synthetic bytes only;
+- a user-customized `PATHEXT`;
+- App Execution Aliases other than those the runner has (for example `winget`);
+- the environment of a Veydr started from Explorer, compared with the inherited one the tests see (Veydr passes on its own environment, see [commands.md](commands.md#environment-1)).
+
+The preview's own limits are stated where they apply: shell mode supports `cmd.exe` only, on one line of at most 8191 characters ([commands.md](commands.md#shell-mode)), a `PATH` change needs a Veydr restart ([commands.md](commands.md#environment-1)), and output that is neither UTF-8 nor in the ANSI code page is shown wrongly ([logs.md](logs.md#programs-that-write-oem-bytes-to-a-pipe)).
 
 The helper is not signed yet, so antivirus software or SmartScreen may flag it (see [deferred-checks.md](deferred-checks.md#windows-process-supervision-2026-11-06)).
 
-Evidence: `test/integration/windows-process-tree.test.ts` › "[spec:process-supervision/veydr-ends-abnormally-on-windows]"; `test/integration/windows-process-tree.test.ts` › "[spec:process-supervision/helper-ends-abnormally-on-windows]"; `test/integration/windows-process-tree.test.ts` › "[spec:process-supervision/cooperative-process-on-windows]"; `test/unit/supervisor.test.ts` › "ends a run as unverified when its leader exits and the run can no longer be checked"; `test/unit/supervisor.test.ts` › "[spec:process-supervision/start-on-windows]".
+Evidence: `test/integration/windows-process-tree.test.ts` › "[spec:process-supervision/veydr-ends-abnormally-on-windows]"; `test/integration/windows-process-tree.test.ts` › "[spec:process-supervision/helper-ends-abnormally-on-windows]"; `test/integration/windows-process-tree.test.ts` › "[spec:process-supervision/cooperative-process-on-windows]"; `test/unit/supervisor.test.ts` › "ends a run as unverified when its leader exits and the run can no longer be checked"; `test/unit/supervisor.test.ts` › "[spec:process-supervision/command-started-on-windows]"; `test/integration/windows-commands.test.ts` › "[spec:process-supervision/command-started-on-windows]".

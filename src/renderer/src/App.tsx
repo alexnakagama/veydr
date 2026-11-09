@@ -30,13 +30,13 @@ const views: readonly { id: View; label: string }[] = [
 export type InfoState = { status: 'loading' } | { status: 'ready'; info: AppInfo } | { status: 'error'; message: string }
 
 /**
- * The editor's conventions while the app info is missing (loading or failed): no default shell, and
- * only exact duplicate variables flagged. Main still rejects duplicates under the platform's rule.
+ * The editor's conventions while the app info is missing (loading or failed): no platform hints, no
+ * default shell, and only exact duplicate variables flagged. Main still rejects duplicates under the platform's rule.
  */
-const FALLBACK_CONVENTIONS: EditorConventions = { defaultShell: null, envNames: 'exact' }
+const FALLBACK_CONVENTIONS: EditorConventions = { platform: 'unsupported', defaultShell: null, envNames: 'exact' }
 
 export const editorConventions = (info: InfoState): EditorConventions =>
-  info.status === 'ready' ? { defaultShell: info.info.defaultShell, envNames: info.info.envNames } : FALLBACK_CONVENTIONS
+  info.status === 'ready' ? { platform: info.info.platform, defaultShell: info.info.defaultShell, envNames: info.info.envNames } : FALLBACK_CONVENTIONS
 
 function useAppInfo(): InfoState {
   const [state, setState] = useState<InfoState>({ status: 'loading' })

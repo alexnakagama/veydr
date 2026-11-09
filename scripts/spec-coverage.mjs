@@ -8,6 +8,13 @@
 //
 // `--required` (the earlier opt-in) is still accepted; any other argument is an error.
 // A tag naming a scenario that does not exist is a typo and fails in both modes.
+//
+// A requirement that an active (unarchived) change REMOVES in its delta no longer needs tests for
+// its main-spec scenarios, and a tag still naming one of them fails as unknown, so a test cannot
+// keep claiming a removed scenario. The exemption lasts only while the change is active: archive the
+// change once it is merged (which removes the requirement from the main specs), or delete an
+// abandoned change, whose removal would otherwise keep hiding those scenarios. A requirement that a
+// delta both removes and adds again by the same name keeps its scenarios through the delta's copy.
 import { readdirSync, readFileSync } from 'node:fs'
 import { join, relative, resolve } from 'node:path'
 
@@ -46,19 +53,60 @@ function walk(dir, accept, out = []) {
   return out
 }
 
-/** Spec files: main specs plus deltas of active (unarchived) changes. */
-function specFiles() {
-  const isSpec = (f) => f.endsWith('/spec.md')
-  return [...walk(join(root, 'openspec/specs'), isSpec), ...walk(join(root, 'openspec/changes'), isSpec)]
+const mainSpecDir = join(root, 'openspec/specs')
+const changesDir = join(root, 'openspec/changes')
+const isSpec = (f) => f.endsWith('/spec.md')
+const capabilityOf = (file) => file.split('/').at(-2)
+
+/**
+ * Requirements an active (unarchived) change removes, as `<capability>/<requirement name>`. Their
+ * scenarios in the main specs no longer need a test while the change is active: the change's own
+ * delta says what replaces them, and archiving the change removes them from the main specs.
+ */
+/** The lines of a Markdown file outside fenced code blocks (``` or ~~~). */
+function proseLines(file) {
+  const lines = []
+  let fence = null
+  for (const line of readFileSync(file, 'utf8').split('\n')) {
+    const marker = /^\s*(`{3,}|~{3,})/.exec(line)?.[1]
+    if (marker !== undefined && (fence === null || (marker[0] === fence[0] && marker.length >= fence.length))) {
+      fence = fence === null ? marker : null
+      continue
+    }
+    if (fence === null) lines.push(line)
+  }
+  return lines
 }
 
+function removedRequirements() {
+  const removed = new Set()
+  for (const file of walk(changesDir, isSpec)) {
+    let section = null
+    for (const line of proseLines(file)) {
+      const heading = /^##\s+(\w+)\s+Requirements\s*$/.exec(line)
+      if (heading !== null) section = heading[1]
+      else if (/^##\s/.test(line)) section = null
+      const requirement = /^###\s+Requirement:\s*(.+?)\s*$/.exec(line)
+      if (requirement !== null && section === 'REMOVED') removed.add(`${capabilityOf(file)}/${requirement[1]}`)
+    }
+  }
+  return removed
+}
+
+/** Every scenario of the main specs (minus removed requirements) and of the active changes' deltas. */
 function scenarios() {
+  const removed = removedRequirements()
   const found = new Map()
-  for (const file of specFiles()) {
-    const capability = file.split('/').at(-2)
-    for (const line of readFileSync(file, 'utf8').split('\n')) {
+  const files = [...walk(mainSpecDir, isSpec).map((file) => ({ file, main: true })), ...walk(changesDir, isSpec).map((file) => ({ file, main: false }))]
+  for (const { file, main } of files) {
+    const capability = capabilityOf(file)
+    let requirement = null
+    for (const line of proseLines(file)) {
+      const heading = /^###\s+Requirement:\s*(.+?)\s*$/.exec(line)
+      if (heading !== null) requirement = heading[1]
       const match = /^####\s+Scenario:\s*(.+?)\s*$/.exec(line)
       if (match === null) continue
+      if (main && requirement !== null && removed.has(`${capability}/${requirement}`)) continue
       const id = `${capability}/${slugify(match[1])}`
       if (!found.has(id)) found.set(id, { id, title: match[1], file: relative(root, file) })
     }

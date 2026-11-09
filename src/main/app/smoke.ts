@@ -2,7 +2,8 @@ import { randomBytes } from 'node:crypto'
 import { mkdir, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { contract } from '../../shared/api'
-import type { PortInspector } from '../platform/types'
+import { UnsupportedPlatformError } from '../platform/errors'
+import type { EnvProvider, PortInspector } from '../platform/types'
 
 /** `veydr --smoke-test`: checks a build can run on this system, then exits (task 9.2). */
 export const SMOKE_TEST_SWITCH = 'smoke-test'
@@ -58,7 +59,12 @@ export interface SmokeDeps {
   /** Veydr's configuration directory (`app.getPath('userData')`, which throws if it cannot be created). */
   configDir(): string
   /** The selected platform implementation (named so to stay clear of the `.platform` lint rule). */
-  readonly implementation: { readonly name: string; readonly supported: boolean; readonly portInspector: PortInspector }
+  readonly implementation: {
+    readonly name: string
+    readonly supported: boolean
+    readonly envProvider: EnvProvider
+    readonly portInspector: PortInspector
+  }
   /** `--no-sandbox` on Veydr's command line (read before `app.enableSandbox()` removes it). */
   readonly noSandbox: boolean
   /** Loads the bundled UI in a hidden window and reports what it shows. */
@@ -72,7 +78,9 @@ const BRIDGE_GROUPS: readonly string[] = Object.keys(contract)
 
 /**
  * Runs every check and reports each one. Nothing here reads or writes the configuration or the
- * run ledger, and no supervisor exists, so no command can start.
+ * run ledger, and no supervisor exists, so no command can start. The platform check resolves the
+ * base environment as a command's start would: on Linux that runs the user's login shell once
+ * (bounded by its own timeout), as Veydr does before the first start of a session.
  */
 export async function runSmokeTest(deps: SmokeDeps): Promise<SmokeReport> {
   const fs = deps.fs ?? nodeSmokeFs
@@ -106,12 +114,25 @@ export async function runSmokeTest(deps: SmokeDeps): Promise<SmokeReport> {
     // Chromium keeps its profile there too; without it the window cannot be loaded meaningfully.
     if (checks.at(-1)?.ok !== true) return
 
+    // The implementation as a start uses it: the environment commands would start from (only its
+    // size is reported, since values can be secrets), and the listening sockets where they can be
+    // listed yet. A provider that fell back (Linux: the login shell could not be read) passes with
+    // its warnings counted, as the app then still starts commands with Veydr's own environment; a
+    // provider that rejects fails the check.
     await check('platform', async () => {
-      const { name, supported, portInspector } = deps.implementation
+      const { name, supported, envProvider, portInspector } = deps.implementation
       if (!supported) throw new Error(`no platform implementation for ${name}`)
-      // A read-only use of the implementation: the listening sockets from /proc.
-      const snapshot = await portInspector.list()
-      return `${name}: ${snapshot.ports.length} listening sockets readable`
+      const { env, warnings } = await envProvider.base()
+      const environment = `${Object.keys(env).length} environment variables${warnings.length === 0 ? '' : ` (${warnings.length} ${warnings.length === 1 ? 'warning' : 'warnings'}: see the diagnostic log)`}`
+      let ports: string
+      try {
+        ports = `${(await portInspector.list()).ports.length} listening sockets readable`
+      } catch (error) {
+        // Only the platform's own "not implemented here" (Windows until W3); any other error fails.
+        if (!(error instanceof UnsupportedPlatformError)) throw error
+        ports = 'port inspection not yet available'
+      }
+      return `${name}: ${environment}, ${ports}`
     })
 
     let ui: SmokeUi | null = null

@@ -1,6 +1,6 @@
 # Ports (listening network ports)
 
-The **Ports** view lists the TCP ports on which processes listen, and which of them belong to your commands. It only reads information; it never stops, signals, or connects to anything. Veydr is Linux-only for now; on Windows the view says that port inspection is not yet available on this platform.
+The **Ports** view lists the TCP ports on which processes listen, and which of them belong to your commands. It only reads information; it never stops, signals, or connects to anything. On Windows, which is a preview, port inspection is not yet available: the view says so, and nothing is listed.
 
 ## What is shown
 

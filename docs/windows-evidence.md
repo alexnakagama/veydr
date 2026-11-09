@@ -1,6 +1,6 @@
 # Windows evidence
 
-Windows is **not yet supported**. This document records what the `windows-probe.yml` workflow observed on the `windows-2025` GitHub Actions runner, what it cannot observe there, and the decisions the Windows platform work (W1–W4) takes from it. It is evidence for that work, not a support statement. How the probes work, and how a run becomes evidence, is in [ci.md](ci.md#windows-probes).
+Windows is a **preview**: run from source, verified in CI on Windows Server 2025, with no Windows package yet (see the [README](../README.md#platform-support)). This document records what the `windows-probe.yml` workflow observed on the `windows-2025` GitHub Actions runner, what it cannot observe there, and the decisions the Windows platform work (W1–W4) takes from it. It is evidence for that work, not a support statement. How the probes work, and how a run becomes evidence, is in [ci.md](ci.md#windows-probes).
 
 ## Recorded run
 
@@ -176,12 +176,14 @@ Process identity across that recovery is PID plus creation time. `pt-identity` a
 
 **The verbatim route: `cmd.exe /d /v:off /s /c` with the quoting of `cmd-quote.mjs`, adopted unchanged.** Every `cmd-route-verbatim-*` check is `PASS`. W2 rejects the inputs it refuses, which are `cmd-route-verbatim-newline`, `cmd-route-verbatim-carriage-return` and `cmd-route-verbatim-long`: a line break or NUL in an argument, or a line beyond 8191 characters. Node's `shell: true` is not used, since `cmd-route-shell-amp`, `cmd-route-shell-pipe` and others run injected commands.
 
+**Resolved in W2** (OpenSpec change add-windows-environment-and-commands): batch files and shell-mode scripts run through this route, with the refusals above, as [commands.md](commands.md#batch-files) describes.
+
 Further findings W2 must handle, outside the D5 rules:
 
-- `cmd-pathext-cwd` is `EXPECTED-FAIL`: cmd.exe prefers a command file in the working directory to the one on `PATH`. W2 must resolve the program through `PATH` and `PATHEXT` itself (`cmd-pathext`) and pass cmd.exe an absolute path. Setting `NoDefaultCurrentDirectoryInExePath` was not measured, so W2 cannot rely on it without its own evidence.
+- `cmd-pathext-cwd` is `EXPECTED-FAIL`: cmd.exe prefers a command file in the working directory to the one on `PATH`. W2 must resolve the program through `PATH` and `PATHEXT` itself (`cmd-pathext`) and pass cmd.exe an absolute path. Setting `NoDefaultCurrentDirectoryInExePath` was not measured, so W2 cannot rely on it without its own evidence. **Resolved in W2:** Veydr looks the program up in `Path` with `PATHEXT` itself, never in the working directory, and passes cmd.exe the full path ([commands.md](commands.md#finding-the-program)).
 - `cmd-direct-spawn` is `PASS`: a `.cmd` file can only be started through cmd.exe.
-- Child output is not reliably UTF-8. `enc-codepages` and `enc-child-cmd-utf8` show code page 437, and `enc-child-python-plain` shows cp1252, while `enc-child-node-plain` is UTF-8. W2 decides how logs decode output that is not UTF-8.
-- The registry environment does not reproduce the logon environment exactly (`env-registry-std`), and a desktop launch could not be observed (`env-desktop-launch`).
+- Child output is not reliably UTF-8. `enc-codepages` and `enc-child-cmd-utf8` show code page 437, and `enc-child-python-plain` shows cp1252, while `enc-child-node-plain` is UTF-8. W2 decides how logs decode output that is not UTF-8. **Resolved in W2:** each command's console is set to UTF-8, and a line that is still not UTF-8 is decoded with the ANSI code page ([logs.md](logs.md#windows-preview)). OEM bytes written straight to a pipe stay unresolved, as documented there.
+- The registry environment does not reproduce the logon environment exactly (`env-registry-std`), and a desktop launch could not be observed (`env-desktop-launch`). **Resolved in W2** by not reading the registry: commands get the environment Veydr inherited ([commands.md](commands.md#environment-1)). A desktop launch's environment stays unverified ([processes.md](processes.md#not-verified-on-the-ci-runner)).
 
 ### Ports (W3)
 
