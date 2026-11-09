@@ -18,7 +18,7 @@ Veydr SHALL capture standard output and standard error of each run as lines, eac
 - **THEN** lines are ordered by capture time, and the documentation states that cross-stream order is best-effort
 
 ### Requirement: Line handling
-Output SHALL be split into lines on `\n` and `\r\n`. A partial line SHALL be shown after a short delay if no newline arrives. Lines longer than 16 KiB SHALL be truncated with a visible marker. Invalid UTF-8 SHALL be replaced, not dropped.
+Output SHALL be split into lines on `\n` and `\r\n`. A partial line SHALL be shown after a short delay if no newline arrives. Lines longer than 16 KiB SHALL be truncated with a visible marker. Invalid UTF-8 SHALL be replaced, not dropped. On Windows, a command's console SHALL be set to the UTF-8 output code page where possible, a failure to set it SHALL be logged, and a line that is not valid UTF-8 SHALL be decoded with the system's ANSI code page instead, where that code page is known.
 
 #### Scenario: CRLF output
 - **WHEN** a process writes lines terminated by `\r\n`
@@ -33,8 +33,16 @@ Output SHALL be split into lines on `\n` and `\r\n`. A partial line SHALL be sho
 - **THEN** the first 16 KiB are retained and a truncation marker is shown
 
 #### Scenario: Invalid UTF-8
-- **WHEN** a process writes byte sequences that are not valid UTF-8
+- **WHEN** a process writes byte sequences that are not valid UTF-8, and no ANSI fallback applies (on Linux, or on Windows when the ANSI code page is not known)
 - **THEN** the invalid bytes are shown as replacement characters and capture continues
+
+#### Scenario: Console output on Windows
+- **WHEN** on Windows a `cmd.exe` command echoes non-ASCII text
+- **THEN** the log shows that text unchanged
+
+#### Scenario: ANSI output on Windows
+- **WHEN** on Windows a program writes a line in the system's ANSI code page that is not valid UTF-8
+- **THEN** the log shows that line decoded with the ANSI code page, and the lines before and after it are decoded as UTF-8
 
 ### Requirement: Bounded retention
 Each run SHALL retain at most 10,000 lines or 8 MiB of output, whichever limit is reached first, discarding the oldest lines. Veydr SHALL keep output for at most the current and the most recent previous run of each command, and at most 64 MiB in total, evicting previous runs first. Limits SHALL be documented.
