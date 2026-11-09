@@ -442,6 +442,22 @@ Group 8 on Linux (2026-11-09, branch `tasks/windows-commands-integration-check` 
 - `grep -rn "it.todo" test/` finds no `it.todo` tagged with a scenario of this change: only a comment in `windows-commands.test.ts`, and a string literal in `processes-docs.test.ts`.
 - `grep -rn "Windows" README.md docs/` shows the preview statement in the README (support statement, platform table, "Running from source on Windows"), `processes.md`, `commands.md`, `logs.md` and `deferred-checks.md`, the CI notes in `ci.md`, the evidence document, and the not-verifiable lists. Nothing claims a Windows package or full support. Two dated rows of `deferred-checks.md` (2026-10-27 and 2026-11-03) still said "Windows remains not yet supported" with no forward pointer, unlike the 2026-10-25 and 2026-11-06 rows; both now point to the Windows preview section. They stay dated records, which `processes-docs.test.ts` already exempts.
 - Since the change began (`850bf6f`), `electron-builder.yml`, `package.json` and `package-lock.json` are unchanged. In `.github/`, only the `windows` job of `ci.yml` changed; the setup action and `playwright.config.ts` are unchanged, so the Linux `e2e` and `package` jobs run what they ran before.
+- The Linux app's behavior changed in three places. The passing Linux unit, integration and e2e runs above cover all three, `no-network.spec.ts` included:
+  - `--no-proxy-server` applies on every system, and is recorded in design D7;
+  - the Linux resolver's working-directory checks moved unchanged into `resolve-cwd.ts` (task 3.1);
+  - the line splitter's fallback decoder is off on Linux, because `outputFallbackEncoding` is `null` there.
+
+Group 8 review (2026-11-09): reviewer2 read the diff and found nothing high or medium: 3 low items, 3 nits, and one procedural point.
+- low:
+  - the undated row at the top of `deferred-checks.md` now opens with the Windows preview, and keeps the rest as history;
+  - `windows-evidence.md` no longer says the preview statement ships with W4. It ships in W2, and W4 ships the packaged version;
+  - the 8.2 note lists the Linux-visible changes, and design D7 records the proxy switch;
+  - CI artifacts (`test-results/` on failure, in `e2e` and `windows`): checked, and no change is needed. The Playwright config enables no trace, screenshot or video, no spec attaches anything, the e2e secrets are dummy literals, and neither job passes a `secrets.*` value.
+- nits:
+  - the JSDoc in `spec-coverage.mjs` moved to `removedRequirements()`;
+  - the dated 2026-10-27 row and `windows-evidence.md`'s probe record stay as they are, as the reviewer advised.
+- procedure: 8.1 and 8.2 are ticked only after the `windows` job's own counts are recorded below.
+- Verified on Linux after the fixes: `npm test` (1281 passed), lint, spec coverage 166/166, and `openspec validate --strict`.
 
 ## Workflow follow-up
 
