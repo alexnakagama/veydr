@@ -423,13 +423,13 @@ Group 7 on Windows (#45, run 42571528735, 2026-11-09): every check passed, `ci-o
 
 ## 8. Integration check
 
-- [ ] 8.1 Run `npm run verify` on Linux, and check the `windows` job and `ci-ok` on the pull request. Verify:
+- [x] 8.1 Run `npm run verify` on Linux, and check the `windows` job and `ci-ok` on the pull request. Verify:
   - all pass;
   - every Windows integration test is reported as run;
   - every Windows e2e skip carries a `[linux-only: …]` reason;
   - spec coverage reports zero unmapped scenarios;
   - `grep -rn "it.todo" test/` shows no `it.todo` tagged with a scenario of this change.
-- [ ] 8.2 Check what is claimed and what is unchanged:
+- [x] 8.2 Check what is claimed and what is unchanged:
   - `grep -rn "Windows" README.md docs/` shows the preview statement, CI notes, the evidence document and the not-verifiable list, and nothing claiming a Windows package or full support;
   - `electron-builder.yml` and `package-lock.json` are unchanged;
   - the Linux e2e and packaging jobs are unchanged in what they run.
@@ -452,12 +452,22 @@ Group 8 review (2026-11-09): reviewer2 read the diff and found nothing high or m
   - the undated row at the top of `deferred-checks.md` now opens with the Windows preview, and keeps the rest as history;
   - `windows-evidence.md` no longer says the preview statement ships with W4. It ships in W2, and W4 ships the packaged version;
   - the 8.2 note lists the Linux-visible changes, and design D7 records the proxy switch;
-  - CI artifacts (`test-results/` on failure, in `e2e` and `windows`): checked, and no change is needed. The Playwright config enables no trace, screenshot or video, no spec attaches anything, the e2e secrets are dummy literals, and neither job passes a `secrets.*` value.
+  - CI artifacts (`test-results/` on failure, in `e2e` and `windows`): checked, and no change is needed. The Playwright config enables no trace, screenshot or video, no spec attaches anything, the e2e secrets are dummy literals, and neither job, nor the setup action, uses a `secrets.*` value (`release.yml` does, but it uploads nothing from the e2e tests).
 - nits:
   - the JSDoc in `spec-coverage.mjs` moved to `removedRequirements()`;
   - the dated 2026-10-27 row and `windows-evidence.md`'s probe record stay as they are, as the reviewer advised.
 - procedure: 8.1 and 8.2 are ticked only after the `windows` job's own counts are recorded below.
 - Verified on Linux after the fixes: `npm test` (1281 passed), lint, spec coverage 166/166, and `openspec validate --strict`.
+
+- Re-review (2026-11-09): reviewer2 confirmed every finding resolved. Two nits remained: the 2026-10-27 clause of the top `deferred-checks.md` row is now in the past tense, and the secrets note above is scoped to `ci.yml`. Then recording the `windows` job's own counts, below.
+
+Group 8 on Windows (#46, run 42648253547 at `232d7b6`, 2026-11-09): every check passed, `ci-ok` included (static, unit, integration, e2e, package, windows, codeql, dependency-review).
+- The Windows integration tests: 44 passed, none skipped. Every one ran.
+- The Windows unit tests: 1209 passed, 79 skipped (the Linux-only ones).
+- The Windows e2e tests: 59 passed, 18 skipped, none failed. Every skip carries a `[linux-only: …]` reason: login shell; shebang scripts and POSIX sessions; POSIX file modes; port inspection and a POSIX shell; network namespaces (2); port inspection (4); POSIX signals (6); processes outliving a crashed Veydr (2).
+- The Windows-specific tests passed: `windows-app`, `windows-ports`, `windows-recovery` (`veydr-ends-abnormally-on-windows`), and the renderer sandbox test (`windows-end-to-end-tests-keep-the-sandbox`).
+- No process query was reported slower than 5 s.
+- Tasks 8.1 and 8.2 are complete. The change is ready to archive once #46 is merged.
 
 ## Workflow follow-up
 
