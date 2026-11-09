@@ -1,0 +1,39 @@
+# Website rebuild (docs/ci.md#website). veydr-web reads the releases from the GitHub API at build
+# time, so this only starts a Vercel build through its Deploy Hook; it sends no data. Drafts never
+# fire these events, so a release still being uploaded does not reach the site.
+name: Website
+
+on:
+  release:
+    types:
+      - published
+      - edited
+      - unpublished
+      - deleted
+  workflow_dispatch:
+
+permissions: {}
+
+# Several release events in a row lead to one build: a newer run replaces a waiting one.
+concurrency:
+  group: website
+  cancel-in-progress: true
+
+jobs:
+  deploy-hook:
+    name: deploy-hook
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    # The hook URL is a secret of this environment, so no other job can read it.
+    environment: website
+    permissions: {}
+    steps:
+      - name: Trigger the Vercel deploy hook
+        env:
+          HOOK: ${{ secrets.VERCEL_DEPLOY_HOOK }}
+        run: |
+          if [ -z "$HOOK" ]; then
+            echo "::error title=No deploy hook::set the secret VERCEL_DEPLOY_HOOK in the website environment (docs/ci.md#website)"
+            exit 1
+          fi
+          curl --fail-with-body --silent --show-error --retry 3 --max-time 30 --request POST "$HOOK"

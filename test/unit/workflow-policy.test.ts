@@ -177,9 +177,14 @@ function scriptExpressions(source: Source, lines: Line[]): string[] {
     .map((l) => at(source, l, 'expression in a run script; pass the value through env:'))
 }
 
-/** The only secret besides the job token is the release deploy key (design D7), and only the release workflow may read it. */
+/** Secrets besides the job token, and the one workflow that may read each: the release deploy key (design D7) and the website's Vercel Deploy Hook. */
+const secretsByWorkflow: Readonly<Record<string, readonly string[]>> = {
+  '.github/workflows/release.yml': ['RELEASE_DEPLOY_KEY'],
+  '.github/workflows/website.yml': ['VERCEL_DEPLOY_HOOK'],
+}
+
 function secretReferences(source: Source, lines: Line[]): string[] {
-  const allowed = source.path === '.github/workflows/release.yml' ? ['GITHUB_TOKEN', 'RELEASE_DEPLOY_KEY'] : ['GITHUB_TOKEN']
+  const allowed = ['GITHUB_TOKEN', ...(secretsByWorkflow[source.path] ?? [])]
   const out: string[] = []
   for (const line of lines) {
     if (line.kind === 'comment' || line.kind === 'blank') continue
@@ -389,6 +394,7 @@ describe('workflow policy (design D11)', () => {
         '.github/workflows/build.yml',
         '.github/workflows/release.yml',
         '.github/workflows/windows-probe.yml',
+        '.github/workflows/website.yml',
         '.github/dependabot.yml',
         '.github/CODEOWNERS',
         '.github/pull_request_template.md',
@@ -458,7 +464,7 @@ describe('workflow policy (design D11)', () => {
     expect(violations(fixture(publish, '.github/workflows/ci.yml'))).toHaveLength(3)
   })
 
-  it('keeps repository secrets out of every workflow but the release', () => {
+  it('keeps repository secrets out of every workflow but the one that needs each', () => {
     const withEnv = (value: string): Source => edit('        run: |', `        env:\n          TOKEN: ${value}\n        run: |`)
     expect(violations(withEnv('${{ secrets.GITHUB_TOKEN }}'))).toEqual([])
     expect(violations(withEnv('${{ github.token }}'))).toEqual([])
@@ -467,6 +473,10 @@ describe('workflow policy (design D11)', () => {
     expect(violations(withEnv("${{ secrets['NPM_TOKEN'] }}"))).toEqual([expect.stringContaining('secret reference not allowed here: secrets')])
     expect(violations(withEnv('${{ secrets.RELEASE_DEPLOY_KEY }}'))).toHaveLength(1)
     expect(violations(fixture(withEnv('${{ secrets.RELEASE_DEPLOY_KEY }}').text, '.github/workflows/release.yml'))).toEqual([])
+    expect(violations(withEnv('${{ secrets.VERCEL_DEPLOY_HOOK }}'))).toHaveLength(1)
+    expect(violations(fixture(withEnv('${{ secrets.VERCEL_DEPLOY_HOOK }}').text, '.github/workflows/website.yml'))).toEqual([])
+    expect(violations(fixture(withEnv('${{ secrets.VERCEL_DEPLOY_HOOK }}').text, '.github/workflows/release.yml'))).toHaveLength(1)
+    expect(violations(fixture(withEnv('${{ secrets.RELEASE_DEPLOY_KEY }}').text, '.github/workflows/website.yml'))).toHaveLength(1)
     expect(violations(edit('    timeout-minutes: 30\n', '    timeout-minutes: 30\n    secrets: inherit\n'))).toEqual([
       expect.stringContaining('secrets: passes repository secrets on'),
     ])
