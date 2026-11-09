@@ -177,9 +177,17 @@ function scriptExpressions(source: Source, lines: Line[]): string[] {
     .map((l) => at(source, l, 'expression in a run script; pass the value through env:'))
 }
 
-/** The only secret besides the job token is the release deploy key (design D7), and only the release workflow may read it. */
+/**
+ * Secrets besides the job token, and the one workflow that may read each: the release deploy key
+ * (design D7) and the website's Vercel deploy hook (docs/ci.md#website).
+ */
+const secretsByWorkflow: Readonly<Record<string, readonly string[]>> = {
+  '.github/workflows/release.yml': ['RELEASE_DEPLOY_KEY'],
+  '.github/workflows/website.yml': ['VERCEL_DEPLOY_HOOK'],
+}
+
 function secretReferences(source: Source, lines: Line[]): string[] {
-  const allowed = source.path === '.github/workflows/release.yml' ? ['GITHUB_TOKEN', 'RELEASE_DEPLOY_KEY'] : ['GITHUB_TOKEN']
+  const allowed = ['GITHUB_TOKEN', ...(secretsByWorkflow[source.path] ?? [])]
   const out: string[] = []
   for (const line of lines) {
     if (line.kind === 'comment' || line.kind === 'blank') continue
@@ -389,6 +397,7 @@ describe('workflow policy (design D11)', () => {
         '.github/workflows/build.yml',
         '.github/workflows/release.yml',
         '.github/workflows/windows-probe.yml',
+        '.github/workflows/website.yml',
         '.github/dependabot.yml',
         '.github/CODEOWNERS',
         '.github/pull_request_template.md',
@@ -458,7 +467,7 @@ describe('workflow policy (design D11)', () => {
     expect(violations(fixture(publish, '.github/workflows/ci.yml'))).toHaveLength(3)
   })
 
-  it('keeps repository secrets out of every workflow but the release', () => {
+  it('keeps repository secrets out of every workflow but their own', () => {
     const withEnv = (value: string): Source => edit('        run: |', `        env:\n          TOKEN: ${value}\n        run: |`)
     expect(violations(withEnv('${{ secrets.GITHUB_TOKEN }}'))).toEqual([])
     expect(violations(withEnv('${{ github.token }}'))).toEqual([])
@@ -467,6 +476,11 @@ describe('workflow policy (design D11)', () => {
     expect(violations(withEnv("${{ secrets['NPM_TOKEN'] }}"))).toEqual([expect.stringContaining('secret reference not allowed here: secrets')])
     expect(violations(withEnv('${{ secrets.RELEASE_DEPLOY_KEY }}'))).toHaveLength(1)
     expect(violations(fixture(withEnv('${{ secrets.RELEASE_DEPLOY_KEY }}').text, '.github/workflows/release.yml'))).toEqual([])
+    // Each secret only in its own workflow.
+    expect(violations(withEnv('${{ secrets.VERCEL_DEPLOY_HOOK }}'))).toHaveLength(1)
+    expect(violations(fixture(withEnv('${{ secrets.VERCEL_DEPLOY_HOOK }}').text, '.github/workflows/website.yml'))).toEqual([])
+    expect(violations(fixture(withEnv('${{ secrets.VERCEL_DEPLOY_HOOK }}').text, '.github/workflows/release.yml'))).toHaveLength(1)
+    expect(violations(fixture(withEnv('${{ secrets.RELEASE_DEPLOY_KEY }}').text, '.github/workflows/website.yml'))).toHaveLength(1)
     expect(violations(edit('    timeout-minutes: 30\n', '    timeout-minutes: 30\n    secrets: inherit\n'))).toEqual([
       expect.stringContaining('secrets: passes repository secrets on'),
     ])
@@ -2052,5 +2066,109 @@ if (args[0] === 'api') {
     expect(unreachable.run.status).not.toBe(0)
     expect(unreachable.calls.map((c) => c[0])).toEqual(['api'])
     expect(draftRelease({ failOn: 'release create' }).run.status).not.toBe(0)
+  })
+})
+
+// website.yml (docs/ci.md#website): rebuilds the landing page on Vercel when the downloads change.
+
+describe('website.yml', { timeout: 60_000 }, () => {
+  const w = loadWorkflow('.github/workflows/website.yml')
+  const hook = 'https://api.vercel.com/v1/integrations/deploy/prj_abc123/def456'
+
+  /** Runs the request step with a fake `curl` that logs its arguments, prints `body` and exits with `status`. */
+  const request = (options: { hook?: string; body?: string; status?: number } = {}): { run: ScriptRun; calls: string[][] } => {
+    const dir = mkdtempSync(join(tmpdir(), 'veydr-website-'))
+    try {
+      const log = join(dir, 'curl.log')
+      writeFileSync(
+        join(dir, 'curl'),
+        `#!/usr/bin/env node
+require('node:fs').appendFileSync(process.env.CURL_LOG, JSON.stringify(process.argv.slice(2)) + '\\n')
+process.stdout.write(process.env.FAKE_CURL_BODY ?? '')
+process.exit(Number(process.env.FAKE_CURL_STATUS ?? '0'))
+`,
+      )
+      chmodSync(join(dir, 'curl'), 0o755)
+      const run = w.runStep('rebuild', 'Request the rebuild', {
+        env: {
+          PATH: `${dir}:${process.env['PATH'] ?? ''}`,
+          CURL_LOG: log,
+          DEPLOY_HOOK: options.hook,
+          FAKE_CURL_BODY: options.body ?? '{"job":{"id":"job_42","state":"PENDING","createdAt":1}}',
+          FAKE_CURL_STATUS: String(options.status ?? 0),
+        },
+      })
+      const calls = existsSync(log) ? readFileSync(log, 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l) as string[]) : []
+      return { run, calls }
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  }
+
+  it('exists and has one job that holds no token and runs no repository code', () => {
+    expect(w.source.text).not.toBe('')
+    expect(w.jobs.map((j) => j.name)).toEqual(['rebuild'])
+    expect(w.permissions('rebuild')).toBe('{}')
+    // No action at all, so no checkout, and nothing from the repository runs next to the secret.
+    expect(w.steps('rebuild').map((s) => w.field(s, 'uses')).filter((u) => u !== undefined)).toEqual([])
+    expect(w.steps('rebuild').map((s) => w.field(s, 'name'))).toEqual(['Request the rebuild'])
+    expect(w.lines.filter((l) => l.kind === 'node' && l.key === 'continue-on-error')).toEqual([])
+    // Only the newest request matters.
+    const concurrency = topLevelBlock(w.lines, 'concurrency')?.start ?? -1
+    expect(w.lines[childAt(w.lines, concurrency, 'group')]?.value).toBe('website')
+    expect(w.lines[childAt(w.lines, concurrency, 'cancel-in-progress')]?.value).toBe('true')
+  })
+
+  it('[spec:release-automation/published-release-changes] rebuilds the website when a published release changes, through the deploy hook', () => {
+    expect(w.triggers()).toEqual(['release', 'workflow_dispatch'])
+    expect(childNames(w.lines, childAt(w.lines, w.trigger('release'), 'types'))).toEqual(['published', 'edited', 'unpublished', 'deleted'])
+    expect(w.dispatchInputs()).toEqual({})
+    const step = w.steps('rebuild')[0] as Range
+    expect(within(w.lines, step).find((l) => l.key === 'DEPLOY_HOOK')?.value).toBe('${{ secrets.VERCEL_DEPLOY_HOOK }}')
+
+    const { run, calls } = request({ hook })
+    expect(run.status, run.stdout + run.stderr).toBe(0)
+    expect(run.stdout).toContain('::notice title=Website rebuild requested::Vercel job job_42')
+    // One POST to the hook, failing on HTTP errors, with a bounded time and a few retries.
+    expect(calls).toHaveLength(1)
+    const args = calls[0] as string[]
+    expect(args.at(-1)).toBe(hook)
+    expect(args.at(-2)).toBe('--')
+    expect(args).toEqual(expect.arrayContaining(['--fail-with-body', '--request', 'POST', '--max-time', '30', '--retry', '3']))
+    // The hook URL is a credential: never echoed.
+    expect(run.stdout + run.stderr).not.toContain(hook)
+  })
+
+  it('[spec:release-automation/draft-changed] ignores edits and deletions of drafts, but not a release turned back into a draft', () => {
+    // GitHub sends `edited` and `deleted` for drafts too; `unpublished` arrives with draft already true.
+    expect(w.jobField('rebuild', 'if')?.value).toBe(
+      "github.event_name != 'release' || github.event.action == 'unpublished' || !github.event.release.draft",
+    )
+  })
+
+  it('[spec:release-automation/deploy-hook-missing-or-rejected] fails the run, without echoing the hook, when the hook is missing, malformed or rejected', () => {
+    const missing = request({ hook: undefined })
+    expect(missing.run.status).not.toBe(0)
+    expect(missing.run.stdout).toContain('VERCEL_DEPLOY_HOOK is not set')
+    expect(missing.calls).toEqual([])
+
+    const elsewhere = 'https://example.com/v1/integrations/deploy/prj_abc123/def456'
+    const malformed = request({ hook: elsewhere })
+    expect(malformed.run.status).not.toBe(0)
+    expect(malformed.run.stdout).toContain('Not a deploy hook')
+    expect(malformed.run.stdout).not.toContain(elsewhere)
+    expect(malformed.calls).toEqual([])
+
+    const rejected = request({ hook, status: 22, body: '{"error":{"code":"not_found","message":"Deploy hook not found"}}' })
+    expect(rejected.run.status).not.toBe(0)
+    expect(rejected.run.stdout).toContain('Vercel did not accept the rebuild request')
+    expect(rejected.run.stdout).toContain('Deploy hook not found')
+
+    for (const body of ['', 'not json', '{"job":{}}', '{"job":{"id":7}}']) {
+      const odd = request({ hook, body })
+      expect(odd.run.status, body).not.toBe(0)
+      expect(odd.run.stdout, body).toContain('Vercel answered without a job id')
+    }
+    expect(rejected.run.stdout + rejected.run.stderr).not.toContain(hook)
   })
 })

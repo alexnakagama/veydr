@@ -1,0 +1,62 @@
+# Website rebuild (docs/ci.md#website). The landing page (alexnakagama/veydr-web, on Vercel) reads
+# the releases from the GitHub API when it is built, so it has to be rebuilt whenever what a visitor
+# can download changes: a release is published, edited (for example, its prerelease flag), turned
+# back into a draft, or deleted. This workflow asks Vercel for that rebuild through a deploy hook and
+# does nothing else: no checkout, no code from the repository, and no token.
+name: Website
+
+on:
+  release:
+    types:
+      - published
+      - edited
+      - unpublished
+      - deleted
+  workflow_dispatch:
+
+permissions: {}
+
+# Only the newest request matters: the site always builds from the current list of releases.
+concurrency:
+  group: website
+  cancel-in-progress: true
+
+jobs:
+  rebuild:
+    name: rebuild
+    # Drafts are invisible to the site, so editing or deleting one changes nothing there. A release
+    # turned back into a draft (unpublished) is already a draft in the event, and does change it.
+    if: github.event_name != 'release' || github.event.action == 'unpublished' || !github.event.release.draft
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      # The hook URL is the only credential: anyone who has it can start a build of the site, nothing
+      # more. GitHub masks it in the log; the script never prints it or passes it in a command name.
+      - name: Request the rebuild
+        env:
+          DEPLOY_HOOK: ${{ secrets.VERCEL_DEPLOY_HOOK }}
+        run: |
+          if [ -z "$DEPLOY_HOOK" ]; then
+            echo "::error title=No deploy hook::the repository secret VERCEL_DEPLOY_HOOK is not set, so the website was not rebuilt. See docs/ci.md#website."
+            exit 1
+          fi
+          case "$DEPLOY_HOOK" in
+            https://api.vercel.com/v1/integrations/deploy/*) ;;
+            *)
+              echo "::error title=Not a deploy hook::VERCEL_DEPLOY_HOOK must be a Vercel deploy hook URL (https://api.vercel.com/v1/integrations/deploy/...)."
+              exit 1
+              ;;
+          esac
+          # Retries cover network errors and 5xx answers; a duplicate request only queues one more
+          # build of the same commit.
+          if ! response="$(curl --fail-with-body --silent --show-error --retry 3 --retry-all-errors --retry-delay 5 --max-time 30 --request POST -- "$DEPLOY_HOOK")"; then
+            echo "::error title=Deploy hook failed::Vercel did not accept the rebuild request: $response"
+            exit 1
+          fi
+          job="$(node -e 'try { const id = JSON.parse(process.argv[1]).job?.id; if (typeof id === "string") console.log(id) } catch {}' "$response")"
+          if [ -z "$job" ]; then
+            echo "::error title=Unexpected answer::Vercel answered without a job id: $response"
+            exit 1
+          fi
+          echo "::notice title=Website rebuild requested::Vercel job $job"
