@@ -37,13 +37,13 @@ Tasks 9.1, 9.4 and 9.5 in `tasks.md` reference this list.
 
 | Area | Outcome | Evidence |
 |---|---|---|
-| Windows and macOS | Partly started. The `windows` CI job runs typecheck, lint, and the unit tests on `windows-2025` for every pull request and push to `master`; unit tests that need a Linux facility are skipped there with a `[linux-only: …]` reason. Windows runtime behavior is still unverified: the Windows platform rejects every operation, and no integration, end-to-end, or packaging test runs on Windows. Windows remains not yet supported; macOS is unchanged. | `.github/workflows/ci.yml` (`windows`), `docs/ci.md`, `test/unit/test-platform-policy.test.ts` |
+| Windows and macOS | Partly started. The `windows` CI job runs typecheck, lint, and the unit tests on `windows-2025` for every pull request and push to `master`; unit tests that need a Linux facility are skipped there with a `[linux-only: …]` reason. Windows runtime behavior is still unverified: the Windows platform rejects every operation, and no integration, end-to-end, or packaging test runs on Windows. Windows remains not yet supported; macOS is unchanged. (Since 2026-11-08 Windows is a preview, run from source, see [Windows preview](#windows-preview-2026-11-08).) | `.github/workflows/ci.yml` (`windows`), `docs/ci.md`, `test/unit/test-platform-policy.test.ts` |
 
 ## Windows probes (2026-11-03)
 
 | Area | Outcome | Evidence |
 |---|---|---|
-| Windows and macOS | Windows behavior was observed on the `windows-2025` runner by the `windows-probe.yml` workflow, as evidence for the Windows platform work; Windows remains not yet supported. What the runner cannot show (a desktop launch, logoff and shutdown, UAC prompts, localized Windows, third-party antivirus, SmartScreen, a parent outside any Job Object, and the unapproved koffi check) is listed in [Not verifiable on the runner](windows-evidence.md#not-verifiable-on-the-runner). macOS is unchanged. | `docs/windows-evidence.md`, `test/windows-probe/summary.txt`, `test/unit/windows-evidence.test.ts` |
+| Windows and macOS | Windows behavior was observed on the `windows-2025` runner by the `windows-probe.yml` workflow, as evidence for the Windows platform work; Windows remains not yet supported. (Since 2026-11-08 Windows is a preview, run from source, see [Windows preview](#windows-preview-2026-11-08).) What the runner cannot show (a desktop launch, logoff and shutdown, UAC prompts, localized Windows, third-party antivirus, SmartScreen, a parent outside any Job Object, and the unapproved koffi check) is listed in [Not verifiable on the runner](windows-evidence.md#not-verifiable-on-the-runner). macOS is unchanged. | `docs/windows-evidence.md`, `test/windows-probe/summary.txt`, `test/unit/windows-evidence.test.ts` |
 
 ## Windows process supervision (2026-11-06)
 

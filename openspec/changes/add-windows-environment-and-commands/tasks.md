@@ -436,6 +436,13 @@ Group 7 on Windows (#45, run 42571528735, 2026-11-09): every check passed, `ci-o
 
   Verify: the checks hold, and they are recorded in the pull request and here.
 
+Group 8 on Linux (2026-11-09, branch `tasks/windows-commands-integration-check` at `4b6389d` plus the docs fix below):
+- `npm run verify` passed: typecheck, lint, the unit tests (1281 passed, 7 skipped, each `[windows-only: …]`), the integration tests (50 passed, 44 skipped: the Windows integration tests), and spec coverage (166 scenarios, 0 unmapped).
+- `npm run test:e2e` passed: 72 passed, 5 skipped (the inner offline test, and 4 `[windows-only: …]` tests), as in group 7.
+- `grep -rn "it.todo" test/` finds no `it.todo` tagged with a scenario of this change: only a comment in `windows-commands.test.ts`, and a string literal in `processes-docs.test.ts`.
+- `grep -rn "Windows" README.md docs/` shows the preview statement in the README (support statement, platform table, "Running from source on Windows"), `processes.md`, `commands.md`, `logs.md` and `deferred-checks.md`, the CI notes in `ci.md`, the evidence document, and the not-verifiable lists. Nothing claims a Windows package or full support. Two dated rows of `deferred-checks.md` (2026-10-27 and 2026-11-03) still said "Windows remains not yet supported" with no forward pointer, unlike the 2026-10-25 and 2026-11-06 rows; both now point to the Windows preview section. They stay dated records, which `processes-docs.test.ts` already exempts.
+- Since the change began (`850bf6f`), `electron-builder.yml`, `package.json` and `package-lock.json` are unchanged. In `.github/`, only the `windows` job of `ci.yml` changed; the setup action and `playwright.config.ts` are unchanged, so the Linux `e2e` and `package` jobs run what they ran before.
+
 ## Workflow follow-up
 
 - Archive the change once its last pull request is merged.
