@@ -12,6 +12,7 @@ Veydr's checks run on GitHub Actions, on GitHub-hosted `ubuntu-24.04` runners; o
 | `build.yml` | Manual run with a `ref` and a `smoke` option | Packages any ref into downloadable `.deb` and AppImage artifacts with `SHA256SUMS` | Nothing |
 | `release.yml` | Manual run with a `version` | Validates the version, runs the full gate on the bumped tree, then pushes the bump commit and tag and creates a draft release | n/a |
 | `windows-probe.yml` | Manual run with a `negative-control` option | Probes how Windows behaves on the `windows-2025` runner and records the answers as evidence for the Windows platform work; a run never changes what Veydr claims for Windows | Nothing; never a required check |
+| `website.yml` | A release is published, edited, unpublished or deleted; manual run | Calls the Vercel Deploy Hook of [veydr-web](https://github.com/alexnakagama/veydr-web), so the website rebuilds with the current releases | Nothing |
 
 Every job prepares the runner with the local composite action `.github/actions/setup`. It sets up Node from `.nvmrc`, installs npm 11.19.0 (the version [dependencies.md](dependencies.md) was verified with; the step fails if `npm --version` reports anything else), runs `npm ci`, and restores the npm, Electron and electron-builder caches, keyed on `package-lock.json`. On Windows the Electron and electron-builder cache is left out, since its paths are Linux ones: the `windows` job's end-to-end step downloads Electron each run, with `node scripts/ensure-electron.cjs`. Its inputs:
 
@@ -344,7 +345,7 @@ The draft is visible only to people with write access until you publish it. The 
 - **Notes**: the generated list of pull requests. Edit it into a short summary of what changed for users, call out anything that breaks existing configurations, and repeat the open platform limitations (Ubuntu 24.04, see the README's platform notes).
 - **The downloads verify**: download the files and run the checks users run (below). Optionally install the `.deb` on a real machine and run `veydr --smoke-test`.
 
-Then **Publish release**. To discard it instead, see [Recovering from a failed release](#recovering-from-a-failed-release).
+Then **Publish release**. Publishing starts `website.yml`, which rebuilds the website with the new release (see [Website](#website)). To discard it instead, see [Recovering from a failed release](#recovering-from-a-failed-release).
 
 ### Verifying a release package
 
@@ -377,6 +378,28 @@ What to do depends on where the run stopped. The run's summary shows which job f
 - **To abandon a version after the push**: delete the draft and the tag with `gh release delete vX.Y.Z --cleanup-tag`. The version commit stays on `master` (force pushes are blocked), so the next release must be greater than that version anyway. Release the next patch or prerelease number instead of reusing the abandoned one. A rerun of the old run's `publish` after the tag was deleted stops with "master moved", because `master` now holds the version commit; that is expected, and the way forward is again a new release with the next version.
 
 A rerun of `publish` refuses to do anything if the tag exists but is not its own commit, or if a release for the tag exists and is already published.
+
+## Website
+
+The website, [veydr-web](https://github.com/alexnakagama/veydr-web), is a static Astro site on Vercel. It reads the releases from the GitHub API **at build time** and shows the newest published one, so it only changes when Vercel builds it again. `.github/workflows/website.yml` starts that build: when a release is published, edited, unpublished or deleted, its `deploy-hook` job sends a `POST` to a Vercel Deploy Hook. It sends no data, checks out nothing and holds no GitHub permissions.
+
+- **Drafts do not count.** GitHub fires none of these events for a draft, so the site never sees a release whose files are still being uploaded. The release workflow's draft reaches the site when you publish it.
+- **Bursts lead to one build.** A newer run replaces a waiting one (`concurrency: website`), so editing the notes several times does not queue several builds.
+- **A failed build keeps the old site.** A production build on Vercel fails if it cannot read the releases, and Vercel keeps serving the previous deployment. Run the workflow again once the cause is fixed.
+
+### One-time setup
+
+1. In Vercel, open the veydr-web project → **Settings → Git → Deploy Hooks**. Create a hook named `veydr-release` for the branch `master` and copy its URL. Anyone with the URL can start builds, so treat it as a secret.
+2. In this repository, **Settings → Environments → New environment**, name it `website`. Under **Environment secrets**, add `VERCEL_DEPLOY_HOOK` with the URL. Leave the environment without protection rules, or every run waits for an approval. Only a job that names the environment can read its secrets.
+3. Check that the veydr-web project has the `GITHUB_TOKEN` environment variable (see the veydr-web README); without it, builds can hit the anonymous API limit and fail.
+4. Test it: `gh workflow run website.yml --ref master`, then check that a new deployment appears in Vercel.
+
+Without the secret, the job fails with "No deploy hook".
+
+### Rebuilding by hand, rotating the hook
+
+- To rebuild the site without a release event: **Actions → Website → Run workflow**, or `gh workflow run website.yml --ref master`.
+- To rotate the hook: delete it in Vercel, create a new one, and replace `VERCEL_DEPLOY_HOOK` in the `website` environment.
 
 ## Code owners
 
@@ -443,7 +466,7 @@ These answers were confirmed with the maintainer on 2026-10-25 (task 1.1 of the 
   - `contents`, `id-token` and `attestations` for `release.yml`'s `publish` job;
   - `issues` for `nightly.yml`'s `report` job;
   - `security-events` for `security.yml`'s `codeql` job.
-- **No repository secrets in checks.** The only expressions that read secrets are `secrets.GITHUB_TOKEN`, everywhere, and `secrets.RELEASE_DEPLOY_KEY`, only in `release.yml`. `secrets: inherit` is not allowed.
+- **No repository secrets in checks.** The only expressions that read secrets are `secrets.GITHUB_TOKEN`, everywhere, `secrets.RELEASE_DEPLOY_KEY`, only in `release.yml`, and `secrets.VERCEL_DEPLOY_HOOK`, only in `website.yml`. `secrets: inherit` is not allowed.
 - **No expressions in scripts.** `${{ … }}` never appears inside a `run:` script, because the runner substitutes it before the shell parses the script, so a dispatch input such as `version` or `ref` could inject commands. Pass values through `env:` and use `"$NAME"` in the script.
 - **Every job has a `timeout-minutes`** between 1 and 120.
 - **Pinned actions.** Every `uses:` that is not a local action (`./…`) is pinned to a full 40-character commit SHA, followed by the version as a comment (`# v7.1.0`). The test checks only the comment's shape, not that it matches the SHA. Dependabot updates both together. A Docker image is pinned by its `sha256` digest.
