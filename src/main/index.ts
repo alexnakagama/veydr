@@ -349,7 +349,8 @@ function start(): void {
 /**
  * `--smoke-test` (task 9.2): loads the bundled UI in a hidden window and checks the configuration
  * directory and the platform implementation, then exits 0 if every check passed. It creates no
- * supervisor and never reads or writes the configuration or the run ledger, so nothing can start.
+ * supervisor and never reads or writes the configuration or the run ledger, so no command can start.
+ * The platform check resolves the base environment (on Linux, by running the login shell once).
  */
 function startSmokeTest(): void {
   const log = createDiagnosticLog()

@@ -1,6 +1,6 @@
-# Projects and commands (Linux)
+# Projects and commands
 
-This page describes how you register projects, how Veydr runs the commands you configure for them, which environment those commands get, and how secret values are handled. Veydr is Linux-only for now; Windows is not yet supported, and the [Windows (not yet available)](#windows-not-yet-available) section describes rules you cannot use from the app yet. How commands are started, stopped, and tracked is described in [processes.md](processes.md).
+This page describes how you register projects, how Veydr runs the commands you configure for them, which environment those commands get, and how secret values are handled. Everything below describes Linux, except the [Windows (preview)](#windows-preview) section, which gives the rules commands follow on Windows. **Windows: preview. Run from source; verified in CI on Windows Server 2025. No Windows package yet.** How commands are started, stopped, and tracked is described in [processes.md](processes.md).
 
 ## Projects
 
@@ -74,9 +74,9 @@ These examples are the ones the end-to-end tests use (`test/e2e/commands.spec.ts
 - **Non-UTF-8 values.** Login environment values that are not valid UTF-8 are changed (invalid bytes replaced); a warning names them.
 - **Scripts without `#!`.** An executable text file without a `#!` line is run by `/bin/sh`, as a terminal would.
 
-## Windows (not yet available)
+## Windows (preview)
 
-**Not yet reachable from the app.** Starting a command on Windows still fails as not supported, and no process is created. The rules below are implemented and tested on a native Windows runner in CI, and are the ones commands will follow once they can be started on Windows.
+**Windows: preview. Run from source; verified in CI on Windows Server 2025. No Windows package yet.** Commands start on Windows by the rules below, which are tested on a native Windows runner in CI. What that runner cannot verify is listed in [processes.md](processes.md#not-verified-on-the-ci-runner). To run Veydr on Windows, see [Running from source on Windows](../README.md#running-from-source-on-windows).
 
 ### Finding the program
 

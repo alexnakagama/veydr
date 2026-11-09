@@ -13,6 +13,7 @@ import {
   SHORT_SECRET_WARNING,
   type Draft,
   type EditorConventions,
+  shellHint,
 } from '../../src/renderer/src/CommandEditor'
 import { folderName } from '../../src/renderer/src/ProjectDialogs'
 import { shortcutFor } from '../../src/renderer/src/shortcuts'
@@ -31,8 +32,9 @@ const secretCommand: CommandView = {
   stopTimeoutMs: 5000,
 }
 
-const linux: EditorConventions = { defaultShell: '/bin/sh', envNames: 'exact' }
-const windows: EditorConventions = { defaultShell: null, envNames: 'case-insensitive' }
+const linux: EditorConventions = { platform: 'linux', defaultShell: '/bin/sh', envNames: 'exact' }
+/** Windows without a default shell, so that the editor's handling of a missing default is seen. */
+const windows: EditorConventions = { platform: 'windows', defaultShell: null, envNames: 'case-insensitive' }
 
 const editor = (command: CommandView | null, conventions: EditorConventions = linux): string =>
   renderToStaticMarkup(
@@ -81,6 +83,25 @@ describe('command editor', () => {
   })
 })
 
+describe('the shell field on Windows', () => {
+  const windowsPreview: EditorConventions = { platform: 'windows', defaultShell: 'C:\\Windows\\System32\\cmd.exe', envNames: 'case-insensitive' }
+  const shellCommand: CommandView = { ...secretCommand, env: [], execution: { mode: 'shell', shell: 'C:\\Windows\\System32\\cmd.exe', script: 'npm run dev' } }
+
+  it('reads "cmd.exe only" on Windows, tied to the field, and is absent elsewhere', () => {
+    expect([shellHint('windows'), shellHint('linux'), shellHint('unsupported')]).toEqual(['cmd.exe only', null, null])
+    const html = editor(shellCommand, windowsPreview)
+    const hint = /<span class="muted" id="([^"]+)" data-testid="editor-shell-hint">cmd.exe only<\/span>/.exec(html)
+    expect(hint, html).not.toBeNull()
+    expect(html).toContain(`aria-describedby="${hint?.[1] ?? ''}"`)
+    expect(html).toContain('placeholder="C:\\Windows\\System32\\cmd.exe"')
+    for (const conventions of [linux, { ...windowsPreview, platform: 'unsupported' as const }]) {
+      const other = editor(shellCommand, conventions)
+      expect(other).not.toContain('editor-shell-hint')
+      expect(other).not.toContain('aria-describedby')
+    }
+  })
+})
+
 describe('command editor validation', () => {
   const shellDraft = (shell: string, conventions: EditorConventions = linux): Draft => ({ ...draftFrom(null, conventions.defaultShell), name: 'api', mode: 'shell', shell, script: 'npm run dev' })
   const withEnv = (...keys: string[]): Draft => ({
@@ -113,7 +134,7 @@ describe('command editor validation', () => {
     const info = { name: 'Veydr', version: '0.0.0', platform: 'windows', platformSupported: false, versions: { electron: '1', chrome: '1', node: '1' } } as const
     expect(editorConventions({ status: 'ready', info: { ...info, defaultShell: null, envNames: 'case-insensitive' } })).toEqual(windows)
     expect(editorConventions({ status: 'ready', info: { ...info, platform: 'linux', platformSupported: true, defaultShell: '/bin/sh', envNames: 'exact' } })).toEqual(linux)
-    expect(editorConventions({ status: 'loading' })).toEqual({ defaultShell: null, envNames: 'exact' })
+    expect(editorConventions({ status: 'loading' })).toEqual({ platform: 'unsupported', defaultShell: null, envNames: 'exact' })
     expect(editor(null, windows)).toContain('Add command to shop')
   })
 

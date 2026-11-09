@@ -192,7 +192,12 @@ describe('smoke-checks.mjs', () => {
     packaged: true,
     appPath: 'C:\\Veydr\\resources\\app.asar',
     configDir: () => 'C:\\Users\\dev\\AppData\\Roaming\\Veydr',
-    implementation: { name: 'linux', supported: true, portInspector: { list: () => Promise.resolve({ takenAt: 0, ports: [] }) } },
+    implementation: {
+      name: 'linux',
+      supported: true,
+      envProvider: { base: () => Promise.resolve({ env: {}, warnings: [] }) },
+      portInspector: { list: () => Promise.resolve({ takenAt: 0, ports: [] }) },
+    },
     noSandbox: false,
     loadUi: () => Promise.resolve(goodUi),
     fs: { mkdir: () => Promise.resolve(), writeNew: () => Promise.resolve(), remove: () => Promise.resolve() },

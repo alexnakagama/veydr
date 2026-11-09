@@ -58,8 +58,12 @@ const isRootRelative = (path: string): boolean => /^[\\/](?![\\/])/.test(path)
  * full drive path. `%ComSpec%` is not used, since any process of the user can change it.
  */
 export function systemCmdExe(systemRoot: string | undefined): string {
-  const usable = systemRoot !== undefined && isDriveFullPath(systemRoot) && !/["%\0\r\n]/.test(systemRoot)
-  return win32.join(usable ? systemRoot : FALLBACK_SYSTEM_ROOT, 'System32', 'cmd.exe')
+  return win32.join(isUsableSystemRoot(systemRoot) ? systemRoot : FALLBACK_SYSTEM_ROOT, 'System32', 'cmd.exe')
+}
+
+/** Whether `systemCmdExe` uses `systemRoot`: a full drive path without `"`, `%`, NUL or a line break. */
+export function isUsableSystemRoot(systemRoot: string | undefined): systemRoot is string {
+  return systemRoot !== undefined && isDriveFullPath(systemRoot) && !/["%\0\r\n]/.test(systemRoot)
 }
 
 /** The filesystem calls the resolver makes; Windows' own by default, a fake in unit tests. */

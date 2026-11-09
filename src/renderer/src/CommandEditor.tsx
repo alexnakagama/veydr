@@ -1,4 +1,4 @@
-import { Fragment, useState, type FormEvent, type JSX } from 'react'
+import { Fragment, useId, useState, type FormEvent, type JSX } from 'react'
 import type { AppInfo, CommandInput, CommandView } from '../../shared/api'
 import { DEFAULT_STOP_TIMEOUT_MS, envNameKey, isAbsolutePath, MAX_STOP_TIMEOUT_MS } from '../../shared/config'
 import { MIN_REDACTED_SECRET_LENGTH, REDACTION_MARKER } from '../../shared/logs/limits'
@@ -6,7 +6,13 @@ import { Modal } from './components/Modal'
 import type { ProjectActions } from './state/actions'
 
 /** The platform conventions the editor follows, from `app.getInfo` (design D5). */
-export type EditorConventions = Pick<AppInfo, 'defaultShell' | 'envNames'>
+export type EditorConventions = Pick<AppInfo, 'platform' | 'defaultShell' | 'envNames'>
+
+/**
+ * The shell field's hint, or `null` where any absolute shell is accepted. On Windows, shell mode
+ * runs through `cmd.exe` only (add-windows-environment-and-commands design D2).
+ */
+export const shellHint = (platform: EditorConventions['platform']): string | null => (platform === 'windows' ? 'cmd.exe only' : null)
 
 /** Shown wherever secret values are entered (spec: secret environment values masked; docs/configuration.md). */
 export const SECRET_STORAGE_DISCLOSURE =
@@ -168,6 +174,8 @@ export function CommandEditor({ projectId, projectName, command, conventions, ac
     })
   }
 
+  const shellHintId = useId()
+  const hint = shellHint(conventions.platform)
   const shellLabel = draft.shell.trim() === '' ? 'Shell command — enter the shell that runs it below' : `Shell command — runs through ${draft.shell.trim()}`
 
   return (
@@ -231,7 +239,13 @@ export function CommandEditor({ projectId, projectName, command, conventions, ac
                 onChange={(e) => update({ shell: e.target.value })}
                 placeholder={conventions.defaultShell ?? 'Absolute path of the shell'}
                 spellCheck={false}
+                aria-describedby={hint === null ? undefined : shellHintId}
               />
+              {hint !== null && (
+                <span className="muted" id={shellHintId} data-testid="editor-shell-hint">
+                  {hint}
+                </span>
+              )}
             </label>
             <label className="field">
               <span>Script</span>

@@ -8,6 +8,7 @@ import { createInterface } from 'node:readline'
 import { build } from 'vite'
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
 import { compilerPath, HELPER_PATH } from '../../scripts/build-windows-helper.mjs'
+import { selectPlatform } from '../../src/main/platform'
 import { SpawnError } from '../../src/main/platform/errors'
 import { createLogService } from '../../src/main/logs/service'
 import type { CommandSpec, Env, ExitInfo, ManagedProcess, ResolveResult, SpawnPlan } from '../../src/main/platform/types'
@@ -16,7 +17,7 @@ import type { WindowsManagedProcess } from '../../src/main/platform/windows/help
 import { createWindowsProcessTree } from '../../src/main/platform/windows/process-tree'
 import { createWindowsCommandResolver, systemCmdExe } from '../../src/main/platform/windows/resolver'
 import { editorArguments } from '../../src/main/projects/desktop'
-import { effectiveEnvironment } from '../../src/main/projects/environment'
+import { createEnvironmentService, effectiveEnvironment } from '../../src/main/projects/environment'
 import { createPlanner } from '../../src/main/supervisor/plan'
 import { createProcessStateRegistry } from '../../src/main/supervisor/state'
 import { createSupervisor, type LaunchTarget, type OutputStream } from '../../src/main/supervisor/supervisor'
@@ -34,6 +35,7 @@ import type { EditorHostOptions } from './support/windows-editor-host'
 const RECORD_ARGS = resolve(__dirname, '../fixtures/windows/record-args.mjs')
 const PRINT_ENV = resolve(__dirname, '../fixtures/windows/print-env.mjs')
 const OUTPUT = resolve(__dirname, '../fixtures/windows/output.mjs')
+const TREE = resolve(__dirname, '../fixtures/windows/tree.mjs')
 const GUI_RECORDER_SOURCE = resolve(__dirname, '../fixtures/windows/gui-recorder.cs')
 const CMD_EXE = systemCmdExe(process.env['SystemRoot'])
 const SENTINEL = 'veydr-decoy-ran'
@@ -431,6 +433,56 @@ describe.skipIf(process.platform !== 'win32')('[windows-only: cmd.exe and PATHEX
       expect(error).toBeInstanceOf(SpawnError)
       expect(error).toMatchObject({ reason: 'executable-not-found', message: `Executable not found: ${missing}` })
       expect(marked(s.marker)).toEqual([])
+    })
+  })
+
+  describe('the composed platform (design D6)', () => {
+    it('[spec:process-supervision/command-started-on-windows] starts, logs and stops a command through the platform the app composes', async () => {
+      const s = scenario()
+      // As the composition root selects it: Veydr's own environment, and the built helper.
+      const platform = selectPlatform('win32', { helperPath: HELPER_PATH, inherited: process.env, log: quietLog() })
+      expect(platform).toMatchObject({ name: 'windows', supported: true, conventions: { defaultShell: CMD_EXE, envNames: 'case-insensitive' } })
+      const config = command({
+        execution: {
+          mode: 'shell',
+          shell: CMD_EXE,
+          script: `echo started %VEYDR_TEST_MARK%&& "${process.execPath}" "${TREE}" --marker ${s.marker} --dir "${s.dir}" --depth 1`,
+        },
+        env: [{ key: 'VEYDR_TEST_MARK', value: s.marker, secret: false }],
+        stopTimeoutMs: 5_000,
+      })
+      const target: LaunchTarget = { project: project({ path: s.dir, commands: [config] }), command: config }
+      const logs = createLogService({ delivery: { active: () => false, send: () => undefined } })
+      const supervisor = createSupervisor({
+        processTree: platform.processTree,
+        states: createProcessStateRegistry(() => undefined),
+        lookup: (id) => (id === config.id ? target : null),
+        plan: createPlanner({
+          resolver: platform.commandResolver,
+          environment: createEnvironmentService({ provider: platform.envProvider }),
+          envNames: platform.conventions.envNames,
+        }),
+        output: logs,
+        log: quietLog(),
+      })
+      try {
+        const state = await supervisor.start(config.id)
+        expect(state, JSON.stringify(state.error)).toMatchObject({ status: 'running' })
+        const runId = state.runId
+        if (runId === null) throw new Error('the run has no id')
+        const text = (): string[] => logs.read({ runId, fromSeq: 1, limit: 100 }).lines.map((line) => line.text)
+        await waitUntil(() => text().includes(`started ${s.marker}`), 'the command to log its first line')
+        await waitUntil(() => existsSync(join(s.dir, 'root.json')), 'the command to start its tree')
+        // cmd.exe, the root and its child: the command's whole tree, under its marker.
+        expect(marked(s.marker).length).toBeGreaterThanOrEqual(3)
+
+        expect(await supervisor.stop(config.id)).toMatchObject({ status: 'exited', survivors: [] })
+        expect(marked(s.marker)).toEqual([])
+        expect(helpersOf([process.pid])).toEqual([])
+      } finally {
+        await supervisor.stopAll()
+        logs.dispose()
+      }
     })
   })
 

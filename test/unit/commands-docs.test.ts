@@ -40,10 +40,10 @@ describe('docs/commands.md', () => {
     expect(SECRET_STORAGE_DISCLOSURE).toContain('stores them unencrypted')
   })
 
-  it('states the Windows rules of the resolver and the command lines, as not yet reachable from the app', () => {
-    const windows = section('Windows (not yet available)')
-    // Labelled as not reachable from the app, before anything else is said.
-    expect(windows.slice(windows.indexOf('\n')).trimStart().startsWith('**Not yet reachable from the app.**')).toBe(true)
+  it('states the Windows rules of the resolver and the command lines, labelled as the Windows preview', () => {
+    const windows = section('Windows (preview)')
+    // Labelled as the preview, before anything else is said.
+    expect(windows.slice(windows.indexOf('\n')).trimStart().startsWith('**Windows: preview. Run from source; verified in CI on Windows Server 2025. No Windows package yet.**')).toBe(true)
     const sub = (title: string): string => windows.split('\n### ').find((part) => part.startsWith(`${title}\n`)) ?? ''
     const lookup = sub('Finding the program')
     expect(lookup).toContain('**The working directory is never searched**')

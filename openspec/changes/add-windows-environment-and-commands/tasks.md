@@ -279,13 +279,13 @@ Group 5 review (2026-11-08): reviewer2 found no high or medium items, 2 low and 
 
 ## 6. Windows platform composition and the preview
 
-- [ ] 6.1 `createWindowsPlatform({ helperPath, log, inherited })` returns `supported: true`, the D2 `defaultShell`, the resolver, the environment provider and the full process tree, and keeps the unsupported port inspector (design D6). `selectPlatform` passes `inherited`. Create exactly one Windows resolver per platform, shared by every start: the resolver remembers hung checks (design D2), which a resolver per start would forget. Verify:
+- [x] 6.1 `createWindowsPlatform({ helperPath, log, inherited })` returns `supported: true`, the D2 `defaultShell`, the resolver, the environment provider and the full process tree, and keeps the unsupported port inspector (design D6). `selectPlatform` passes `inherited`. Create exactly one Windows resolver per platform, shared by every start: the resolver remembers hung checks (design D2), which a resolver per start would forget. Verify:
   - `npm run typecheck`;
   - `npm run lint` (only the composition root and `platform/index.ts` read `process.platform`);
   - `npm test`.
-- [ ] 6.2 Replace `[spec:process-supervision/start-on-windows]` in `supervisor.test.ts` with a planner test over the Windows platform's resolver and environment, which plans and spawns a command. Tag it `[spec:process-supervision/command-started-on-windows]`, together with a Windows integration test that starts, logs and stops one through the composed platform. Remove the `start-on-windows` todo or tag. Verify: `npm run spec-coverage` reports zero unmapped scenarios.
-- [ ] 6.3 Change the smoke test's platform check: it calls `envProvider.base()` everywhere, and `portInspector.list()` unless the inspector rejects with `UnsupportedPlatformError`, in which case the check says so. In the renderer, the shell field's hint on Windows reads "cmd.exe only". Verify: unit tests for both, and `npm run build`.
-- [ ] 6.4 Update the README (support statement and platform table) and `docs/processes.md` to "Windows: preview. Run from source; verified in CI on Windows Server 2025. No Windows package yet.". Also:
+- [x] 6.2 Replace `[spec:process-supervision/start-on-windows]` in `supervisor.test.ts` with a planner test over the Windows platform's resolver and environment, which plans and spawns a command. Tag it `[spec:process-supervision/command-started-on-windows]`, together with a Windows integration test that starts, logs and stops one through the composed platform. Remove the `start-on-windows` todo or tag. Verify: `npm run spec-coverage` reports zero unmapped scenarios.
+- [x] 6.3 Change the smoke test's platform check: it calls `envProvider.base()` everywhere, and `portInspector.list()` unless the inspector rejects with `UnsupportedPlatformError`, in which case the check says so. In the renderer, the shell field's hint on Windows reads "cmd.exe only". Verify: unit tests for both, and `npm run build`.
+- [x] 6.4 Update the README (support statement and platform table) and `docs/processes.md` to "Windows: preview. Run from source; verified in CI on Windows Server 2025. No Windows package yet.". Also:
   - add "Running from source on Windows";
   - lift the "not yet available" headings of groups 3–5;
   - extend the not-verifiable list with localized ANSI code pages, a customized `PATHEXT`, App Execution Aliases beyond the runner, and an Explorer-launched environment;
@@ -297,6 +297,26 @@ Group 5 review (2026-11-08): reviewer2 found no high or medium items, 2 low and 
   - add `[spec:process-supervision/windows-preview-documented]`, which checks that "run from source", "no Windows package" and the not-verifiable list are present, and that no support claim goes beyond them.
 
   Verify: `npm test`, and `grep -rn "Windows" README.md docs/` shows no claim beyond the preview.
+
+Group 6 implementation note (2026-11-08):
+- `npm run spec-coverage` read the main specs and the active changes' deltas, but not a delta's REMOVED requirements, so `start-on-windows` stayed unmapped once its test was removed. The script now leaves out the main-spec scenarios of a requirement that an active change removes (166 scenarios, all mapped).
+- The planner test runs the platform's own resolver on every system. `createWindowsPlatform` therefore takes an optional `resolverFs`, which only tests pass. `SystemRoot` is read once from `inherited`, regardless of letter case.
+- The smoke test's platform check reports only how many environment variables there are, never their values.
+- The W0 notes that W2 resolves are marked in `docs/windows-evidence.md` (the `cmd.exe` route, `PATHEXT`, output decoding, the environment). The note on the e2e harness stays open until group 7. Until then, `docs/deferred-checks.md` says that the end-to-end suite does not run on Windows yet.
+
+Group 6 review (2026-11-08): reviewer2 found no high items, 1 medium, 5 low and 2 nits. It confirmed that one resolver serves both starts and the editor launch, and that the editor still gets the base environment without overrides.
+- medium: on Linux, `--smoke-test` now runs the login shell through `envProvider.base()`. reviewer2 preferred calling `base()` on Windows only. That would narrow task 6.3 ("calls `envProvider.base()` everywhere"), so the behavior is kept and made explicit instead:
+  - the comments in `smoke.ts` and `index.ts`, `docs/install-linux.md` (the `platform` row: the login shell runs once) and the README say so;
+  - a fallback passes with its warnings counted, since commands still start then, and a test pins it;
+  - a provider that rejects fails the check.
+- low:
+  - the doc-claim tripwire no longer flags "supports Windows paths". It also catches "runs/works on Windows", "Windows 11 is supported" and "Windows users can install", and a self-test checks both directions;
+  - `spec-coverage.mjs` skips fenced code blocks;
+  - its header states that the exemption for removed requirements lasts only while the change is active, and that a leftover tag on a removed scenario fails as unknown (checked once);
+  - an unusable `SystemRoot` is logged once (`platform.windows-system-root-fallback`, without the value; `isUsableSystemRoot`).
+- nits: `inheritedValue` moved next to `windowsBaseEnvironment`, which follows the same first-entry rule, and the port inspector is a small local constant.
+- Re-review: every finding confirmed fixed, and no new findings. reviewer2 agreed that keeping `base()` on every platform follows task 6.3.
+- Verified on Linux after the fixes: typecheck, lint, `npm test` (1269 passed), the Linux integration tests (50 passed, Windows-only files skipped), spec coverage 166/166, `openspec validate --strict`, `npm run build`. The Windows integration tests run on the pull request.
 
 ## 7. End-to-end tests on Windows
 

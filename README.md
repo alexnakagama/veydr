@@ -29,7 +29,7 @@ Veydr is a desktop app for developers who run several long-lived commands across
 Veydr does nothing unless you ask it to. A command starts only when you press **Start**, a command that exits is never restarted on its own, and when you quit, Veydr stops what it started. It runs entirely on your machine: no accounts, no cloud sync, no telemetry, and no network access of its own.
 
 > [!NOTE]
-> **Linux only; Windows not yet supported.** Veydr is an early release. It runs on Linux x64. Windows and macOS are not supported yet. Released versions are published as packages on [GitHub Releases](https://github.com/alexnakagama/veydr/releases), and you can always build them from source (see [Installation](#installation)).
+> **Linux; Windows in preview.** Veydr is an early release. It runs on Linux x64. **Windows: preview. Run from source; verified in CI on Windows Server 2025. No Windows package yet.** macOS is not supported. Released versions are published as Linux packages on [GitHub Releases](https://github.com/alexnakagama/veydr/releases), and you can always build them from source (see [Installation](#installation)).
 
 ## Contents
 
@@ -48,9 +48,9 @@ Veydr does nothing unless you ask it to. A command starts only when you press **
 
 ### Projects and commands
 - **Projects are local folders.** Add one with the system folder picker. Veydr never writes into it. **Open folder** opens it in your file manager, and **Open in editor** opens it in the editor you configure in **Settings**.
-- **Two ways to run a command.** *Executable with arguments* runs a program directly, with each argument passed exactly as typed (no shell involved). *Shell script* runs a script through a shell you choose (default `/bin/sh`) for pipes, `&&`, and variable expansion. Shell commands are labelled with their shell.
+- **Two ways to run a command.** *Executable with arguments* runs a program directly, with each argument passed exactly as typed (no shell involved). *Shell script* runs a script through a shell you choose (default `/bin/sh`; on Windows, `cmd.exe`, the only shell supported there) for pipes, `&&`, and variable expansion. Shell commands are labelled with their shell.
 - **Per-command settings:** a working directory inside the project folder, environment variable overrides, and a stop timeout.
-- **Your login environment.** Commands get the environment your login shell sets up (for example `PATH` entries from `~/.profile`), even when Veydr was opened from the desktop launcher. The **Env** view shows exactly what a command will receive and where each value comes from.
+- **Your login environment.** Commands get the environment your login shell sets up (for example `PATH` entries from `~/.profile`), even when Veydr was opened from the desktop launcher. On Windows, they get the environment Veydr was started with. The **Env** view shows exactly what a command will receive and where each value comes from.
 - **Secret values.** Mark an override as secret and it is masked in the interface until you reveal it. If a command prints it, the output shows `[redacted]` instead (best effort).
 - **Missing folders are detected.** A project whose folder was moved or deleted is marked **Folder missing**, and **Relocate…** points it at the new location.
 
@@ -100,7 +100,7 @@ Single-key shortcuts for common actions. Press <kbd>?</kbd> in the app to see th
 |---|---|
 | **Linux x64** | Supported (see the distribution table below) |
 | Linux on other architectures | Not supported; packages are built for x64 only |
-| Windows | **Not yet supported.** Planned as a follow-up; no Windows build exists yet |
+| Windows x64 | **Preview.** Run from source; verified in CI on Windows Server 2025. No Windows package yet. Port inspection is not available on Windows yet. See [Running from source on Windows](#running-from-source-on-windows) and the [Windows limits](docs/processes.md#windows-preview) |
 | macOS | Not supported |
 
 **Linux distributions.** These results come from `scripts/smoke-linux.sh`, which ran the packaged app's built-in smoke test inside Docker containers on 2026-10-25. They are not results from full desktop installations. Details are in [install-linux.md](docs/install-linux.md#supported-distributions).
@@ -119,7 +119,7 @@ Single-key shortcuts for common actions. Press <kbd>?</kbd> in the app to see th
 
 | Available now | Not available yet |
 |---|---|
-| Projects, commands (direct and shell), environment overrides, secret masking | Windows support (planned) |
+| Projects, commands (direct and shell), environment overrides, secret masking | A Windows package, and port inspection on Windows (Windows runs from source, as a preview) |
 | Start, stop, restart; process-tree stop; clean quit; crash recovery | Keychain-backed secret storage (secrets are stored unencrypted for now) |
 | Live output with colors, filter, follow/pause, copy, clear | Viewing a previous run's output (it is kept, but not shown yet) |
 | Listening-port inspection | A stable release (only release candidates are published so far) |
@@ -211,7 +211,7 @@ The AppImage needs two things from the system:
 veydr --smoke-test
 ```
 
-The smoke test checks that Veydr can run on this system (sandbox, configuration directory, `/proc` access, interface), prints a line starting with `VEYDR_SMOKE_TEST` with a JSON report, and exits with status 0 if every check passed. For the AppImage, run `./dist/Veydr-X.Y.Z-x86_64.AppImage --smoke-test`. Close a running Veydr first: the smoke test exits with status 1 when another instance is running.
+The smoke test checks that Veydr can run on this system (sandbox, configuration directory, the environment commands start from, `/proc` access, interface), prints a line starting with `VEYDR_SMOKE_TEST` with a JSON report, and exits with status 0 if every check passed. For the AppImage, run `./dist/Veydr-X.Y.Z-x86_64.AppImage --smoke-test`. Close a running Veydr first: the smoke test exits with status 1 when another instance is running.
 
 More details, including requirements and troubleshooting, are in [docs/install-linux.md](docs/install-linux.md).
 
@@ -223,6 +223,23 @@ npm run dev
 ```
 
 This starts Veydr with hot reload for the interface. See [Development](#development).
+
+### Running from source on Windows
+
+**Windows: preview. Run from source; verified in CI on Windows Server 2025. No Windows package yet.** On Windows 10 or 11 (x64), or Windows Server 2025 as in CI:
+
+1. Install **Node.js 24** and **npm 11.19.0 or newer**, as for Linux (see [Prerequisites](#prerequisites)).
+2. In a clone of the repository, run:
+
+   ```powershell
+   npm ci
+   node scripts/build-windows-helper.mjs
+   npm run dev
+   ```
+
+`node scripts/build-windows-helper.mjs` builds `veydr-helper.exe`, the helper that runs each command in a Windows Job Object, into `out-helper/`. It compiles the helper's source with the .NET Framework 4.8 compiler that Windows includes, so no other toolchain is needed (see [dependencies.md](docs/dependencies.md#windows-process-tree-helper-gate-g-4-2026-11-03)). Run it again after updating the repository: Veydr refuses a helper of another protocol version. The helper is not signed yet, so antivirus software or SmartScreen may flag it.
+
+On Windows, shell mode runs `cmd.exe` only, commands get the environment Veydr was started with (restart Veydr after changing `PATH`), and the **Ports** view says that port inspection is not yet available. The rules are in [commands.md](docs/commands.md#windows-preview), [processes.md](docs/processes.md#windows-preview) and [logs.md](docs/logs.md#windows-preview), together with what the CI runner cannot verify.
 
 ## Quick start
 
@@ -306,20 +323,20 @@ Everything is stored in `~/.config/Veydr/` (or `$XDG_CONFIG_HOME/Veydr/`): `conf
 | Network isolation | [docs/network-isolation.md](docs/network-isolation.md) |
 | Dependencies and version policy | [docs/dependencies.md](docs/dependencies.md) |
 | Checks deferred to packaging | [docs/deferred-checks.md](docs/deferred-checks.md) |
-| Windows probe evidence (Windows not yet supported) | [docs/windows-evidence.md](docs/windows-evidence.md) |
+| Windows probe evidence, from before the Windows preview | [docs/windows-evidence.md](docs/windows-evidence.md) |
 | CI pipeline, workflow security rules, releases | [docs/ci.md](docs/ci.md) |
 | Architecture and design decisions | [openspec/changes/archive/2026-10-25-establish-foundation/design.md](openspec/changes/archive/2026-10-25-establish-foundation/design.md) |
 
 ## Development
 
-Veydr is an Electron application written in TypeScript with a React interface. It has three isolated layers: the main process (`src/main`) holds all privileged logic, a narrow preload API (`src/preload`) connects it to a sandboxed renderer (`src/renderer`), and `src/shared` holds code used by more than one layer. The platform-specific parts live under `src/main/platform` (`linux/` today, plus a `windows/` stub). The design is documented in [openspec/changes/archive/2026-10-25-establish-foundation/design.md](openspec/changes/archive/2026-10-25-establish-foundation/design.md).
+Veydr is an Electron application written in TypeScript with a React interface. It has three isolated layers: the main process (`src/main`) holds all privileged logic, a narrow preload API (`src/preload`) connects it to a sandboxed renderer (`src/renderer`), and `src/shared` holds code used by more than one layer. The platform-specific parts live under `src/main/platform` (`linux/`, and `windows/` for the Windows preview). The design is documented in [openspec/changes/archive/2026-10-25-establish-foundation/design.md](openspec/changes/archive/2026-10-25-establish-foundation/design.md).
 
 ### Prerequisites
 
-- Linux x64
+- Linux x64, or Windows x64 for the Windows preview (see [Running from source on Windows](#running-from-source-on-windows))
 - **Node.js 24** (`.nvmrc`; with nvm, run `nvm use`)
 - **npm 11.19.0 or newer**. `.npmrc` sets `engine-strict=true`, so older versions are refused. See [dependencies.md](docs/dependencies.md) for why.
-- `bash` and `env`, which Veydr uses to start commands (installed on every common distribution)
+- On Linux, `bash` and `env`, which Veydr uses to start commands (installed on every common distribution)
 
 ### Setup and common tasks
 

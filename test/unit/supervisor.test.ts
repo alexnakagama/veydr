@@ -1,16 +1,18 @@
 import { describe, expect, it } from 'vitest'
 import { NotFoundError } from '../../src/main/errors'
-import { SpawnError, UnsupportedPlatformError } from '../../src/main/platform/errors'
+import { SpawnError } from '../../src/main/platform/errors'
 import { createWindowsPlatform } from '../../src/main/platform/windows'
-import type { ProcessTree } from '../../src/main/platform/types'
+import type { PlatformLog, ProcessTree } from '../../src/main/platform/types'
+import { batchCommandLine, shellCommandLine } from '../../src/main/platform/windows/command-line'
 import { createEnvironmentService } from '../../src/main/projects/environment'
-import { commandSpec, createPlanner } from '../../src/main/supervisor/plan'
+import { createPlanner } from '../../src/main/supervisor/plan'
 import { createProcessStateRegistry } from '../../src/main/supervisor/state'
 import { createSupervisor, type LaunchTarget, type OutputStream, type PlanResult } from '../../src/main/supervisor/supervisor'
 import type { ProcessStateEvent } from '../../src/shared/api'
 import type { CommandConfig } from '../../src/shared/config'
 import { cooperative, FakeProcessTree } from './support/fake-process-tree'
 import { command, project, quietLog } from './support/config'
+import { windowsFs } from './support/windows-fs'
 
 /** A process tree that records every call and starts nothing. */
 function spyProcessTree(): { readonly tree: ProcessTree; readonly calls: string[] } {
@@ -50,13 +52,18 @@ interface Harness {
 }
 
 function harness(
-  options: { readonly command?: Partial<CommandConfig>; readonly plan?: (target: LaunchTarget) => Promise<PlanResult>; readonly tree?: Pick<ProcessTree, 'spawn'> } = {},
+  options: {
+    readonly command?: Partial<CommandConfig>
+    readonly projectPath?: string
+    readonly plan?: (target: LaunchTarget) => Promise<PlanResult>
+    readonly tree?: Pick<ProcessTree, 'spawn'>
+  } = {},
 ): Harness {
   const tree = new FakeProcessTree()
   const events: ProcessStateEvent[] = []
   const states = createProcessStateRegistry((event) => events.push(event))
   const cmd = command({ stopTimeoutMs: 1234, ...options.command })
-  const proj = project({ commands: [cmd] })
+  const proj = project({ commands: [cmd], ...(options.projectPath === undefined ? {} : { path: options.projectPath }) })
   let target: LaunchTarget | null = { project: proj, command: cmd }
   const output: [string, OutputStream | 'open' | 'close', string][] = []
   const fallbackEncodings: (string | null)[] = []
@@ -320,38 +327,6 @@ describe('supervisor state machine', () => {
     await expect(h.supervisor.start(h.commandId)).rejects.toBeInstanceOf(NotFoundError)
   })
 
-  it('[spec:process-supervision/start-on-windows] fails with an unsupported-platform error and creates no process on Windows', async () => {
-    // The Windows platform as the composition root builds it; its process tree is real (W1), so a
-    // spy stands in for it to prove that nothing is spawned.
-    const windows = createWindowsPlatform({ helperPath: 'C:\\veydr\\out-helper\\veydr-helper.exe' })
-    const spy = spyProcessTree()
-    const plans = [
-      // As in the app: the Windows environment, then the Windows resolver.
-      createPlanner({
-        resolver: windows.commandResolver,
-        environment: createEnvironmentService({ provider: windows.envProvider }),
-        envNames: windows.conventions.envNames,
-      }),
-      // The resolver alone also refuses, whatever the environment.
-      createPlanner({
-        resolver: windows.commandResolver,
-        environment: { base: () => Promise.resolve({ env: { Path: 'C:\\Windows' }, warnings: [] }) },
-        envNames: windows.conventions.envNames,
-      }),
-    ]
-    for (const plan of plans) {
-      const h = harness({ tree: spy.tree, plan })
-      await expect(h.supervisor.start(h.commandId)).rejects.toBeInstanceOf(UnsupportedPlatformError)
-      expect(h.statuses()).toEqual(['starting', 'failed'])
-      expect(h.events.at(-1)?.error).toMatch(/not supported on this platform \(win32\)/)
-    }
-    await expect(windows.commandResolver.resolve(commandSpec(harness().target), {})).rejects.toMatchObject({
-      name: 'UnsupportedPlatformError',
-      operation: 'commandResolver.resolve',
-    })
-    expect(spy.calls).toEqual([])
-  })
-
   it('logs and fails a start on an unexpected error', async () => {
     const h = harness({ plan: () => Promise.reject(new Error('resolver crashed')) })
     expect(await h.supervisor.start(h.commandId)).toMatchObject({ status: 'failed', error: 'resolver crashed' })
@@ -444,7 +419,79 @@ describe('supervisor attribution sets (ports, task 8.2)', () => {
   })
 })
 
-// add-windows-environment-and-commands group 6 (design D6) implements this, and removes start-on-windows.
 describe('supervisor on the Windows platform', () => {
-  it.todo('[spec:process-supervision/command-started-on-windows] plans and spawns a command through the Windows resolver and environment')
+  const PROJECT = 'C:\\Users\\dev\\shop'
+  const CMD = 'C:\\Windows\\System32\\cmd.exe'
+
+  /** The Windows platform as the composition root builds it, over a fake Windows filesystem. */
+  function windowsPlatform(log: PlatformLog = quietLog()) {
+    return createWindowsPlatform({
+      helperPath: 'C:\\veydr\\out-helper\\veydr-helper.exe',
+      log,
+      // Veydr's own environment: both spellings of the path variable, and Electron's runtime variables.
+      inherited: { Path: 'C:\\Program Files\\nodejs', PATH: 'C:\\stale', SystemRoot: 'C:\\Windows', ELECTRON_RUN_AS_NODE: '1', '=C:': 'C:\\' },
+      resolverFs: windowsFs([`${PROJECT}\\package.json`, 'C:\\Program Files\\nodejs\\npm.cmd', 'C:\\Program Files\\nodejs\\node.exe', CMD]),
+    })
+  }
+
+  /** The planner of the composition root over `platform`'s resolver and environment. */
+  const plannerOf = (platform: ReturnType<typeof windowsPlatform>) =>
+    createPlanner({ resolver: platform.commandResolver, environment: createEnvironmentService({ provider: platform.envProvider }), envNames: platform.conventions.envNames })
+
+  it('[spec:process-supervision/command-started-on-windows] plans and spawns a command through the Windows resolver and environment', async () => {
+    const platform = windowsPlatform()
+    expect(platform.supported).toBe(true)
+
+    // Direct mode: a batch-file shim found through PATH and PATHEXT runs through cmd.exe, with an
+    // override of the path variable in another spelling replacing the inherited one.
+    const direct = harness({
+      projectPath: PROJECT,
+      command: { execution: { mode: 'direct', file: 'npm', args: ['run', 'dev'] }, env: [{ key: 'PATH', value: 'C:\\Program Files\\nodejs', secret: false }, { key: 'port', value: '5173', secret: false }] },
+      plan: plannerOf(platform),
+    })
+    const started = await direct.supervisor.start(direct.commandId)
+    expect(started).toMatchObject({ status: 'running', error: null })
+    expect(started.pid).toBe(direct.tree.last.pid)
+    expect(direct.statuses()).toEqual(['starting', 'running'])
+    const plan = direct.tree.last.plan
+    expect(plan).toEqual({
+      file: CMD,
+      args: [],
+      cwd: PROJECT,
+      env: { PATH: 'C:\\Program Files\\nodejs', SystemRoot: 'C:\\Windows', port: '5173' },
+      commandLine: batchCommandLine(CMD, 'C:\\Program Files\\nodejs\\npm.CMD', ['run', 'dev']),
+    })
+    // Exactly one path variable, and no runtime or per-drive variable, reaches the process.
+    expect(Object.keys(plan.env).filter((name) => name.toUpperCase() === 'PATH')).toEqual(['PATH'])
+    expect(Object.keys(plan.env).some((name) => name.toUpperCase().startsWith('ELECTRON_') || name.startsWith('='))).toBe(false)
+    // Its output reaches its log, and a stop ends it.
+    direct.tree.last.stdout.write('ready\n')
+    await settle()
+    expect(direct.output).toContainEqual([direct.events[0]?.runId, 'stdout', 'ready\n'])
+    expect(await direct.supervisor.stop(direct.commandId)).toMatchObject({ status: 'exited', survivors: [] })
+
+    // Shell mode: the script runs verbatim through the default shell, cmd.exe in the system directory.
+    const shell = harness({
+      projectPath: PROJECT,
+      command: { execution: { mode: 'shell', shell: platform.conventions.defaultShell ?? '', script: 'npm run build && echo %PORT%' } },
+      plan: plannerOf(platform),
+    })
+    expect(await shell.supervisor.start(shell.commandId)).toMatchObject({ status: 'running' })
+    expect(shell.tree.last.plan).toMatchObject({ file: CMD, args: [], cwd: PROJECT, commandLine: shellCommandLine(CMD, 'npm run build && echo %PORT%') })
+  })
+
+  it('fails a start the Windows resolver refuses, and spawns nothing', async () => {
+    const platform = windowsPlatform()
+    const spy = spyProcessTree()
+    for (const execution of [
+      { mode: 'shell' as const, shell: 'C:\\Program Files\\PowerShell\\7\\pwsh.exe', script: 'npm run dev' },
+      { mode: 'direct' as const, file: 'C:tool.exe', args: [] },
+      { mode: 'shell' as const, shell: CMD, script: 'npm run build\r\nnpm run dev' },
+    ]) {
+      const h = harness({ projectPath: PROJECT, command: { execution }, tree: spy.tree, plan: plannerOf(platform) })
+      expect(await h.supervisor.start(h.commandId)).toMatchObject({ status: 'failed' })
+      expect(h.statuses()).toEqual(['starting', 'failed'])
+    }
+    expect(spy.calls).toEqual([])
+  })
 })

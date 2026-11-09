@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { QUIT_DEADLINE_MARGIN_MS, SIGNAL_DEADLINE_MS } from '../../src/main/app/quit'
@@ -8,6 +8,8 @@ import { HELPER_KILL_WAIT_MS } from '../../src/main/platform/windows/helper-clie
 import { DEFAULT_STOP_TIMEOUT_MS, MAX_STOP_TIMEOUT_MS } from '../../src/shared/config'
 
 const root = join(__dirname, '../..')
+/** The Windows support statement of the preview (add-windows-environment-and-commands design D6). */
+const WINDOWS_PREVIEW = 'Windows: preview. Run from source; verified in CI on Windows Server 2025. No Windows package yet.'
 const doc = readFileSync(join(root, 'docs/processes.md'), 'utf8')
 
 /** The `## <title>` section, without its heading. */
@@ -93,11 +95,12 @@ describe('docs/processes.md matches the implementation', () => {
     for (const { title, body } of found) expectEvidence(title, body)
   })
 
-  it('[spec:process-supervision/windows-limitations-documented] states the Windows crash behavior and what was not verified, as not yet reachable from the app', () => {
-    const windows = section('Windows (not yet available)')
-    // Labelled as not reachable from the app, before anything else is said.
-    expect(windows.trimStart().startsWith('**Not yet reachable from the app.** Windows is not yet supported')).toBe(true)
-    const parts = subsections('Windows (not yet available)')
+  it('[spec:process-supervision/windows-limitations-documented] states the Windows crash behavior and what was not verified, labelled as part of the Windows preview', () => {
+    const windows = section('Windows (preview)')
+    // Labelled as the preview, before anything else is said.
+    expect(windows.trimStart().startsWith(`**${WINDOWS_PREVIEW}**`)).toBe(true)
+    expect(windows).toContain('are part of the preview')
+    const parts = subsections('Windows (preview)')
     expect(parts.map((p) => p.title)).toEqual(['Containment', 'Stopping', 'After an abnormal exit on Windows', 'Differences from Linux', 'Not verified on the CI runner'])
     const part = (title: string): string => parts.find((p) => p.title === title)?.body ?? ''
     // Job Object containment, the Ctrl+Break graceful stop, and the forced stop.
@@ -120,24 +123,95 @@ describe('docs/processes.md matches the implementation', () => {
     for (const condition of ['a desktop session', 'logging off or shutting down', 'no Job Object around it', 'administrator only']) {
       expect(unverified, condition).toContain(condition)
     }
-    expectEvidence('Windows (not yet available)', windows)
+    expectEvidence('Windows (preview)', windows)
   })
 
-  it('records Windows process supervision in the deferred checks, as not reachable from the app', () => {
+  it('records Windows process supervision in the deferred checks, and the preview that made it reachable from the app', () => {
     const deferred = readFileSync(join(root, 'docs/deferred-checks.md'), 'utf8')
     const row = deferred.split('\n').find((line) => line.startsWith('| Windows process supervision |'))
     expect(row).toBeDefined()
     expect(row).toContain('verified in CI')
     expect(row).toContain('**Not reachable from the app until W2**')
+    expect(row).toContain('Since 2026-11-08 commands start on Windows, as a preview (see [Windows preview](#windows-preview-2026-11-08))')
     expect(row).toContain('unsigned')
     expect(row).toContain('antivirus')
     expect(row).toContain('(processes.md#not-verified-on-the-ci-runner)')
     expect(doc).toContain('(deferred-checks.md#windows-process-supervision-2026-11-06)')
     expect(deferred).toContain('\n## Windows process supervision (2026-11-06)\n')
+    // The preview's own section keeps W4's packaging and helper-placement row.
+    const preview = deferred.slice(deferred.indexOf('\n## Windows preview (2026-11-08)\n'))
+    expect(preview).toContain(`| Windows commands | **${WINDOWS_PREVIEW}**`)
+    expect(preview).toContain('| Windows packaging and helper placement | Unchanged, owned by W4')
+    expect(preview).toContain('| Windows port inspection | Not available until W3')
   })
 })
 
-// add-windows-environment-and-commands group 6 (design D6) implements this.
-describe('docs/processes.md describes the Windows preview', () => {
-  it.todo('[spec:process-supervision/windows-preview-documented] says run from source, no Windows package, and lists what is not verified, claiming nothing beyond them')
+describe('the Windows preview is documented', () => {
+  const readme = readFileSync(join(root, 'README.md'), 'utf8')
+  /** README.md and every page of docs/, by name. */
+  const pages = new Map<string, string>([
+    ['README.md', readme],
+    ...readdirSync(join(root, 'docs'))
+      .filter((name) => name.endsWith('.md'))
+      .map((name): [string, string] => [`docs/${name}`, readFileSync(join(root, 'docs', name), 'utf8')]),
+  ])
+
+  it('[spec:process-supervision/windows-preview-documented] says run from source, no Windows package, and lists what is not verified, claiming nothing beyond them', () => {
+    // The preview statement, where the user reads about support and about processes.
+    for (const [name, text] of [['README.md', readme], ['docs/processes.md', doc]] as const) {
+      expect(text, name).toContain(`**${WINDOWS_PREVIEW}**`)
+    }
+    expect(readme.indexOf(WINDOWS_PREVIEW), 'the README states it before its first section').toBeLessThan(readme.indexOf('\n## '))
+    const platformRow = readme.split('\n').find((line) => line.startsWith('| Windows x64 |')) ?? ''
+    expect(platformRow).toContain('| **Preview.** Run from source; verified in CI on Windows Server 2025. No Windows package yet.')
+
+    // How to run it from source, in order.
+    const fromSource = readme.slice(readme.indexOf('\n### Running from source on Windows\n'))
+    const steps = ['npm ci', 'node scripts/build-windows-helper.mjs', 'npm run dev'].map((step) => fromSource.indexOf(`   ${step}\n`))
+    expect(steps.every((at) => at > 0)).toBe(true)
+    expect([...steps].sort((x, y) => x - y)).toEqual(steps)
+    expect(fromSource).toContain('**Node.js 24**')
+
+    // What the runner cannot verify, the preview's additions included.
+    const unverified = subsections('Windows (preview)').find((part) => part.title === 'Not verified on the CI runner')?.body ?? ''
+    for (const condition of ['a desktop session', 'logging off or shutting down', 'no Job Object around it', 'a standard user account', 'localized ANSI code pages', '932, 936, 949 and 950', 'a user-customized `PATHEXT`', 'App Execution Aliases other than those the runner has', 'a Veydr started from Explorer']) {
+      expect(unverified, condition).toContain(condition)
+    }
+
+    // No page claims more: no Windows package or installer, and no support beyond the preview. This
+    // is a tripwire for the usual phrasings, not a proof that no page overstates the preview.
+    const windows = String.raw`Windows(?: 1[01]| Server \d{4}| x64)?`
+    const beyond = [
+      new RegExp(String.raw`\b${windows} (?:is|are) (?:now |fully |officially )?supported\b`, 'i'),
+      new RegExp(String.raw`\b(?:full|complete|stable|official) ${windows} support\b`, 'i'),
+      new RegExp(String.raw`\b(?:Veydr|the app|it) (?:now |fully )?(?:supports|works on|runs on) ${windows}\b(?! (?:paths?|as a preview|in preview|from source))`, 'i'),
+      new RegExp(String.raw`\b(?:fully|officially) supported on ${windows}\b`, 'i'),
+      new RegExp(String.raw`\b${windows} (?:package|installer|build|release)s? (?:is|are) (?:now )?(?:available|published|provided|shipped)\b`, 'i'),
+      new RegExp(String.raw`\b(?:download|install) (?:the |a )?${windows} (?:package|installer|build|release)\b`, 'i'),
+      new RegExp(String.raw`\b${windows} users can (?:download|install)\b`, 'i'),
+      /\bnot yet supported\b[^.\n]*\bWindows\b|\bWindows\b[^.\n]*\bnot yet supported\b/i,
+    ]
+    // The tripwire catches what it is meant to, and lets the preview's own wording through.
+    for (const claim of ['Windows 11 is supported.', 'Veydr runs on Windows.', 'Download the Windows installer.', 'Windows users can install it.', 'Full Windows support.']) {
+      expect(beyond.some((pattern) => pattern.test(claim)), claim).toBe(true)
+    }
+    for (const allowed of [WINDOWS_PREVIEW, 'Veydr supports Windows paths such as C:\\tools.', 'Veydr runs on Windows as a preview.', 'Port inspection is not available on Windows yet.']) {
+      expect(beyond.some((pattern) => pattern.test(allowed)), allowed).toBe(false)
+    }
+    for (const [name, text] of pages) {
+      // The dated records of docs/deferred-checks.md say what held at their date.
+      const current = name === 'docs/deferred-checks.md' ? text.slice(text.indexOf('\n## Windows preview (2026-11-08)\n')) : text
+      for (const pattern of beyond) expect(pattern.exec(current)?.[0], `${name}: ${String(pattern)}`).toBeUndefined()
+    }
+  })
+
+  it('lifts the "not yet available" headings of the Windows sections', () => {
+    for (const [name, text] of pages) {
+      expect(text, name).not.toContain('Windows (not yet available)')
+      expect(text, name).not.toContain('Not yet reachable from the app')
+    }
+    for (const name of ['docs/commands.md', 'docs/logs.md', 'docs/processes.md']) {
+      expect(pages.get(name), name).toContain(`\n## Windows (preview)\n\n**${WINDOWS_PREVIEW}**`)
+    }
+  })
 })
