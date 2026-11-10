@@ -1,5 +1,7 @@
 // Pure parsers for /proc/net/tcp and /proc/net/tcp6 (proc(5)) and for /proc/<pid>/fd links.
-// No I/O here; see `ports.ts`.
+// No I/O here; see `ports.ts`. Addresses are formatted by the shared `../address.ts`.
+
+import { formatIpv4, formatIpv6 } from '../address'
 
 export type AddressFamily = 'ipv4' | 'ipv6'
 
@@ -90,40 +92,6 @@ function addressBytes(hex: string, littleEndian: boolean): number[] {
     bytes.push(...(littleEndian ? big.reverse() : big))
   }
   return bytes
-}
-
-function formatIpv4(bytes: readonly number[]): string {
-  return bytes.join('.')
-}
-
-/**
- * RFC 5952 text form: lowercase, no leading zeros, the longest run of two or more zero groups
- * (the first of equal runs) shortened to `::`, IPv4-mapped addresses as `::ffff:a.b.c.d`.
- */
-function formatIpv6(bytes: readonly number[]): string {
-  const groups: number[] = []
-  for (let i = 0; i < 16; i += 2) groups.push(((bytes[i] ?? 0) << 8) | (bytes[i + 1] ?? 0))
-  if (groups.slice(0, 5).every((g) => g === 0) && groups[5] === 0xffff) {
-    return `::ffff:${formatIpv4(bytes.slice(12))}`
-  }
-  let bestStart = -1
-  let bestLength = 1
-  for (let start = 0; start < 8; ) {
-    if (groups[start] !== 0) {
-      start++
-      continue
-    }
-    let end = start
-    while (end < 8 && groups[end] === 0) end++
-    if (end - start > bestLength) {
-      bestStart = start
-      bestLength = end - start
-    }
-    start = end
-  }
-  const hex = (list: readonly number[]): string => list.map((g) => g.toString(16)).join(':')
-  if (bestStart === -1) return hex(groups)
-  return `${hex(groups.slice(0, bestStart))}::${hex(groups.slice(bestStart + bestLength))}`
 }
 
 const SOCKET_LINK = /^socket:\[(\d+)\]$/

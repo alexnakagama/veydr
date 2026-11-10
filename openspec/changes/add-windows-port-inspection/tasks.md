@@ -45,15 +45,25 @@ Plan review (2026-11-09): reviewer2 found 2 high, 7 medium, 4 low and 3 nits in 
 
 ## 1. Shared pieces and scenario mapping
 
-- [ ] 1.1 Move `formatIpv4` and `formatIpv6` from `src/main/platform/linux/net.ts` to `src/main/platform/address.ts` as exported functions over network-order bytes (design D5). `parseNetTcp` keeps its byte-order handling and calls them. Verify: the existing `linux-ports` and `linux-net` unit tests pass unchanged, and a new `test/unit/address.test.ts` covers IPv4, compressed IPv6, `::`, `::1` and an IPv4-mapped address.
-- [ ] 1.2 Move `runHelperTool`, `runHelperVersion` and the cached version check out of `src/main/platform/windows/process-tree.ts` into a new `windows/helper-tool.ts` (design D6). The check becomes `createHelperCheck(helperPath, readVersion)`, and `runHelperTool` gains an optional `maxOutputBytes` that defaults to `MAX_TOOL_OUTPUT_BYTES`. The process tree takes the check as an option and behaves exactly as before. Move `imageName` from `helper-client.ts` to `identity.ts` and re-import it there (design D4); `procInfo` stays. Verify: the existing `windows-process-tree` unit tests pass with only import changes, and `windows-process-tree.test.ts` and `windows-commands.test.ts` pass in the `windows` CI job.
-- [ ] 1.3 Map every new scenario of this change with one tagged `it.todo` per scenario, in the file where its test will live (design D7):
+- [x] 1.1 Move `formatIpv4` and `formatIpv6` from `src/main/platform/linux/net.ts` to `src/main/platform/address.ts` as exported functions over network-order bytes (design D5). `parseNetTcp` keeps its byte-order handling and calls them. Verify: the existing `linux-ports` and `linux-net` unit tests pass unchanged, and a new `test/unit/address.test.ts` covers IPv4, compressed IPv6, `::`, `::1` and an IPv4-mapped address.
+- [x] 1.2 Move `runHelperTool`, `runHelperVersion` and the cached version check out of `src/main/platform/windows/process-tree.ts` into a new `windows/helper-tool.ts` (design D6). The check becomes `createHelperCheck(helperPath, readVersion)`, and `runHelperTool` gains an optional `maxOutputBytes` that defaults to `MAX_TOOL_OUTPUT_BYTES`. The process tree takes the check as an option and behaves exactly as before. Move `imageName` from `helper-client.ts` to `identity.ts` and re-import it there (design D4); `procInfo` stays. Verify: the existing `windows-process-tree` unit tests pass with only import changes, and `windows-process-tree.test.ts` and `windows-commands.test.ts` pass in the `windows` CI job.
+- [x] 1.3 Map every new scenario of this change with one tagged `it.todo` per scenario, in the file where its test will live (design D7):
   - `windows-ports.test.ts` (integration) for command-port, unmanaged, standard-user and verified-natively;
   - `test/unit/windows-ports.test.ts` for the reused PID;
   - `port-service.test.ts` for `windows-inspection-queries-only`.
 
   `ports-on-windows` needs no placeholder: `spec-coverage.mjs` exempts a REMOVED requirement while the change is active. Its test stays until group 5 because the behavior stays until then. Verify: `npm run spec-coverage` reports zero unmapped scenarios, `test-platform-policy.test.ts` passes, and `openspec validate add-windows-port-inspection --strict` passes.
-- [ ] 1.4 Hand off group 1 to `reviewer2`, fix the findings, have them re-reviewed, and record the outcome below this group.
+- [x] 1.4 Hand off group 1 to `reviewer2`, fix the findings, have them re-reviewed, and record the outcome below this group.
+
+Group 1 review (2026-11-10): reviewer2 approved, with 0 high, 0 medium, 2 low, 1 nit and 1 suggestion. All are fixed, and the re-review confirmed them:
+- low:
+  - the `runHelperTool` limit test covers 0, -1, 1.5, NaN and Infinity for both options;
+  - the `runHelperTool` JSDoc says it kills only the child it spawned, not its descendants.
+- nit: the `imageName` JSDoc says a bare name is returned unchanged.
+- suggestion: task 3.3 also walks `helper-tool.ts`'s import closure.
+- deviation, accepted: the `ports-on-windows` tag was dropped from `renderer-ports.test.ts` (its requirement is REMOVED, and spec-coverage failed on it as unknown); task 5.2 deletes or rewrites that test.
+
+Verified on Linux: typecheck, lint, `npm test` (1304 passed, 7 skipped, 2 todo), the `linux-ports` integration test, `npm run spec-coverage` (171/171) and `openspec validate --strict`. The `windows` CI job runs on the pull request.
 
 ## 2. The helper's `ports` subcommand and protocol version 3
 
@@ -96,7 +106,7 @@ Plan review (2026-11-09): reviewer2 found 2 high, 7 medium, 4 low and 3 nits in 
   - stdin is closed empty;
   - a timeout kills only that child and rejects;
   - an exit code other than 0, output over 16 MiB, or a stale version rejects with a plain `Error` (not a `SpawnError`) naming the helper.
-- [ ] 3.3 Extend the read-only test (design D6): add `windows/ports.ts` to the entries, forbid it from reaching `helper-tool`, `helper-client` and `process-tree`, make the forbidden-module pattern match without the `node:` prefix, and check that `createHelperPortsReader` passes only `['ports']`. Together with 2.3, this test carries `[spec:port-inspection/windows-inspection-queries-only]` and replaces its `it.todo`. Verify: the test passes, and fails when `windows/ports.ts` temporarily imports `node:child_process` or `child_process`.
+- [ ] 3.3 Extend the read-only test (design D6): add `windows/ports.ts` to the entries, forbid it from reaching `helper-tool`, `helper-client` and `process-tree`, make the forbidden-module pattern match without the `node:` prefix, and check that `createHelperPortsReader` passes only `['ports']`. Together with 2.3, this test carries `[spec:port-inspection/windows-inspection-queries-only]` and replaces its `it.todo`. Verify: the test passes, and fails when `windows/ports.ts` temporarily imports `node:child_process` or `child_process`. Also walk `helper-tool.ts`'s import closure (group 1 review), so that a value import of `helper-client` there cannot slip in unnoticed.
 - [ ] 3.4 Hand off group 3 to `reviewer2`, fix the findings, have them re-reviewed, and record the outcome below this group.
 
 ## 4. Native verification
@@ -120,7 +130,7 @@ Plan review (2026-11-09): reviewer2 found 2 high, 7 medium, 4 low and 3 nits in 
 ## 5. Ports on Windows, end to end
 
 - [ ] 5.1 In `windows/index.ts`, replace `UNSUPPORTED_PORT_INSPECTOR` with `createWindowsPortInspector({ readPorts: createHelperPortsReader(...) })`, sharing the helper check with the process tree, and update the JSDoc and the helper's header (design D6, D8). Verify: `platform.test.ts` expects a working inspector on Windows (a fake reader), and the composition check of task 3.3 passes.
-- [ ] 5.2 Remove the `UnsupportedPlatformError` branch from `runSmokeTest`'s platform check (design D8). Verify: `smoke.test.ts` covers the listed-ports detail and a failing inspector, and the renderer banner test still passes for the unsupported platform. `processes-docs.test.ts` and `accessibility.spec.ts` also mention "not yet available": update them together with the docs in 5.3 and 5.4, and confirm nothing in groups 1–4 changes that text.
+- [ ] 5.2 Remove the `UnsupportedPlatformError` branch from `runSmokeTest`'s platform check (design D8). Verify: `smoke.test.ts` covers the listed-ports detail and a failing inspector, and the renderer banner test still passes for the unsupported platform. `processes-docs.test.ts` and `accessibility.spec.ts` also mention "not yet available": update them together with the docs in 5.3 and 5.4, and confirm nothing in groups 1–4 changes that text. The renderer test `shows that port inspection is not yet available on Windows` lost its `ports-on-windows` tag in task 1.3 (the requirement is REMOVED); delete it here or rewrite it for a platform without an implementation, so it does not stay as an orphan asserting the old behavior.
 - [ ] 5.3 End-to-end (design D7):
   - make `ports.spec.ts` portable, with only its restricted test kept as `[linux-only: another user's process]`;
   - extend `support/ports-probe.cjs` to log helper calls with arguments exactly `['ports']`, and add a support function that counts listings from either log, for test 2;
