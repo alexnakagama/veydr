@@ -134,6 +134,8 @@ Group 3 review (2026-11-10): reviewer2 approved, with 0 high, 0 medium, 2 low an
 
 Verified on Linux: typecheck, lint, `npm test` (1377 passed, 7 skipped), `npm run spec-coverage` (171/171) and `openspec validate --strict`. The read-only test fails when `windows/ports.ts` imports `node:child_process`, `child_process` or `./helper-tool`, when `helper-tool.ts` imports `helper-client` by value, and when the reader passes an extra argument. Group 3 runs nothing Windows-specific; the `windows` CI job runs on the pull request.
 
+CI on the pull request (#52): the `windows` job failed once in `logs.spec.ts` (`pause-following`), outside this change: the scroll event of the log view's own scroll to the end could be handled after Pause and resume following. `LogView` now ignores a scroll event at the position it scrolled itself to (`scrollChange`, unit-tested).
+
 ## 4. Native verification
 
 - [ ] 4.1 Add the optional `-Helper <path>` parameter to the Run mode of `scripts/windows-probe/standard-user.ps1` (design D7). It must be fully qualified, an existing regular file, and named exactly `veydr-helper.exe` (case-sensitive `-cne`). It is checked before the account exists and copied next to the drivers. Add the driver `scripts/windows-probe/ports-standard-user.mjs` on `driverMain`/`runDriver`, which reports the `ctx-*` lines (including `ctx-standard-user`), handles `--unavailable`, runs `veydr-helper.exe ports` from its own directory, and writes the exit code and stdout line as result lines. It stays out of `checks.mjs`, `summary.mjs` and the probe-area lists. The existing modes are unchanged. Verify: `windows-probe-launch.test.ts` and `windows-probe-jobs.test.ts` pass, extended by static tests that:

@@ -9,6 +9,26 @@ import { useStore } from './state/store'
 
 /** Height of one row in pixels; rows never wrap (long lines scroll horizontally). */
 export const LOG_ROW_HEIGHT = 20
+
+/**
+ * What a scroll event of the log means for following: scrolling up pauses it, scrolling back to
+ * the end resumes it. A scroll event whose position is the one the view scrolled itself to while
+ * following (`ownScrollTop`) is not the user's and changes nothing: it can be handled after the
+ * user pressed Pause, and must not undo that.
+ */
+export function scrollChange(position: {
+  readonly following: boolean
+  readonly scrollTop: number
+  readonly scrollHeight: number
+  readonly clientHeight: number
+  readonly ownScrollTop: number | null
+}): 'pause' | 'follow' | null {
+  if (position.ownScrollTop !== null && position.scrollTop === position.ownScrollTop) return null
+  const atBottom = position.scrollHeight - position.scrollTop - position.clientHeight <= LOG_ROW_HEIGHT
+  if (position.following && !atBottom) return 'pause'
+  if (!position.following && atBottom) return 'follow'
+  return null
+}
 /** Width of a row besides its text, in characters: time, stream, truncation marker. */
 const LINE_EXTRA_CH = 48
 
@@ -150,9 +170,15 @@ export function LogView({ store, commandName, onClear }: LogViewProps): JSX.Elem
     },
   })
 
+  /** Where the view last scrolled itself to the end; `null` once the user has scrolled since. */
+  const ownScrollTop = useRef<number | null>(null)
+
   useLayoutEffect(() => {
     const element = scrollRef.current
-    if (following && element !== null) element.scrollTop = element.scrollHeight
+    if (following && element !== null) {
+      element.scrollTop = element.scrollHeight
+      ownScrollTop.current = element.scrollTop
+    }
   }, [following, visible])
 
   const pause = (): void => setPaused({ runId: state.runId, at: state.appended, clears: state.clears })
@@ -161,10 +187,10 @@ export function LogView({ store, commandName, onClear }: LogViewProps): JSX.Elem
   const onScroll = (): void => {
     const element = scrollRef.current
     if (element === null) return
-    const atBottom = element.scrollHeight - element.scrollTop - element.clientHeight <= LOG_ROW_HEIGHT
-    // Scrolling up pauses following; scrolling back to the end resumes it.
-    if (following && !atBottom) pause()
-    else if (!following && atBottom) follow()
+    const change = scrollChange({ following, scrollTop: element.scrollTop, scrollHeight: element.scrollHeight, clientHeight: element.clientHeight, ownScrollTop: ownScrollTop.current })
+    if (element.scrollTop !== ownScrollTop.current) ownScrollTop.current = null
+    if (change === 'pause') pause()
+    else if (change === 'follow') follow()
   }
 
   const copyVisible = (): void => {
