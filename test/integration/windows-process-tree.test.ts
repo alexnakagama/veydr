@@ -20,7 +20,7 @@ import { createWindowsProcessTree } from '../../src/main/platform/windows/proces
 import { createRunLedger, ledgerPath } from '../../src/main/supervisor/ledger'
 import { REPETITIONS, sleep } from '../support/proc'
 import { quietLog } from '../unit/support/config'
-import { collect, helpersOf, marked, parseArray, powershell, visibleWindowOwners, waitUntil, type MarkedProcess } from './support/windows'
+import { collect, creationTimes, helpersOf, marked, parseArray, powershell, visibleWindowOwners, waitUntil, type MarkedProcess } from './support/windows'
 import type { WindowsHostOptions } from './support/windows-tree-host'
 
 // The Windows process tree against real Windows processes (add-windows-process-supervision design D7).
@@ -31,8 +31,8 @@ import type { WindowsHostOptions } from './support/windows-tree-host'
 // Win32_Process for the scenario's marker, and a sentinel started outside Veydr must survive every
 // scenario and receive no console event.
 
-/** The control protocol version the helper must report (design D2; W2 design D1). */
-const PROTOCOL_VERSION = '2'
+/** The protocol version the helper must report (design D2; W2 design D1; W3 design D2). */
+const PROTOCOL_VERSION = '3'
 
 const TREE = resolve(__dirname, '../fixtures/windows/tree.mjs')
 const OUTPUT = resolve(__dirname, '../fixtures/windows/output.mjs')
@@ -106,35 +106,6 @@ ConvertTo-Json -Compress -InputObject @([VeydrConsole]::Processes() | ForEach-Ob
 }
 
 const sorted = (pids: readonly number[]): number[] => [...pids].sort((a, b) => a - b)
-
-/**
- * Creation times (decimal FILETIME) of the live processes among `pids`, read with GetProcessTimes
- * from PowerShell, independently of the helper. A PID that cannot be read is left out.
- */
-function creationTimes(pids: readonly number[]): Map<number, string> {
-  const list = pids.map((pid) => String(Math.trunc(pid))).join(',')
-  const output = powershell(
-    `Add-Type -TypeDefinition @'
-using System;
-using System.Runtime.InteropServices;
-public static class VeydrTimes {
-  [DllImport("kernel32.dll", SetLastError = true)] static extern IntPtr OpenProcess(uint access, bool inherit, uint pid);
-  [DllImport("kernel32.dll", SetLastError = true)] static extern bool GetProcessTimes(IntPtr process, out long creation, out long exit, out long kernel, out long user);
-  [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr handle);
-  public static string Created(uint pid) {
-    IntPtr process = OpenProcess(0x1000, false, pid);
-    if (process == IntPtr.Zero) return "";
-    try {
-      long creation, exit, kernel, user;
-      return GetProcessTimes(process, out creation, out exit, out kernel, out user) ? creation.ToString(System.Globalization.CultureInfo.InvariantCulture) : "";
-    } finally { CloseHandle(process); }
-  }
-}
-'@
-ConvertTo-Json -Compress -InputObject @(@(${list}) | ForEach-Object { [pscustomobject]@{ pid = [int]$_; created = [VeydrTimes]::Created([uint32]$_) } } | Where-Object { $_.created -ne '' })`,
-  )
-  return new Map((parseArray(output) as { pid: number; created: string }[]).map((p) => [p.pid, p.created]))
-}
 
 /** The identities of the live processes `pids`, in order, read in one go independently of the helper. */
 function identitiesOf(pids: readonly number[]): ProcessIdentity[] {

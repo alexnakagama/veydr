@@ -1,4 +1,5 @@
-// The Windows process-tree helper (add-windows-process-supervision design D5). One C# 5 file for the
+// The Windows helper: process trees (add-windows-process-supervision design D5) and the listening
+// TCP ports (add-windows-port-inspection design D1). One C# 5 file for the
 // csc.exe of .NET Framework 4.8, built by scripts/build-windows-helper.mjs and never committed as a
 // binary. Subcommands:
 //
@@ -7,6 +8,8 @@
 //                                                 controlled over the named pipe <pipe> (design D2)
 //   veydr-helper.exe inspect                      reports which identities on stdin are live (design D4)
 //   veydr-helper.exe terminate <graceMs>          ends the identities on stdin that still match (design D4)
+//   veydr-helper.exe ports                        lists the listening TCP sockets and their owners
+//                                                 (add-windows-port-inspection design D1)
 //   veydr-helper.exe console                      internal: the UTF-8 console a `run` command gets
 //                                                 (add-windows-environment-and-commands design D5)
 //
@@ -16,7 +19,7 @@
 // (add-windows-environment-and-commands design D1). Veydr builds the complete command line; the
 // helper checks it and passes both to CreateProcess unchanged, with the helper's own working
 // directory and environment, in a new Job Object, and reports over the pipe in the JSON lines of
-// protocol version 2 (src/main/platform/windows/protocol.ts). Its stdout and stderr belong to the
+// protocol version 3 (src/main/platform/windows/protocol.ts). Its stdout and stderr belong to the
 // command: the helper never writes to them after it has connected, and a refused request is
 // reported as an `error` line on the pipe.
 //
@@ -29,7 +32,11 @@
 // `inspect` and `terminate` read one line on stdin, a JSON array of identities
 // (`[{"pid":P,"created":"<FILETIME>"},...]`, exactly as protocol.ts encodes it), and print one JSON
 // line on stdout (see SurvivorCommands). They exit with 0, 1 (a failure, described on stderr), or 2.
-// W3 adds `ports`.
+//
+// `ports` takes no arguments and reads nothing on stdin. It prints one JSON line on stdout with the
+// IPv4 and IPv6 listening TCP sockets and, for each owning PID, whether the owner can be identified
+// (see PortsCommand). It opens other processes for query only, and starts, signals or ends none of
+// them. It exits with 0, 1 (a failure, described on stderr), or 2 (wrong arguments).
 using System;
 using System.Collections.Generic;
 using System.ComponentModel;
@@ -45,14 +52,14 @@ using System.Threading;
 
 static class VeydrHelper
 {
-    // Version 2 of the JSON-line control protocol (design D2; add-windows-environment-and-commands
-    // design D1). The TypeScript client refuses a helper whose number differs from its own, so change
-    // both together.
-    public const int ProtocolVersion = 2;
+    // Version 3 of the JSON-line protocol (design D2; add-windows-environment-and-commands design D1;
+    // add-windows-port-inspection design D2, which added `ports`). The TypeScript client refuses a
+    // helper whose number differs from its own, so change both together.
+    public const int ProtocolVersion = 3;
 
     public const int ExitOk = 0, ExitFailure = 1, ExitUsage = 2;
 
-    const string Usage = "usage: veydr-helper version | veydr-helper run <pipe> | veydr-helper inspect | veydr-helper terminate <graceMs>";
+    const string Usage = "usage: veydr-helper version | veydr-helper run <pipe> | veydr-helper inspect | veydr-helper terminate <graceMs> | veydr-helper ports";
 
     static int Main()
     {
@@ -76,6 +83,7 @@ static class VeydrHelper
         // Internal: started by `run` only (ConsoleHost).
         if (args.Length == 1 && args[0] == "console") return ConsoleHost.Run();
         if (args.Length == 1 && args[0] == "inspect") return SurvivorCommands.Inspect();
+        if (args.Length == 1 && args[0] == "ports") return PortsCommand.Run();
         int graceMs;
         if (args.Length == 2 && args[0] == "terminate" && SurvivorCommands.TryParseGrace(args[1], out graceMs)) return SurvivorCommands.Terminate(graceMs);
 
@@ -1874,6 +1882,285 @@ static class SurvivorCommands
     }
 }
 
+/**
+ * `veydr-helper ports` (add-windows-port-inspection design D1): the listening TCP sockets, IPv4 and
+ * IPv6, and for each owning PID whether its holder can be identified. Prints one line,
+ * `{"type":"ports","takenAt":"<FILETIME>","listeners":[...],"owners":[...]}` (protocol.ts):
+ *   - a listener is `{"family":"ipv4"|"ipv6","address":"<hex>","port":N,"pid":P}`, the address as
+ *     8 or 32 lowercase hex digits in network byte order, the port in host order;
+ *   - an owner, one per distinct listener PID, is `{"pid":P,"state":"known","created":"<FILETIME>",
+ *     "image":"<path>"}`, `{"pid":P,"state":"restricted"|"gone"|"reused"}` or
+ *     `{"pid":P,"state":"error","code":N}` with the Win32 error code.
+ *
+ * Read-only: it opens other processes with PROCESS_QUERY_LIMITED_INFORMATION and nothing else, the
+ * one right W0 measured, and starts, signals or ends none of them. SYNCHRONIZE is not requested,
+ * since a protected process may refuse it and would then look restricted even to an administrator.
+ * test/unit/port-service.test.ts checks this class's source: it may use no class of this file but
+ * Native, Json, HelperException and VeydrHelper, and only the Native members that read.
+ *
+ * The fence. `t0` is read before the tables. A live process created before `t0` already had its PID
+ * when the tables were read, and the PIDs of live processes are unique, so it is the socket's
+ * holder. One created after `t0` may have got a holder's PID after the holder exited, and is
+ * reported as `reused`, never as the holder. A creation time may come from a clock up to one timer
+ * tick (about 15.6 ms) coarser than `t0`'s, so a process created within FenceMargin before `t0` is
+ * also `reused`; a genuine holder that young shows as unknown for one listing.
+ */
+static class PortsCommand
+{
+    /** 20 ms in FILETIME units (100 ns): more than one timer tick (design D1). */
+    const long FenceMargin = 200000;
+    /** Attempts to read one table while it keeps outgrowing the buffer, after which the listing fails. */
+    const int MaxTableAttempts = 8;
+    /** Room for sockets opened between asking for a table's size and reading it. */
+    const int TableSlackBytes = 4096;
+    /**
+     * Largest table buffer. 16 MiB holds about 700,000 IPv4 or 300,000 IPv6 rows, each of which
+     * takes more than 56 bytes of output, so a larger table could never fit MaxOutputBytes anyway.
+     */
+    const int MaxTableBytes = 16 * 1024 * 1024;
+    /** Longest output line, `\n` excluded (protocol.ts: MAX_PORTS_OUTPUT_BYTES); the line is ASCII, so chars are bytes. */
+    const int MaxOutputBytes = 16 * 1024 * 1024 - 1;
+    /** A table's rows follow its DWORD row count. */
+    const int RowsOffset = 4;
+    /** MIB_TCPROW_OWNER_PID: state, local address, local port, remote address, remote port, PID. */
+    const int Row4Size = 24, Row4Address = 4, Row4Port = 8, Row4Pid = 20;
+    /** MIB_TCP6ROW_OWNER_PID: local address, local scope, local port, remote address, remote scope, remote port, state, PID. */
+    const int Row6Size = 56, Row6Address = 0, Row6Port = 20, Row6Pid = 52;
+    /** Longest error message written to stderr. */
+    const int MaxMessageChars = 4000;
+
+    /** A listening socket as the table reports it. */
+    sealed class Listener
+    {
+        public readonly string Family;
+        public readonly string Address;
+        public readonly int Port;
+        public readonly uint Pid;
+
+        public Listener(string family, string address, int port, uint pid)
+        {
+            Family = family;
+            Address = address;
+            Port = port;
+            Pid = pid;
+        }
+    }
+
+    public static int Run()
+    {
+        try
+        {
+            // 1. The fence, before anything is read.
+            long fence;
+            Native.GetSystemTimePreciseAsFileTime(out fence);
+            if (fence <= FenceMargin) throw new HelperException("the system time cannot serve as a fence");
+
+            // 2. Both tables.
+            List<Listener> listeners = new List<Listener>();
+            ReadTable(Native.AF_INET, "ipv4", 4, Row4Size, Row4Address, Row4Port, Row4Pid, listeners);
+            ReadTable(Native.AF_INET6, "ipv6", 16, Row6Size, Row6Address, Row6Port, Row6Pid, listeners);
+
+            // 3. The executable names, a fallback for owners whose image path cannot be read.
+            Dictionary<uint, string> names = SnapshotNames();
+
+            // 4. One owner per distinct PID, in the order the PIDs first appear.
+            StringBuilder line = new StringBuilder(128 + listeners.Count * 64);
+            line.Append("{\"type\":\"ports\",\"takenAt\":\"").Append(Json.Number((ulong)fence)).Append("\",\"listeners\":[");
+            List<uint> pids = new List<uint>();
+            Dictionary<uint, bool> seen = new Dictionary<uint, bool>();
+            for (int i = 0; i < listeners.Count; i++)
+            {
+                Listener listener = listeners[i];
+                if (i > 0) line.Append(',');
+                if (line.Length > MaxOutputBytes) throw TooLong();
+                line.Append("{\"family\":\"").Append(listener.Family).Append("\",\"address\":\"").Append(listener.Address)
+                    .Append("\",\"port\":").Append(Json.Number((ulong)listener.Port)).Append(",\"pid\":").Append(Json.Number(listener.Pid)).Append('}');
+                if (seen.ContainsKey(listener.Pid)) continue;
+                seen.Add(listener.Pid, true);
+                pids.Add(listener.Pid);
+            }
+            line.Append("],\"owners\":[");
+            StringBuilder image = new StringBuilder(32768);
+            for (int i = 0; i < pids.Count; i++)
+            {
+                if (i > 0) line.Append(',');
+                line.Append(Owner(pids[i], fence, names, image));
+                if (line.Length > MaxOutputBytes) throw TooLong();
+            }
+            line.Append("]}");
+            if (line.Length > MaxOutputBytes) throw TooLong();
+
+            // 5. The one line.
+            WriteOut(line.ToString());
+            return VeydrHelper.ExitOk;
+        }
+        catch (Exception error)
+        {
+            return Fail(error);
+        }
+    }
+
+    /**
+     * Appends the rows of one listening table to `listeners`. A table that outgrows the buffer is
+     * read again into one of the size it asked for, at most MaxTableAttempts times.
+     */
+    static void ReadTable(int family, string familyName, int addressBytes, int rowSize, int addressOffset, int portOffset, int pidOffset, List<Listener> listeners)
+    {
+        int size = 0;
+        for (int attempt = 0; attempt < MaxTableAttempts; attempt++)
+        {
+            IntPtr table = size == 0 ? IntPtr.Zero : Marshal.AllocHGlobal(size);
+            try
+            {
+                int allocated = size;
+                uint result = Native.GetExtendedTcpTable(table, ref size, false, family, Native.TCP_TABLE_OWNER_PID_LISTENER, 0);
+                if (result == Native.ERROR_INSUFFICIENT_BUFFER)
+                {
+                    // `size` now holds what the table needs; the slack also makes progress certain.
+                    if (size < RowsOffset || size > MaxTableBytes - TableSlackBytes)
+                        throw new HelperException("the " + familyName + " TCP table needs " + size.ToString(CultureInfo.InvariantCulture) + " bytes, outside 4 to " + MaxTableBytes.ToString(CultureInfo.InvariantCulture));
+                    size = Math.Max(size, allocated) + TableSlackBytes;
+                    continue;
+                }
+                // Any other result fails the listing, also ERROR_NOT_SUPPORTED where IPv6 is absent (design D1).
+                if (result != Native.NO_ERROR)
+                    throw new HelperException("could not read the " + familyName + " TCP table: " + new Win32Exception((int)result).Message + " (error " + result.ToString(CultureInfo.InvariantCulture) + ")");
+                if (table == IntPtr.Zero || allocated < RowsOffset) throw new HelperException("the " + familyName + " TCP table was read without a buffer");
+
+                uint count = (uint)Marshal.ReadInt32(table);
+                if ((long)count * rowSize > allocated - RowsOffset) throw new HelperException("the " + familyName + " TCP table reports more rows than its buffer holds");
+                for (int i = 0; i < (int)count; i++)
+                {
+                    IntPtr row = IntPtr.Add(table, RowsOffset + i * rowSize);
+                    // The port is in network byte order, in the low 16 bits of its DWORD.
+                    int port = Marshal.ReadByte(row, portOffset) << 8 | Marshal.ReadByte(row, portOffset + 1);
+                    // A listening socket always has a port; a row without one names no port to show, and is
+                    // dropped here rather than failing the whole listing (as PID 0 is kept, as `gone`).
+                    if (port == 0) continue;
+                    StringBuilder address = new StringBuilder(addressBytes * 2);
+                    for (int b = 0; b < addressBytes; b++) address.Append(Marshal.ReadByte(row, addressOffset + b).ToString("x2", CultureInfo.InvariantCulture));
+                    listeners.Add(new Listener(familyName, address.ToString(), port, (uint)Marshal.ReadInt32(row, pidOffset)));
+                }
+                return;
+            }
+            finally
+            {
+                if (table != IntPtr.Zero) Marshal.FreeHGlobal(table);
+            }
+        }
+        throw new HelperException("the " + familyName + " TCP table kept growing while it was read");
+    }
+
+    /**
+     * Executable names by PID from one process snapshot, which needs no access to the processes. It
+     * is taken after the fence, so for a `known` owner (alive, and created before the fence) the
+     * entry with its PID is that process. Without a snapshot the names are simply missing.
+     */
+    static Dictionary<uint, string> SnapshotNames()
+    {
+        Dictionary<uint, string> names = new Dictionary<uint, string>();
+        IntPtr snapshot = Native.CreateToolhelp32Snapshot(Native.TH32CS_SNAPPROCESS, 0);
+        if (snapshot == Native.InvalidHandle || snapshot == IntPtr.Zero) return names;
+        try
+        {
+            Native.PROCESSENTRY32W entry = new Native.PROCESSENTRY32W();
+            entry.dwSize = (uint)Marshal.SizeOf(typeof(Native.PROCESSENTRY32W));
+            for (bool more = Native.Process32FirstW(snapshot, ref entry); more; more = Native.Process32NextW(snapshot, ref entry))
+            {
+                names[entry.th32ProcessID] = entry.szExeFile ?? "";
+            }
+        }
+        finally
+        {
+            Native.CloseHandle(snapshot);
+        }
+        return names;
+    }
+
+    /** The owner entry of `pid` (design D1, step 4). `image` is a reusable buffer. */
+    static string Owner(uint pid, long fence, Dictionary<uint, string> names, StringBuilder image)
+    {
+        string prefix = "{\"pid\":" + Json.Number(pid) + ",\"state\":";
+        // PID 0: no owning process. Nothing is opened.
+        if (pid == 0) return prefix + "\"gone\"}";
+        IntPtr process = Native.OpenProcess(Native.PROCESS_QUERY_LIMITED_INFORMATION, false, pid);
+        if (process == IntPtr.Zero)
+        {
+            int code = Marshal.GetLastWin32Error();
+            if (code == Native.ERROR_ACCESS_DENIED) return prefix + "\"restricted\"}";
+            // No such process: the holder has exited.
+            if (code == Native.ERROR_INVALID_PARAMETER) return prefix + "\"gone\"}";
+            return ErrorEntry(prefix, code);
+        }
+        try
+        {
+            uint exitCode;
+            if (!Native.GetExitCodeProcess(process, out exitCode)) return ErrorEntry(prefix, Marshal.GetLastWin32Error());
+            if (exitCode != Native.STILL_ACTIVE) return prefix + "\"gone\"}";
+            long creation, exit, kernel, user;
+            if (!Native.GetProcessTimes(process, out creation, out exit, out kernel, out user)) return ErrorEntry(prefix, Marshal.GetLastWin32Error());
+            // A process that exited with code STILL_ACTIVE (259) still has an exit time.
+            if (exit != 0) return prefix + "\"gone\"}";
+            if (creation <= 0) return ErrorEntry(prefix, Native.ERROR_INVALID_DATA);
+            if (creation > fence - FenceMargin) return prefix + "\"reused\"}";
+            return prefix + "\"known\",\"created\":\"" + Json.Number((ulong)creation) + "\",\"image\":" + Json.Quote(ImagePath(process, pid, names, image)) + "}";
+        }
+        finally
+        {
+            Native.CloseHandle(process);
+        }
+    }
+
+    static HelperException TooLong()
+    {
+        return new HelperException("the listing exceeds " + MaxOutputBytes.ToString(CultureInfo.InvariantCulture) + " bytes");
+    }
+
+    /** An `error` entry; a failure that left no error code (0, which means success) is reported as ERROR_INVALID_DATA. */
+    static string ErrorEntry(string prefix, int code)
+    {
+        if (code == 0) code = Native.ERROR_INVALID_DATA;
+        return prefix + "\"error\",\"code\":" + Json.Number((uint)code) + "}";
+    }
+
+    /** The full image path of `process`, else its snapshot name (such as `System`), else "". */
+    static string ImagePath(IntPtr process, uint pid, Dictionary<uint, string> names, StringBuilder image)
+    {
+        image.Length = 0;
+        int size = image.Capacity;
+        if (Native.QueryFullProcessImageName(process, 0, image, ref size) && size > 0) return image.ToString(0, size);
+        string name;
+        return names.TryGetValue(pid, out name) ? name : "";
+    }
+
+    /** Writes the one output line as ASCII bytes (Json escapes everything else), independent of any console code page. */
+    static void WriteOut(string line)
+    {
+        byte[] bytes = Encoding.ASCII.GetBytes(line + "\n");
+        Stream stdout = Console.OpenStandardOutput();
+        stdout.Write(bytes, 0, bytes.Length);
+        stdout.Flush();
+    }
+
+    static int Fail(Exception error)
+    {
+        string message = error is HelperException ? error.Message : "unexpected failure: " + error.Message;
+        if (message.Length > MaxMessageChars) message = message.Substring(0, MaxMessageChars);
+        try
+        {
+            byte[] bytes = Encoding.UTF8.GetBytes("veydr-helper: " + message + "\n");
+            Stream stderr = Console.OpenStandardError();
+            stderr.Write(bytes, 0, bytes.Length);
+            stderr.Flush();
+        }
+        catch (IOException)
+        {
+            // Nobody reads stderr any more; the exit code still reports the failure.
+        }
+        return VeydrHelper.ExitFailure;
+    }
+}
+
 /** Just enough JSON for the protocol's lines, as ASCII: everything else is escaped. */
 static class Json
 {
@@ -1915,6 +2202,13 @@ static class Native
     public const uint GENERIC_READ = 0x80000000, FILE_SHARE_READ = 0x1, FILE_SHARE_WRITE = 0x2, OPEN_EXISTING = 3;
     public const uint FILE_TYPE_CHAR = 0x2;
     public const uint PROCESS_QUERY_LIMITED_INFORMATION = 0x1000, SYNCHRONIZE = 0x100000;
+    public const int ERROR_ACCESS_DENIED = 5, ERROR_INVALID_DATA = 13, ERROR_INVALID_PARAMETER = 87;
+    public const uint STILL_ACTIVE = 259;
+
+    // Port inspection (add-windows-port-inspection design D1).
+    public const int AF_INET = 2, AF_INET6 = 23, TCP_TABLE_OWNER_PID_LISTENER = 3;
+    public const uint NO_ERROR = 0, ERROR_INSUFFICIENT_BUFFER = 122;
+    public const uint TH32CS_SNAPPROCESS = 0x2;
 
     public const int JobObjectBasicAccountingInformation = 1, JobObjectBasicProcessIdList = 3;
     public const int JobObjectAssociateCompletionPortInformation = 7, JobObjectExtendedLimitInformation = 9;
@@ -2006,6 +2300,17 @@ static class Native
         public IntPtr BasePriority;
         public UIntPtr UniqueProcessId, InheritedFromUniqueProcessId;
     }
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    public struct PROCESSENTRY32W
+    {
+        public uint dwSize, cntUsage, th32ProcessID;
+        public IntPtr th32DefaultHeapID;
+        public uint th32ModuleID, cntThreads, th32ParentProcessID;
+        public int pcPriClassBase;
+        public uint dwFlags;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 260)] public string szExeFile;
+    }
 #pragma warning restore 0649, 0169
 
     [DllImport("kernel32.dll")] public static extern uint GetCurrentProcessId();
@@ -2059,6 +2364,15 @@ static class Native
     public static extern bool QueryFullProcessImageName(IntPtr process, uint flags, StringBuilder name, ref int size);
     [DllImport("kernel32.dll", SetLastError = true)] public static extern uint WaitForSingleObject(IntPtr handle, uint milliseconds);
     [DllImport("kernel32.dll", SetLastError = true)] public static extern bool CloseHandle(IntPtr handle);
+
+    [DllImport("kernel32.dll")] public static extern void GetSystemTimePreciseAsFileTime(out long fileTime);
+    [DllImport("iphlpapi.dll")]
+    public static extern uint GetExtendedTcpTable(IntPtr table, ref int size, bool sorted, int family, int tableClass, uint reserved);
+    [DllImport("kernel32.dll", SetLastError = true)] public static extern IntPtr CreateToolhelp32Snapshot(uint flags, uint processId);
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, ExactSpelling = true, SetLastError = true)]
+    public static extern bool Process32FirstW(IntPtr snapshot, ref PROCESSENTRY32W entry);
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, ExactSpelling = true, SetLastError = true)]
+    public static extern bool Process32NextW(IntPtr snapshot, ref PROCESSENTRY32W entry);
 
     [DllImport("kernel32.dll", SetLastError = true)] public static extern bool FreeConsole();
     [DllImport("kernel32.dll", SetLastError = true)] public static extern bool AttachConsole(uint processId);

@@ -53,7 +53,7 @@ See proposal.md for the motivation. The current state:
 The subcommand takes no arguments and closes nothing it did not open. It reads nothing from stdin: Veydr writes nothing and closes stdin, and the helper does not wait for it. It runs these steps:
 
 1. Read the fence `t0` with `GetSystemTimePreciseAsFileTime`.
-2. Read `GetExtendedTcpTable(AF_INET, TCP_TABLE_OWNER_PID_LISTENER)` and `GetExtendedTcpTable(AF_INET6, …)`. On `ERROR_INSUFFICIENT_BUFFER`, grow the buffer to the size it asks for and retry, at most 8 times, then fail.
+2. Read `GetExtendedTcpTable(AF_INET, TCP_TABLE_OWNER_PID_LISTENER)` and `GetExtendedTcpTable(AF_INET6, …)`. On `ERROR_INSUFFICIENT_BUFFER`, grow the buffer to the size it asks for and retry, at most 8 times, then fail. Any other error fails the listing, `ERROR_NOT_SUPPORTED` without an IPv6 stack included. A row with port 0 is dropped (group 2 review): a listening socket always has a port, so such a row names nothing to show, and dropping it keeps one odd row from failing the listing, as PID 0 does.
 3. Read one `CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS)` for executable names. It needs no access to the processes, as W0 observed.
 4. For each distinct owning PID:
    - PID 0 (no owning process) → `gone`, without opening anything;
@@ -86,7 +86,8 @@ The version must change because a version 2 helper exits with a usage error (exi
 
 Protocol additions in `protocol.ts`:
 - a strict zod schema for the `ports` line, reusing `isFiletime`, and `isWindowsPid` except that an owner and a listener may have PID 0 (always reported as `gone`), so one odd row never fails the whole listing;
-- hex addresses of exactly 8 or 32 hex digits, ports 1–65535, and states from the closed set;
+- hex addresses of exactly 8 or 32 hex digits, ports 1–65535 (the helper drops port 0 rows, D1), and states from the closed set;
+- an `error` code from 1 (0 means success, and the helper reports a failure without a code as `ERROR_INVALID_DATA`), and a `known` owner created at least the 20 ms fence margin before `takenAt` (group 2 review: the fence is checked again on this side);
 - `parsePortsOutput(output)`, built like `parseInspectOutput`;
 - a `ports` output limit of 16 MiB, `MAX_PORTS_OUTPUT_BYTES`. A listener entry is about 60 bytes, so this allows roughly 250,000 listeners. Listeners are counted per address and port, so there is no fixed bound, but a desktop machine has a few hundred. Beyond the limit the whole listing rejects with `line-too-long`, and the view shows that error. `runHelperTool` takes the limit as an option (defaulting to `MAX_TOOL_OUTPUT_BYTES` for `inspect` and `terminate`), and `parsePortsOutput` checks its line against the same limit, not `MAX_LINE_BYTES` (1 MiB).
 

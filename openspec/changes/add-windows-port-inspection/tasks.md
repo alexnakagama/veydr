@@ -67,7 +67,7 @@ Verified on Linux: typecheck, lint, `npm test` (1304 passed, 7 skipped, 2 todo),
 
 ## 2. The helper's `ports` subcommand and protocol version 3
 
-- [ ] 2.1 In `veydr-helper.cs`, add a `PortsCommand` class and `veydr-helper.exe ports` (design D1):
+- [x] 2.1 In `veydr-helper.cs`, add a `PortsCommand` class and `veydr-helper.exe ports` (design D1):
   - the `t0` fence;
   - both `GetExtendedTcpTable` reads, with the bounded buffer retry;
   - one toolhelp snapshot for names;
@@ -76,16 +76,29 @@ Verified on Linux: typecheck, lint, `npm test` (1304 passed, 7 skipped, 2 todo),
   - one JSON line on stdout, exit code 0. A failure is described on stderr with exit code 1, and wrong arguments give exit code 2.
 
   Set `ProtocolVersion = 3`, extend `Usage` and the file header, and add the P/Invoke declarations to `Native`. Verify: `node scripts/build-windows-helper.mjs` compiles it in the `windows` CI job, and task 2.3's tests pass.
-- [ ] 2.2 In `protocol.ts` (design D2):
+- [x] 2.2 In `protocol.ts` (design D2):
   - set `PROTOCOL_VERSION = 3`;
   - add the strict `ports` schema (PID 0 allowed), `parsePortsOutput`, which checks against `MAX_PORTS_OUTPUT_BYTES` (16 MiB) rather than `MAX_LINE_BYTES`;
   - require each listener's PID to have exactly one owner entry, and every owner to have a listener.
 
   Verify with unit tests on every system: a valid line; a PID 0 listener; each malformed field (hex length, port 0 and 65536, an unknown state, a non-canonical FILETIME); a missing or extra owner; two lines; no final newline; a line over 1 MiB accepted and one over 16 MiB refused; a version 2 helper refused with a message that names both versions.
-- [ ] 2.3 Add the C# source check of design D6 to `port-service.test.ts`: brace-matched class body with comments and strings stripped, forbidden calls and `SYNCHRONIZE`, the class allowlist, the `Native` member allowlist, and `OpenProcess` with exactly `Native.PROCESS_QUERY_LIMITED_INFORMATION`. Strip regular, verbatim and char literals; fail on any interpolated string. Verify: the test passes on the real file, and its negative cases fail on fixture strings (a `SurvivorCommands` call, `| SYNCHRONIZE`, a forbidden call next to a comment, and a `}` inside a string and a char literal followed by a forbidden call). The scenario tag is placed in task 3.3, which completes both halves.
-- [ ] 2.4 Add a Windows-only integration case that runs the real helper's `ports` while a fixture listens on `127.0.0.1` and `::1`, once the fixture is at least 100 ms old (design D7). It parses the output with `parsePortsOutput` and finds both listeners, owned by the fixture's PID with its creation time. Verify: it passes in the `windows` CI job.
-- [ ] 2.5 Docs: in `docs/dependencies.md`, add protocol version 3 and the `ports` subcommand, and mark "W3 adds `ports`" as done. Verify: the section names version 3 and the subcommand.
-- [ ] 2.6 Hand off group 2 to `reviewer2`, fix the findings, have them re-reviewed, and record the outcome below this group.
+- [x] 2.3 Add the C# source check of design D6 to `port-service.test.ts`: brace-matched class body with comments and strings stripped, forbidden calls and `SYNCHRONIZE`, the class allowlist, the `Native` member allowlist, and `OpenProcess` with exactly `Native.PROCESS_QUERY_LIMITED_INFORMATION`. Strip regular, verbatim and char literals; fail on any interpolated string. Verify: the test passes on the real file, and its negative cases fail on fixture strings (a `SurvivorCommands` call, `| SYNCHRONIZE`, a forbidden call next to a comment, and a `}` inside a string and a char literal followed by a forbidden call). The scenario tag is placed in task 3.3, which completes both halves.
+- [x] 2.4 Add a Windows-only integration case that runs the real helper's `ports` while a fixture listens on `127.0.0.1` and `::1`, once the fixture is at least 100 ms old (design D7). It parses the output with `parsePortsOutput` and finds both listeners, owned by the fixture's PID with its creation time. Verify: it passes in the `windows` CI job.
+- [x] 2.5 Docs: in `docs/dependencies.md`, add protocol version 3 and the `ports` subcommand, and mark "W3 adds `ports`" as done. Verify: the section names version 3 and the subcommand.
+- [x] 2.6 Hand off group 2 to `reviewer2`, fix the findings, have them re-reviewed, and record the outcome below this group.
+
+Group 2 review (2026-11-10): reviewer2 found 0 high, 1 medium, 5 low and 2 nits. All are fixed, and the re-review approved them with no new findings:
+- medium: the integration case that leaves stdin open waits for `close`, not `exit`, so stdout is read to its end.
+- low:
+  - the helper caps a table at 16 MiB and stops once its line passes 16 MiB − 1 bytes, instead of building a line Veydr would refuse;
+  - the 2.4 case fails fast when the fixture exits before listening, and compares the image through `realpathSync.native`;
+  - `parsePortsOutput` refuses an `error` code of 0 (the helper reports a codeless failure as `ERROR_INVALID_DATA`) and a `known` owner inside the fence margin (`FENCE_MARGIN`);
+  - an IPv6 table that cannot be read (`ERROR_NOT_SUPPORTED`) still fails the listing, as design D1 says, and the docs say so;
+  - the C# source check also forbids `Assembly`, `AppDomain`, `GetMethods`, `GetFunctionPointerForDelegate` and a reflection `using`, requires `OpenProcess` with `false` for inherit, and pins each allowed call's library.
+- nits: two comments rewrapped.
+- deviation, accepted: the helper drops table rows with port 0, as it keeps PID 0 as `gone`; design D1 and D2 and `docs/dependencies.md` say so. Also added: an error names at most 5 schema issues.
+
+Verified on Linux: typecheck, lint, `npm test` (1339 passed, 7 skipped, 2 todo), the `linux-ports` integration test, `npm run spec-coverage` (171/171) and `openspec validate --strict`. The helper's compile and task 2.4 are verified only by the `windows` CI job on the pull request.
 
 ## 3. The Windows port inspector
 

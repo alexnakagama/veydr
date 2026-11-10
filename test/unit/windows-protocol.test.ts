@@ -4,20 +4,24 @@ import {
   encodeIdentities,
   encodeRunRequest,
   LineReader,
+  FENCE_MARGIN,
   MAX_GRACE_MS,
+  MAX_LINE_BYTES,
+  MAX_PORTS_OUTPUT_BYTES,
   MAX_RUN_REQUEST_BYTES,
   MAX_TOOL_IDENTITIES,
   parseHandshake,
   parseHelperMessage,
   parseInspectOutput,
+  parsePortsOutput,
   parseTerminateOutput,
   PROTOCOL_VERSION,
   ProtocolError,
   type ProtocolErrorKind,
 } from '../../src/main/platform/windows/protocol'
 
-// Version 2 of the helper control protocol (add-windows-process-supervision design D2,
-// add-windows-environment-and-commands designs D1 and D5).
+// Version 3 of the helper protocol (add-windows-process-supervision design D2,
+// add-windows-environment-and-commands designs D1 and D5, add-windows-port-inspection design D2).
 
 const TOKEN = 'a'.repeat(64)
 const CREATED = '134067012345678901'
@@ -138,12 +142,12 @@ describe('handshake', () => {
   })
 
   it('reports another protocol version only for the right token', () => {
-    expect(PROTOCOL_VERSION).toBe(2)
-    // A version 1 helper (W1) is refused, by name, as any other version is.
-    expect(() => parseHandshake(line({ ...ready, version: 1 }), TOKEN)).toThrow('The Windows helper speaks protocol version 1, but Veydr needs version 2')
+    expect(PROTOCOL_VERSION).toBe(3)
+    // A version 2 helper (W2, before `ports`) is refused, by name, as any other version is.
+    expect(() => parseHandshake(line({ ...ready, version: 2 }), TOKEN)).toThrow('The Windows helper speaks protocol version 2, but Veydr needs version 3')
     expectProtocolError(() => parseHandshake(line({ ...ready, version: 1 }), TOKEN), 'version-mismatch')
-    expectProtocolError(() => parseHandshake(line({ ...ready, version: 3 }), TOKEN), 'version-mismatch')
-    expectProtocolError(() => parseHandshake(line({ ...ready, version: '2' }), TOKEN), 'version-mismatch')
+    expectProtocolError(() => parseHandshake(line({ ...ready, version: 4 }), TOKEN), 'version-mismatch')
+    expectProtocolError(() => parseHandshake(line({ ...ready, version: '3' }), TOKEN), 'version-mismatch')
     expectProtocolError(() => parseHandshake(line({ ...ready, version: undefined }), TOKEN), 'version-mismatch')
     expectProtocolError(() => parseHandshake(line({ ...ready, version: 1, token: 'c'.repeat(64) }), TOKEN), 'bad-token')
   })
@@ -276,5 +280,137 @@ describe('survivor subcommands', () => {
       [() => parseTerminateOutput(`${inspected}\n`), 'unknown-message'],
     ]
     for (const [run, kind] of cases) expectProtocolError(run, kind)
+  })
+})
+
+describe('ports subcommand (add-windows-port-inspection design D2)', () => {
+  const TAKEN = '134067012399999999'
+  const v4 = { family: 'ipv4', address: '7f000001', port: 5173, pid: 4248 }
+  const v6 = { family: 'ipv6', address: `${'0'.repeat(31)}1`, port: 8080, pid: 4248 }
+  const known = { pid: 4248, state: 'known', created: CREATED, image: 'C:\\Program Files\\nodejs\\node.exe' }
+  const ports = (fields: Record<string, unknown> = {}): Record<string, unknown> => ({ type: 'ports', takenAt: TAKEN, listeners: [v4, v6], owners: [known], ...fields })
+  const output = (value: unknown): string => `${line(value)}\n`
+
+  it('parses a listing, one owner entry per PID, in every owner state', () => {
+    expect(parsePortsOutput(output(ports()))).toEqual(ports())
+    const listeners = [v4, { ...v4, port: 1, pid: 4 }, { ...v4, port: 65535, pid: 5 }, { ...v6, pid: 6 }, { ...v6, pid: 7 }, { ...v6, port: 2, pid: 8 }]
+    const owners = [known, { pid: 4, state: 'restricted' }, { pid: 5, state: 'gone' }, { pid: 6, state: 'reused' }, { pid: 7, state: 'error', code: 0xffff_ffff }, { pid: 8, state: 'error', code: 1 }]
+    expect(parsePortsOutput(`${line(ports({ listeners, owners }))}\r\n`)).toEqual(ports({ listeners, owners }))
+    expect(parsePortsOutput(output(ports({ listeners: [], owners: [] })))).toEqual(ports({ listeners: [], owners: [] }))
+    // An unreadable image path is empty; the PID range is a DWORD.
+    const empty = { ...known, pid: 0xffff_ffff, image: '' }
+    expect(parsePortsOutput(output(ports({ listeners: [{ ...v4, pid: 0xffff_ffff }], owners: [empty] }))).owners).toEqual([empty])
+  })
+
+  it('accepts a listener of PID 0 (no owning process), whose owner is always gone', () => {
+    const listing = ports({ listeners: [v4, { ...v6, pid: 0 }], owners: [known, { pid: 0, state: 'gone' }] })
+    expect(parsePortsOutput(output(listing))).toEqual(listing)
+    for (const state of [{ state: 'restricted' }, { state: 'reused' }, { state: 'error', code: 5 }, { state: 'known', created: CREATED, image: '' }]) {
+      const odd = ports({ listeners: [{ ...v4, pid: 0 }], owners: [{ pid: 0, ...state }] })
+      expectProtocolError(() => parsePortsOutput(output(odd)), 'malformed')
+    }
+  })
+
+  it('refuses each malformed field', () => {
+    const malformed: Record<string, unknown>[] = [
+      // Addresses: exactly 8 or 32 lowercase hex digits, matching the family.
+      ports({ listeners: [{ ...v4, address: '7f00001' }] }),
+      ports({ listeners: [{ ...v4, address: '7f0000011' }] }),
+      ports({ listeners: [{ ...v4, address: '7F000001' }] }),
+      ports({ listeners: [{ ...v4, address: '7f00000g' }] }),
+      ports({ listeners: [{ ...v4, address: v6.address }] }),
+      ports({ listeners: [{ ...v6, address: v4.address }] }),
+      ports({ listeners: [{ ...v6, address: '0'.repeat(31) }] }),
+      ports({ listeners: [{ ...v6, address: '0'.repeat(33) }] }),
+      ports({ listeners: [{ ...v4, family: 'ipv5' }] }),
+      // Ports 1-65535, integers.
+      ports({ listeners: [{ ...v4, port: 0 }] }),
+      ports({ listeners: [{ ...v4, port: 65536 }] }),
+      ports({ listeners: [{ ...v4, port: 80.5 }] }),
+      ports({ listeners: [{ ...v4, port: '80' }] }),
+      // PIDs are DWORDs.
+      ports({ listeners: [{ ...v4, pid: -1 }], owners: [{ pid: -1, state: 'gone' }] }),
+      ports({ listeners: [{ ...v4, pid: 2 ** 32 }], owners: [{ pid: 2 ** 32, state: 'gone' }] }),
+      // States from the closed set, with exactly their fields.
+      ports({ owners: [{ pid: 4248, state: 'zombie' }] }),
+      ports({ owners: [{ pid: 4248, state: 'restricted', code: 5 }] }),
+      ports({ owners: [{ pid: 4248, state: 'error' }] }),
+      ports({ owners: [{ pid: 4248, state: 'error', code: -1 }] }),
+      // 0 means success, never an error.
+      ports({ owners: [{ pid: 4248, state: 'error', code: 0 }] }),
+      ports({ owners: [{ pid: 4248, state: 'error', code: 2 ** 32 }] }),
+      ports({ owners: [{ ...known, image: undefined }] }),
+      ports({ owners: [{ ...known, image: 'x'.repeat(32_768) }] }),
+      // Creation times and the fence as canonical FILETIME decimals.
+      ports({ owners: [{ ...known, created: '0' }] }),
+      ports({ owners: [{ ...known, created: `0${CREATED}` }] }),
+      ports({ owners: [{ ...known, created: '9223372036854775808' }] }),
+      ports({ owners: [{ ...known, created: 134067012345678901 }] }),
+      ports({ takenAt: `0${TAKEN}` }),
+      ports({ takenAt: '' }),
+      // Exact fields.
+      ports({ extra: true }),
+      ports({ listeners: [{ ...v4, scope: 0 }] }),
+      ports({ owners: undefined }),
+    ]
+    for (const value of malformed) expectProtocolError(() => parsePortsOutput(output(value)), 'malformed')
+  })
+
+  it('refuses a known owner created after the fence, or within its 20 ms margin', () => {
+    const atMargin = (BigInt(TAKEN) - FENCE_MARGIN).toString()
+    expect(parsePortsOutput(output(ports({ owners: [{ ...known, created: atMargin }] }))).owners[0]).toMatchObject({ created: atMargin })
+    for (const created of [(BigInt(atMargin) + 1n).toString(), TAKEN, (BigInt(TAKEN) + 1n).toString()]) {
+      expect(() => parsePortsOutput(output(ports({ owners: [{ ...known, created }] }))), created).toThrow('owners.0.created: PID 4248 was created after the fence and cannot be known')
+    }
+  })
+
+  it('refuses a listener PID without exactly one owner entry, and an owner without a listener', () => {
+    for (const value of [
+      ports({ owners: [] }),
+      ports({ owners: [known, known] }),
+      ports({ owners: [known, { pid: 4248, state: 'gone' }] }),
+      ports({ owners: [known, { pid: 77, state: 'gone' }] }),
+      ports({ listeners: [], owners: [known] }),
+    ]) {
+      expectProtocolError(() => parsePortsOutput(output(value)), 'malformed')
+    }
+    expect(() => parsePortsOutput(output(ports({ owners: [] })))).toThrow('listeners.0.pid: PID 4248 has no owner entry')
+    expect(() => parsePortsOutput(output(ports({ owners: [known, { pid: 77, state: 'gone' }] })))).toThrow('owners.1.pid: PID 77 holds no listener')
+  })
+
+  it('refuses output that is not exactly one complete ports line', () => {
+    const one = line(ports())
+    expectProtocolError(() => parsePortsOutput(''), 'malformed')
+    expectProtocolError(() => parsePortsOutput(one), 'malformed')
+    expectProtocolError(() => parsePortsOutput(`${one}\n${one}\n`), 'malformed')
+    expectProtocolError(() => parsePortsOutput('not json\n'), 'malformed')
+    expectProtocolError(() => parsePortsOutput(`${line({ type: 'inspected', processes: [] })}\n`), 'unknown-message')
+  })
+
+  it('accepts a line beyond the control line limit, up to the ports output limit', () => {
+    // About 1.3 MiB of listeners, more than MAX_LINE_BYTES (1 MiB).
+    const listeners = Array.from({ length: 20_000 }, (_, i) => ({ ...v4, port: (i % 65_535) + 1 }))
+    const big = output(ports({ listeners }))
+    expect(Buffer.byteLength(big)).toBeGreaterThan(MAX_LINE_BYTES)
+    expect(parsePortsOutput(big).listeners).toHaveLength(20_000)
+  })
+
+  it('refuses output over the ports output limit before parsing it', () => {
+    const tooBig = `${'x'.repeat(MAX_PORTS_OUTPUT_BYTES)}\n`
+    expectProtocolError(() => parsePortsOutput(tooBig), 'line-too-long')
+    // The limit counts UTF-8 bytes, not characters.
+    expectProtocolError(() => parsePortsOutput(`${'\u00e9'.repeat(MAX_PORTS_OUTPUT_BYTES / 2)}\n`), 'line-too-long')
+  })
+
+  it('caps the issues an error message names', () => {
+    const listeners = Array.from({ length: 50 }, () => ({ ...v4, port: 0 }))
+    let message = ''
+    try {
+      parsePortsOutput(output(ports({ listeners })))
+    } catch (error) {
+      message = (error as Error).message
+    }
+    expect(message).toMatch(/; and 45 more$/)
+    expect(message.length).toBeLessThan(1000)
   })
 })

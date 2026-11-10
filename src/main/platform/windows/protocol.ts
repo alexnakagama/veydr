@@ -1,18 +1,21 @@
 import { timingSafeEqual } from 'node:crypto'
 import { z } from 'zod'
-import { isFiletime, isWindowsPid } from './identity'
+import { isFiletime, isWindowsPid, MAX_WINDOWS_PID } from './identity'
 
 /**
- * Version 2 of the control protocol between Veydr and `veydr-helper.exe run`
- * (add-windows-process-supervision design D2, add-windows-environment-and-commands design D1 and
- * D5): UTF-8 JSON objects, one per line (`\n`, an optional preceding `\r` is ignored), over the
- * run's named pipe.
+ * Version 3 of the protocol between Veydr and `veydr-helper.exe` (add-windows-process-supervision
+ * design D2, add-windows-environment-and-commands design D1 and D5, add-windows-port-inspection
+ * design D2, which added the `ports` subcommand below; `run`, `inspect` and `terminate` are as in
+ * version 2).
+ *
+ * The control protocol of `veydr-helper.exe run`: UTF-8 JSON objects, one per line (`\n`, an
+ * optional preceding `\r` is ignored), over the run's named pipe.
  *
  * Handshake. Veydr spawns `veydr-helper.exe run <pipe>` with the command's working directory and
  * environment, and writes two lines on the helper's stdin before closing it: a one-time token, and
  * the run request `{"application":"<program>","commandLine":"<command line>"}` (`encodeRunRequest`).
  * Neither appears on the helper's own command line. The helper reads the token, connects to
- * `<pipe>`, and its first line is `{"type":"ready","version":2,"token":"<token>","pid":<helper PID>}`.
+ * `<pipe>`, and its first line is `{"type":"ready","version":3,"token":"<token>","pid":<helper PID>}`.
  * Only then does it read the run request, so every refusal of the request is an `error` line on the
  * pipe and never on stderr, which belongs to the command. Veydr closes connections whose first line
  * does not carry the token, and fails the run if the token matches but the version does not. The
@@ -40,7 +43,7 @@ import { isFiletime, isWindowsPid } from './identity'
  * line malformed, and Veydr treats the helper as failed.
  */
 
-export const PROTOCOL_VERSION = 2
+export const PROTOCOL_VERSION = 3
 
 /**
  * Longest run request the helper reads, in bytes, `\n` excluded. Escaping can make a command line
@@ -130,8 +133,14 @@ function parseObject(line: string): Record<string, unknown> {
   return value as Record<string, unknown>
 }
 
-const describeIssues = (error: z.ZodError): string =>
-  error.issues.map((issue) => `${issue.path.join('.') || '(line)'}: ${issue.message}`).join('; ')
+/** Most issues named in an error message; a large malformed line must not make a huge one. */
+const MAX_DESCRIBED_ISSUES = 5
+
+function describeIssues(error: z.ZodError): string {
+  const shown = error.issues.slice(0, MAX_DESCRIBED_ISSUES).map((issue) => `${issue.path.join('.') || '(line)'}: ${issue.message}`)
+  const more = error.issues.length - shown.length
+  return `${shown.join('; ')}${more > 0 ? `; and ${more} more` : ''}`
+}
 
 /** Parses one line the helper sent after its handshake. */
 export function parseHelperMessage(line: string): HelperMessage {
@@ -240,6 +249,72 @@ export interface WindowsProcessRef {
   readonly created: string
 }
 
+/*
+ * Port inspection (add-windows-port-inspection design D1 and D2). `veydr-helper.exe ports` takes no
+ * arguments and reads nothing on stdin. It prints one line and exits with 0:
+ *
+ *   {"type":"ports","takenAt":"<FILETIME>","listeners":[listener...],"owners":[owner...]}
+ *
+ * - `takenAt` is the fence: the time read before the tables;
+ * - a listener is `{"family":"ipv4"|"ipv6","address":"<hex>","port":N,"pid":P}`, the address as 8
+ *   (IPv4) or 32 (IPv6) lowercase hex digits in network byte order, the port 1–65535;
+ * - an owner, exactly one per listener PID, is `{"pid":P,"state":"known","created":"<FILETIME>",
+ *   "image":"<path>"}`, `{"pid":P,"state":"restricted"|"gone"|"reused"}`, or
+ *   `{"pid":P,"state":"error","code":N}` with the Win32 error code (never 0, which means success).
+ *   PID 0 (no owning process) is allowed, so one odd row never fails the listing, and is always
+ *   `gone`. A `known` owner was created at least FENCE_MARGIN before `takenAt`, else it is `reused`.
+ *
+ * The helper drops a table row with port 0: a listening socket always has a port.
+ */
+
+/** The helper's fence margin, 20 ms in FILETIME units (design D1). */
+export const FENCE_MARGIN = 200_000n
+
+/** Longest accepted output of `ports`, in bytes: about 250,000 listeners (design D2). */
+export const MAX_PORTS_OUTPUT_BYTES = 16 * 1024 * 1024
+
+/** A listener's or owner's PID: a Windows PID, or 0 for a socket with no owning process. */
+const portPid = z.int().min(0).max(MAX_WINDOWS_PID)
+const port = z.int().min(1).max(0xffff)
+const listener = z.discriminatedUnion('family', [
+  z.strictObject({ family: z.literal('ipv4'), address: z.string().regex(/^[0-9a-f]{8}$/, 'Must be 8 lowercase hex digits'), port, pid: portPid }),
+  z.strictObject({ family: z.literal('ipv6'), address: z.string().regex(/^[0-9a-f]{32}$/, 'Must be 32 lowercase hex digits'), port, pid: portPid }),
+])
+const owner = z
+  .discriminatedUnion('state', [
+    z.strictObject({ pid, state: z.literal('known'), created, image: z.string().max(32_767) }),
+    z.strictObject({ pid: portPid, state: z.literal('restricted') }),
+    z.strictObject({ pid: portPid, state: z.literal('gone') }),
+    z.strictObject({ pid: portPid, state: z.literal('reused') }),
+    z.strictObject({ pid: portPid, state: z.literal('error'), code: z.int().min(1).max(0xffff_ffff) }),
+  ])
+  .refine((entry) => entry.pid !== 0 || entry.state === 'gone', { message: 'PID 0 has no owning process and must be gone' })
+export type PortsListener = z.infer<typeof listener>
+export type PortsOwner = z.infer<typeof owner>
+
+const ports = z
+  .strictObject({ type: z.literal('ports'), takenAt: created, listeners: z.array(listener), owners: z.array(owner) })
+  .superRefine((message, context) => {
+    const owners = new Set<number>()
+    const fence = BigInt(message.takenAt) - FENCE_MARGIN
+    message.owners.forEach((entry, index) => {
+      // The fence is what makes `known` safe: a younger owner may hold a reused PID.
+      if (entry.state === 'known' && BigInt(entry.created) > fence) {
+        context.addIssue({ code: 'custom', path: ['owners', index, 'created'], message: `PID ${entry.pid} was created after the fence and cannot be known` })
+      }
+      if (owners.has(entry.pid)) context.addIssue({ code: 'custom', path: ['owners', index, 'pid'], message: `PID ${entry.pid} has more than one owner entry` })
+      owners.add(entry.pid)
+    })
+    const listened = new Set<number>()
+    message.listeners.forEach((entry, index) => {
+      listened.add(entry.pid)
+      if (!owners.has(entry.pid)) context.addIssue({ code: 'custom', path: ['listeners', index, 'pid'], message: `PID ${entry.pid} has no owner entry` })
+    })
+    message.owners.forEach((entry, index) => {
+      if (!listened.has(entry.pid)) context.addIssue({ code: 'custom', path: ['owners', index, 'pid'], message: `PID ${entry.pid} holds no listener` })
+    })
+  })
+
 const toolMessages = {
   inspected: z.strictObject({ type: z.literal('inspected'), processes: z.array(member) }),
   terminated: z.strictObject({
@@ -248,10 +323,12 @@ const toolMessages = {
     forced: z.boolean(),
     survivors: z.array(member),
   }),
+  ports,
 } as const
 
 export type InspectResult = z.infer<(typeof toolMessages)['inspected']>
 export type TerminateResult = z.infer<(typeof toolMessages)['terminated']>
+export type PortsResult = z.infer<(typeof toolMessages)['ports']>
 
 /** The stdin line of `inspect` and `terminate`, `\n` included. */
 export function encodeIdentities(identities: readonly WindowsProcessRef[]): string {
@@ -286,6 +363,18 @@ export function parseInspectOutput(output: string): InspectResult {
 export function parseTerminateOutput(output: string): TerminateResult {
   const result = toolMessages.terminated.safeParse(toolLine(output, 'terminated'))
   if (!result.success) throw new ProtocolError('malformed', `Malformed terminated output: ${describeIssues(result.error)}`)
+  return result.data
+}
+
+/**
+ * Parses what `veydr-helper.exe ports` printed. The line may be up to MAX_PORTS_OUTPUT_BYTES long,
+ * the same limit the reader applies to the helper's stdout, not MAX_LINE_BYTES.
+ */
+export function parsePortsOutput(output: string): PortsResult {
+  const bytes = Buffer.byteLength(output, 'utf8')
+  if (bytes > MAX_PORTS_OUTPUT_BYTES) throw new ProtocolError('line-too-long', `The ports output has ${bytes} bytes, more than ${MAX_PORTS_OUTPUT_BYTES}`)
+  const result = toolMessages.ports.safeParse(toolLine(output, 'ports'))
+  if (!result.success) throw new ProtocolError('malformed', `Malformed ports output: ${describeIssues(result.error)}`)
   return result.data
 }
 
