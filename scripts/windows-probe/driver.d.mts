@@ -84,6 +84,20 @@ export type Report = (id: string, answer: Answer, detail?: string, data?: Record
 
 export function reportCheck(report: Report, id: string, check: () => Promise<{ answer: Answer; detail: string; data?: Record<string, unknown> }>): Promise<void>
 
+/** A check as runDriver reads it: checks.mjs's entries are such checks, and so are a non-probe driver's own. */
+export interface DriverCheck {
+  readonly kind: 'check' | 'limit'
+  readonly id: string
+  readonly area: string
+  readonly context?: { readonly user: 'admin' | 'standard' | 'both' }
+}
+
+/** The areas and checks a driver's `area` and `ids` are looked up in. */
+export interface DriverCatalog {
+  readonly areas: readonly string[]
+  readonly checks: readonly DriverCheck[]
+}
+
 export interface RunDriverOptions {
   area: string
   user: User
@@ -91,6 +105,8 @@ export interface RunDriverOptions {
   ids: readonly string[]
   probe: (report: Report) => void | Promise<void>
   unavailable?: string
+  /** Where `area` and `ids` are looked up; checks.mjs's probe areas and checks by default. */
+  catalog?: DriverCatalog
   measure?: (driverPid: number) => Promise<ContextMeasurement>
   probeDirectory?: () => ProbeDirectory
   write?: (line: string) => void

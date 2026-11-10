@@ -138,10 +138,10 @@ CI on the pull request (#52): the `windows` job failed once in `logs.spec.ts` (`
 
 ## 4. Native verification
 
-- [ ] 4.1 Add the optional `-Helper <path>` parameter to the Run mode of `scripts/windows-probe/standard-user.ps1` (design D7). It must be fully qualified, an existing regular file, and named exactly `veydr-helper.exe` (case-sensitive `-cne`). It is checked before the account exists and copied next to the drivers. Add the driver `scripts/windows-probe/ports-standard-user.mjs` on `driverMain`/`runDriver`, which reports the `ctx-*` lines (including `ctx-standard-user`), handles `--unavailable`, runs `veydr-helper.exe ports` from its own directory, and writes the exit code and stdout line as result lines. It stays out of `checks.mjs`, `summary.mjs` and the probe-area lists. The existing modes are unchanged. Verify: `windows-probe-launch.test.ts` and `windows-probe-jobs.test.ts` pass, extended by static tests that:
+- [x] 4.1 Add the optional `-Helper <path>` parameter to the Run mode of `scripts/windows-probe/standard-user.ps1` (design D7). It must be fully qualified, an existing regular file, and named exactly `veydr-helper.exe` (case-sensitive `-cne`). It is checked before the account exists and copied next to the drivers. Add the driver `scripts/windows-probe/ports-standard-user.mjs` on `driverMain`/`runDriver`, which reports the `ctx-*` lines (including `ctx-standard-user`), handles `--unavailable`, runs `veydr-helper.exe ports` from its own directory, and writes the exit code and stdout line as result lines. It stays out of `checks.mjs`, `summary.mjs` and the probe-area lists. The existing modes are unchanged. Verify: `windows-probe-launch.test.ts` and `windows-probe-jobs.test.ts` pass, extended by static tests that:
   - reject a `-Helper` with another file name, `VEYDR-HELPER.EXE`, a relative path, or extra driver arguments;
   - confirm the driver is in no probe-area registry.
-- [ ] 4.2 Write `test/integration/windows-ports.test.ts` (`describe.runIf(process.platform === 'win32')`, `[windows-only: …]` reasons), through the real helper and supervisor and `createHelperPortsReader`, replacing the group 1 `it.todo`s:
+- [x] 4.2 Write `test/integration/windows-ports.test.ts` (`describe.runIf(process.platform === 'win32')`, `[windows-only: …]` reasons), through the real helper and supervisor and `createHelperPortsReader`, replacing the group 1 `it.todo`s:
   - a command's and a grandchild's listeners are attributed (`command-port-shown-on-windows`);
   - unmanaged listeners on `127.0.0.1` and `::1` (`unmanaged-listener-on-windows`);
   - the 1,000-socket latency check: median under 500 ms, figures printed;
@@ -152,7 +152,22 @@ CI on the pull request (#52): the `windows` job failed once in `logs.spec.ts` (`
     - it asserts `ctx-standard-user`, the helper's exit code 0, the fixture's owner `restricted` through `createWindowsPortInspector`, and at least one other restricted listener.
 
   Every case waits until its fixtures are 100 ms old before listing. Also add a `workflow-policy.test.ts` assertion that the `windows` job neither sets nor overrides `CI`. Verify: all pass in the `windows` CI job, the job log shows the latency figures and the standard-user run, and `test-platform-policy.test.ts` accepts the guards.
-- [ ] 4.3 Hand off group 4 to `reviewer2`, fix the findings, have them re-reviewed, and record the outcome below this group.
+- [x] 4.3 Hand off group 4 to `reviewer2`, fix the findings, have them re-reviewed, and record the outcome below this group.
+
+Group 4 review (2026-11-10): reviewer2 found 0 high, 0 medium, 2 low and 3 nits. All are fixed, and the re-review accepted them with no new findings above nit:
+- low:
+  - `-Helper` refused only a link as the file itself: `Get-HelperProblem` now also refuses a link (junction, symbolic link or other reparse point) in any directory above it, with a Windows-only runtime case through a junction;
+  - a launcher ended at its timeout could leave the account behind, and `ci.yml`'s `windows` job has no `-Cleanup` step: the standard-user test runs `-Cleanup` itself when the account is still there afterwards, and fails, naming the launch's own error too (a re-review suggestion).
+- nits:
+  - the helper's SHA-256 is taken when it is checked and compared with the copy, so a file replaced in between is refused;
+  - the unavailable detail and the `-Cleanup` output go through the same filter as the launcher's output, so no `::` workflow command reaches the log;
+  - the driver's header says its output line can be as long as the listing (16 MiB), and what reads the results file accepts that.
+- deviations, accepted:
+  - `runDriver` takes an optional `catalog` (`{ areas, checks }`, the probe catalog by default), so the driver keeps its own area and two result IDs outside `checks.mjs`, `summary.mjs` and the probe-area lists while being built on `driverMain`/`runDriver`;
+  - the driver allows the helper 30 s, not `PORTS_TIMEOUT_MS`, since a new account's first .NET start may be scanned; it records the time it took;
+  - the standard-user test does not assert that `C:\veydr-probe-std` is gone, since the launcher only warns when it cannot remove it.
+
+Verified on Linux: typecheck, lint, `npm test` (1391 passed, 8 skipped), `npm run spec-coverage` (171/171), `openspec validate --strict`, and no `it.todo` of this change left. The Windows-only cases (the `-Helper` runtime checks, the integration cases, the latency figures and the standard-user run) are verified only by the `windows` CI job on the pull request.
 
 ## 5. Ports on Windows, end to end
 
