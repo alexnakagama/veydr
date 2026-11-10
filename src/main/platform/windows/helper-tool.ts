@@ -1,14 +1,15 @@
-import { execFile } from 'node:child_process'
+import { execFile, spawn as spawnChild } from 'node:child_process'
 import { stat } from 'node:fs/promises'
 import { SpawnError } from '../errors'
 import { isFullyQualified } from './command-line'
 import type { SpawnHelper } from './helper-client'
-import { MAX_TOOL_OUTPUT_BYTES, PROTOCOL_VERSION, ProtocolError } from './protocol'
+import { MAX_PORTS_OUTPUT_BYTES, MAX_TOOL_OUTPUT_BYTES, PROTOCOL_VERSION, ProtocolError } from './protocol'
 
 // The helper's short-lived subcommands (add-windows-port-inspection design D6): the version check
 // and `runHelperTool`, shared by everything that runs the helper's stdio subcommands (the process
-// tree's `inspect` and `terminate`). A port inspector must never import this module, so that its own
-// import closure starts no process.
+// tree's `inspect` and `terminate`, and `ports` through `createHelperPortsReader`). A port inspector
+// must never import this module, so that its own import closure starts no process: it is handed the
+// reader instead.
 
 /** Reads what `veydr-helper.exe version` prints; rejects if it cannot be run. */
 export type ReadHelperVersion = (helperPath: string) => Promise<string>
@@ -27,6 +28,9 @@ export interface HelperCheck {
 
 /** How long `veydr-helper.exe version` may take. */
 export const VERSION_TIMEOUT_MS = 10_000
+
+/** How long `veydr-helper.exe ports` may take; the API takes milliseconds, so only a hung helper reaches it. */
+export const PORTS_TIMEOUT_MS = 10_000
 
 /** Most bytes of a subcommand's stderr kept for its error message. */
 const MAX_TOOL_STDERR_BYTES = 4096
@@ -183,6 +187,42 @@ export function runHelperTool(
       finish(null, text)
     })
   })
+}
+
+export interface HelperPortsReaderOptions {
+  /** The helper to run; `check` must check this very file. */
+  readonly helperPath: string
+  /** The check shared with the process tree, so one version read serves both. */
+  readonly check: HelperCheck
+  readonly spawnHelper?: SpawnHelper
+}
+
+/**
+ * The function the Windows port inspector lists ports with (add-windows-port-inspection design D6):
+ * it checks the helper, then runs exactly `<helper> ports`, with stdin closed empty, for at most
+ * PORTS_TIMEOUT_MS and MAX_PORTS_OUTPUT_BYTES of stdout, and resolves with that stdout. Every failure
+ * (the check's `SpawnError` included, so a listing never surfaces as a start error) rejects with a
+ * plain `Error` naming the helper, its cause attached. The only process it may end is the helper it
+ * started, on its time or output limit.
+ *
+ * The check does not pin the binary: a file replaced after the check (and before its size or
+ * modification time is read again) is run unchecked, as in the process tree (process-supervision
+ * design D5). The helper's directory must therefore be writable only by the user Veydr runs as.
+ */
+export function createHelperPortsReader(options: HelperPortsReaderOptions): () => Promise<string> {
+  const { helperPath, check } = options
+  // A check of another file would let the reader run a helper whose version nobody read.
+  if (check.helperPath !== helperPath) throw new RangeError(`The helper check is for ${check.helperPath}, but the ports reader runs ${helperPath}`)
+  const spawnHelper = options.spawnHelper ?? spawnChild
+  return async () => {
+    try {
+      await check.verify()
+      return await runHelperTool(helperPath, ['ports'], '', { spawnHelper, timeoutMs: PORTS_TIMEOUT_MS, maxOutputBytes: MAX_PORTS_OUTPUT_BYTES })
+    } catch (error) {
+      // Every message above names the Windows helper already; only the class is made plain.
+      throw new Error(messageOf(error), { cause: error })
+    }
+  }
 }
 
 /** `setTimeout` for any delay, also beyond MAX_TIMER_MS; returns its cancel function. */

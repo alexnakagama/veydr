@@ -102,7 +102,7 @@ Verified on Linux: typecheck, lint, `npm test` (1339 passed, 7 skipped, 2 todo),
 
 ## 3. The Windows port inspector
 
-- [ ] 3.1 Add `src/main/platform/windows/ports.ts` with `createWindowsPortInspector({ readPorts, log? })` (design D4):
+- [x] 3.1 Add `src/main/platform/windows/ports.ts` with `createWindowsPortInspector({ readPorts, log? })` (design D4):
   - map the owners, with names from `imageName` (now in `identity.ts`), else `PID <n>`, and PID 0 to unknown;
   - convert `takenAt` from FILETIME to milliseconds with BigInt;
   - sort as on Linux;
@@ -114,13 +114,25 @@ Verified on Linux: typecheck, lint, `npm test` (1339 passed, 7 skipped, 2 todo),
   - an empty image;
   - IPv4 and IPv6 addresses through `address.ts`;
   - `takenAt` against a known FILETIME value, the sort order, and the logged error count.
-- [ ] 3.2 Add `createHelperPortsReader` to `helper-tool.ts`, with `PORTS_TIMEOUT_MS = 10_000` (design D6). Verify with unit tests using a fake `spawnHelper`:
+- [x] 3.2 Add `createHelperPortsReader` to `helper-tool.ts`, with `PORTS_TIMEOUT_MS = 10_000` (design D6). Verify with unit tests using a fake `spawnHelper`:
   - the arguments are exactly `['ports']`;
   - stdin is closed empty;
   - a timeout kills only that child and rejects;
   - an exit code other than 0, output over 16 MiB, or a stale version rejects with a plain `Error` (not a `SpawnError`) naming the helper.
-- [ ] 3.3 Extend the read-only test (design D6): add `windows/ports.ts` to the entries, forbid it from reaching `helper-tool`, `helper-client` and `process-tree`, make the forbidden-module pattern match without the `node:` prefix, and check that `createHelperPortsReader` passes only `['ports']`. Together with 2.3, this test carries `[spec:port-inspection/windows-inspection-queries-only]` and replaces its `it.todo`. Verify: the test passes, and fails when `windows/ports.ts` temporarily imports `node:child_process` or `child_process`. Also walk `helper-tool.ts`'s import closure (group 1 review), so that a value import of `helper-client` there cannot slip in unnoticed.
-- [ ] 3.4 Hand off group 3 to `reviewer2`, fix the findings, have them re-reviewed, and record the outcome below this group.
+- [x] 3.3 Extend the read-only test (design D6): add `windows/ports.ts` to the entries, forbid it from reaching `helper-tool`, `helper-client` and `process-tree`, make the forbidden-module pattern match without the `node:` prefix, and check that `createHelperPortsReader` passes only `['ports']`. Together with 2.3, this test carries `[spec:port-inspection/windows-inspection-queries-only]` and replaces its `it.todo`. Verify: the test passes, and fails when `windows/ports.ts` temporarily imports `node:child_process` or `child_process`. Also walk `helper-tool.ts`'s import closure (group 1 review), so that a value import of `helper-client` there cannot slip in unnoticed.
+- [x] 3.4 Hand off group 3 to `reviewer2`, fix the findings, have them re-reviewed, and record the outcome below this group.
+
+Group 3 review (2026-11-10): reviewer2 approved, with 0 high, 0 medium, 2 low and 3 nits. The re-review approved the fixes with no new findings:
+- low:
+  - the helper check does not pin the binary (a file swapped after the check runs unchecked, as in the process tree): the `createHelperPortsReader` JSDoc says so;
+  - helper stderr in the error message: withdrawn, since the IPC layer (`register.ts`) shows a plain `Error` to the renderer only as "Internal error" and logs the message locally, as on Linux.
+- nits:
+  - `filetimeToUnixMs` refuses anything but a canonical FILETIME with a `RangeError`, and states it;
+  - a test that nothing is logged without `error` owners;
+  - declined: the inspector's prefix on a read failure stays, because task 3.1 requires the inspector itself to name the helper whatever reader it is given.
+- addition: the read-only test also forbids `require()`, `import()` and native bindings in the closure, follows imports in either quote style, and checks that `windows/index.ts` can wire the inspector only to `createHelperPortsReader` (task 5.1 completes it).
+
+Verified on Linux: typecheck, lint, `npm test` (1377 passed, 7 skipped), `npm run spec-coverage` (171/171) and `openspec validate --strict`. The read-only test fails when `windows/ports.ts` imports `node:child_process`, `child_process` or `./helper-tool`, when `helper-tool.ts` imports `helper-client` by value, and when the reader passes an extra argument. Group 3 runs nothing Windows-specific; the `windows` CI job runs on the pull request.
 
 ## 4. Native verification
 
