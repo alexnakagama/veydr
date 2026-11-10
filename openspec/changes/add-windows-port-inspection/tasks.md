@@ -134,7 +134,7 @@ Group 3 review (2026-11-10): reviewer2 approved, with 0 high, 0 medium, 2 low an
 
 Verified on Linux: typecheck, lint, `npm test` (1377 passed, 7 skipped), `npm run spec-coverage` (171/171) and `openspec validate --strict`. The read-only test fails when `windows/ports.ts` imports `node:child_process`, `child_process` or `./helper-tool`, when `helper-tool.ts` imports `helper-client` by value, and when the reader passes an extra argument. Group 3 runs nothing Windows-specific; the `windows` CI job runs on the pull request.
 
-CI on the pull request (#52): the `windows` job failed once in `logs.spec.ts` (`pause-following`), outside this change: the scroll event of the log view's own scroll to the end could be handled after Pause and resume following. `LogView` now ignores a scroll event at the position it scrolled itself to (`scrollChange`, unit-tested).
+CI on the pull request (#52): the `windows` job failed once in `logs.spec.ts` (`pause-following`), outside this change: the scroll event of the log view's own scroll to the end could be handled after Pause and resume following. `LogView` now ignores a scroll event at the position it scrolled itself to (`scrollChange`, unit-tested). The rerun failed in `processes.spec.ts`, also outside this change: a fixture got PID 728, the long-exited parent of `csrss.exe` and `wininit.exe`, and the test helper took them for its unreadable children. `taggedFromRows` now counts a process as a tagged one's child only if it was not created before it (unit-tested).
 
 ## 4. Native verification
 
