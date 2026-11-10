@@ -112,6 +112,21 @@ describe('process query parsing', () => {
     expect(taggedFromRows([veydr, chromium(31, 'electron.exe', 'electron.exe --type=renderer --enable-sandbox')])).toEqual([{ pid: 30, ppid: 1, starttime: '30' }])
     expect(() => taggedFromRows([veydr, chromium(32, 'node.exe', 'node.exe tool.mjs --type=renderer')])).toThrow('node.exe (PID 32, parent 30)')
     expect(() => taggedFromRows([veydr, chromium(33, 'Electron.exe', 'electron.exe app')])).toThrow('Electron.exe (PID 33, parent 30)')
+
+  })
+
+  it('does not take a process for the child of a tagged one that reuses the PID of its exited parent', () => {
+    const at = (pid: number, ppid: number, name: string, status: 'tagged' | 'unreadable', starttime: string) => ({ pid, ppid, name, starttime, commandLine: null, status })
+    // csrss.exe and wininit.exe were started at boot by smss.exe PID 728, long gone; a fixture now has PID 728.
+    const fixture = at(728, 10, 'node.exe', 'tagged', '134070000000000000')
+    const boot = [at(736, 728, 'csrss.exe', 'unreadable', '134060000000000000'), at(860, 728, 'wininit.exe', 'unreadable', '134060000000000001')]
+    expect(taggedFromRows([fixture, ...boot])).toEqual([{ pid: 728, ppid: 10, starttime: '134070000000000000' }])
+    // A child created at or after its tagged parent is still caught.
+    expect(() => taggedFromRows([fixture, at(900, 728, 'tool32.exe', 'unreadable', '134070000000000000')])).toThrow('tool32.exe (PID 900, parent 728)')
+    expect(() => taggedFromRows([fixture, at(901, 728, 'tool32.exe', 'unreadable', '134070000000000001')])).toThrow('tool32.exe (PID 901, parent 728)')
+    // An unknown creation time, of the child or of the parent, never lets it pass.
+    expect(() => taggedFromRows([fixture, at(902, 728, 'tool32.exe', 'unreadable', '0')])).toThrow('tool32.exe (PID 902, parent 728)')
+    expect(() => taggedFromRows([{ ...fixture, starttime: '0' }, ...boot])).toThrow('csrss.exe (PID 736, parent 728)')
   })
 
   it('reads /proc/<pid>/stat, whose command name may hold spaces and parentheses', () => {

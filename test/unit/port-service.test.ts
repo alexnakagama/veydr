@@ -89,21 +89,64 @@ describe('port service', () => {
   })
 })
 
-/** Every source file `entry` reaches through relative imports (type-only imports included). */
-function importClosure(entry: string): string[] {
+/**
+ * The relative module specifiers `code` imports or re-exports, whatever the quotes: static imports
+ * and re-exports (type-only ones included, unless `valueOnly`), side-effect imports, and dynamic
+ * `import()`. Comments are not stripped, so a commented-out import is followed too, which only
+ * makes the closure larger and the checks stricter.
+ */
+function relativeImports(code: string, valueOnly: boolean): string[] {
+  const found: string[] = []
+  // `import … from`, `export … from`, `import type … from`; the lazy match ends at the statement's own `from`.
+  for (const match of code.matchAll(/\b(import|export)\s+(type\s+)?(?:[^'"`;]*?\bfrom\s*)?(['"])([^'"]+)\3/g)) {
+    if (valueOnly && match[2] !== undefined) continue
+    found.push(match[4] ?? '')
+  }
+  for (const match of code.matchAll(/\bimport\s*\(\s*(['"])([^'"]+)\1/g)) found.push(match[2] ?? '')
+  return found.filter((specifier) => specifier.startsWith('.'))
+}
+
+/**
+ * Every source file `entry` reaches through relative imports: type-only imports included by
+ * default, or only imports that load code at run time with `valueOnly`.
+ */
+function importClosure(entry: string, { valueOnly = false } = {}): string[] {
   const seen = new Set<string>()
   const visit = (file: string): void => {
     if (seen.has(file)) return
     seen.add(file)
-    for (const match of readFileSync(file, 'utf8').matchAll(/from '(\.[^']+)'/g)) {
-      const base = resolve(dirname(file), match[1] ?? '')
+    for (const specifier of relativeImports(readFileSync(file, 'utf8'), valueOnly)) {
+      const base = resolve(dirname(file), specifier)
       const target = [`${base}.ts`, `${base}.tsx`, join(base, 'index.ts')].find((candidate) => existsSync(candidate))
-      if (target === undefined) throw new Error(`${file}: cannot resolve ${match[1]}`)
+      if (target === undefined) throw new Error(`${file}: cannot resolve ${specifier}`)
       visit(target)
     }
   }
   visit(resolve(entry))
   return [...seen]
+}
+
+/** TypeScript `source` without its comments (a naive strip: enough for the project's own sources). */
+const withoutComments = (source: string): string => source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:\\])\/\/.*$/gm, '$1')
+
+/** Modules that start processes, open network connections, or run code on other threads. */
+const FORBIDDEN_MODULE = /(?:\bfrom|\bimport|\brequire)\s*\(?\s*['"`](?:node:)?(child_process|net|dgram|http|https|http2|tls|dns|cluster|worker_threads)(?:\/[^'"`]*)?['"`]/
+
+/**
+ * Why the comment-free `code` of a file in a read-only import closure could start, signal, or
+ * connect to something; none if it cannot (design D6).
+ */
+function readOnlyViolations(code: string): string[] {
+  const violations: string[] = []
+  const module = FORBIDDEN_MODULE.exec(code)
+  if (module !== null) violations.push(`imports ${module[1] ?? ''}`)
+  // A module loaded by a computed name cannot be checked, so loading one at run time is refused.
+  if (/\brequire\s*\(/.test(code)) violations.push('calls require()')
+  if (/\bimport\s*\(/.test(code)) violations.push('calls import()')
+  if (/\bprocess\s*\.\s*(?:binding|_linkedBinding|dlopen)\b/.test(code)) violations.push('loads native code')
+  // Signalling a process needs `kill` (process.kill, ChildProcess.kill) or a signal name.
+  if (/\bkill\s*\(|\bSIG[A-Z]{2,}\b/.test(code)) violations.push('signals a process')
+  return violations
 }
 
 /**
@@ -324,25 +367,122 @@ function portsCommandViolations(source: string): string[] {
 
 describe('read-only port inspection', () => {
   const root = resolve(__dirname, '../..')
-  const entries = ['src/main/ports/service.ts', 'src/main/platform/linux/ports.ts']
+  /** Each read-only entry, and the modules it must not reach beyond those no entry may reach. */
+  const entries: Record<string, RegExp | null> = {
+    'src/main/ports/service.ts': null,
+    'src/main/platform/linux/ports.ts': null,
+    // It is handed a reader; running the helper is helper-tool's (design D6).
+    'src/main/platform/windows/ports.ts': /helper-tool|helper-client|process-tree/,
+  }
+
+  /** The violations of every file `entry` reaches, by file. */
+  const closureViolations = (entry: string, alsoForbidden: RegExp | null): string[] => {
+    const files = importClosure(join(root, entry))
+    expect(files.length, entry).toBeGreaterThan(1)
+    return files.flatMap((file) => {
+      const where = relative(root, file)
+      const reached = /supervisor|process-tree|executable|survivors/.test(where) || (alsoForbidden?.test(where) ?? false) ? [`${entry} reaches ${where}`] : []
+      return [...reached, ...readOnlyViolations(withoutComments(readFileSync(file, 'utf8'))).map((violation) => `${where} ${violation}`)]
+    })
+  }
 
   it('[spec:port-inspection/no-actions-on-unrelated-processes] the ports service and the Linux inspector cannot signal, start, or connect to anything', () => {
-    const forbiddenModules = /from 'node:(child_process|net|dgram|http|https|http2|tls|dns|cluster|worker_threads)'/
-    // Signalling a process needs `kill` (process.kill, ChildProcess.kill) or a signal name.
-    const signalling = /\bkill\s*\(|\bSIG[A-Z]{2,}\b/
-    for (const entry of entries) {
-      const files = importClosure(join(root, entry))
-      expect(files.length, entry).toBeGreaterThan(1)
-      for (const file of files) {
-        const code = readFileSync(file, 'utf8')
-          .replace(/\/\*[\s\S]*?\*\//g, '')
-          .replace(/\/\/.*$/gm, '')
-        const where = relative(root, file)
-        expect(code, where).not.toMatch(forbiddenModules)
-        expect(code, where).not.toMatch(signalling)
-        expect(where, `${entry} reaches ${where}`).not.toMatch(/supervisor|process-tree|executable|survivors/)
-      }
+    for (const entry of ['src/main/ports/service.ts', 'src/main/platform/linux/ports.ts']) {
+      expect(closureViolations(entry, entries[entry] ?? null), entry).toEqual([])
     }
+  })
+
+  it('finds every way the check knows of to start, signal or connect to something', () => {
+    expect(readOnlyViolations("import { readFile } from 'node:fs/promises'\nimport { z } from 'zod'\nconst skill = 'kill'")).toEqual([])
+    for (const [code, reason] of [
+      ["import { spawn } from 'node:child_process'", 'imports child_process'],
+      ["import { spawn } from 'child_process'", 'imports child_process'],
+      ['import { spawn } from "child_process"', 'imports child_process'],
+      ["import {\n  spawn,\n} from 'child_process'", 'imports child_process'],
+      ["import type { ChildProcess } from 'child_process'", 'imports child_process'],
+      ["export { spawn } from 'node:child_process'", 'imports child_process'],
+      ["import * as net from 'net'", 'imports net'],
+      ["import 'node:dns/promises'", 'imports dns'],
+      ["import { request } from 'node:https'", 'imports https'],
+      ["import { Worker } from 'worker_threads'", 'imports worker_threads'],
+      ["const cp = require('child_process')", 'calls require()'],
+      ["const cp = await import('node:child_process')", 'calls import()'],
+      ["const name = 'child_' + 'process'; await import(name)", 'calls import()'],
+      ["process.binding('spawn_sync')", 'loads native code'],
+      ['process.kill(4)', 'signals a process'],
+      ["child.kill ('SIGTERM')", 'signals a process'],
+    ] as const) {
+      expect(readOnlyViolations(code), code).toContain(reason)
+    }
+  })
+
+  it('follows every kind of relative import, so no module of the closure is missed', () => {
+    const code = [
+      "import { a } from './a'",
+      'import type { B } from "./b"',
+      "import {\n  c,\n  type C,\n} from './c'",
+      "import './d'",
+      "export { e } from './e'",
+      "export type { F } from './f'",
+      "export * from './g'",
+      "const h = await import('./h')",
+      "import { z } from 'zod'",
+      "import { join } from 'node:path'",
+    ].join('\n')
+    expect(relativeImports(code, false)).toEqual(['./a', './b', './c', './d', './e', './f', './g', './h'])
+    expect(relativeImports(code, true)).toEqual(['./a', './c', './d', './e', './g', './h'])
+  })
+
+  it('[spec:port-inspection/windows-inspection-queries-only] the Windows inspector starts nothing itself, the reader it is given runs only `ports`, and the helper\'s ports opens processes for query only', () => {
+    // 1. The inspector's own closure starts, signals and connects to nothing, and cannot reach the helper's runners.
+    const inspector = 'src/main/platform/windows/ports.ts'
+    expect(closureViolations(inspector, entries[inspector] ?? null)).toEqual([])
+    // Its whole closure (design D6): the types, the identity, the protocol (zod) and the address formatter, and the shared API types.
+    const files = importClosure(join(root, inspector)).map((file) => relative(root, file).replaceAll('\\', '/'))
+    expect(files.filter((file) => !file.startsWith('src/shared/')).sort()).toEqual([
+      'src/main/platform/address.ts',
+      'src/main/platform/types.ts',
+      'src/main/platform/windows/identity.ts',
+      'src/main/platform/windows/ports.ts',
+      'src/main/platform/windows/protocol.ts',
+    ])
+
+    // 2. The reader it is given runs the helper with exactly `['ports']` and an empty stdin, and nothing else.
+    const helperTool = withoutComments(readFileSync(join(root, 'src/main/platform/windows/helper-tool.ts'), 'utf8'))
+    const declaration = /\bexport function createHelperPortsReader\s*\([^)]*\)\s*:\s*\(\)\s*=>\s*Promise<string>\s*\{/.exec(helperTool)
+    expect(declaration, 'createHelperPortsReader is declared once').not.toBeNull()
+    expect(helperTool.match(/\bfunction createHelperPortsReader\b/g)).toHaveLength(1)
+    const reader = braceBody(helperTool, (declaration?.index ?? 0) + (declaration?.[0].length ?? 0) - 1) ?? ''
+    expect(reader.match(/\brunHelperTool\s*\(/g), 'one helper run').toHaveLength(1)
+    expect(reader).toMatch(/\brunHelperTool\(\s*helperPath\s*,\s*\[\s*'ports'\s*\]\s*,\s*''\s*,\s*\{/)
+    // It starts nothing other than through that run.
+    expect(reader).not.toMatch(/\bspawnHelper\s*\(|\bspawnChild\s*\(|\bexecFile\b|\bspawn\s*\(|\bfork\s*\(|\bkill\s*\(/)
+
+    // 3. helper-tool, which does start the helper, loads no module that runs the helper otherwise (`run`
+    // over a pipe) or ends processes: helper-client is reached by type only (group 1 review).
+    const helperToolSource = readFileSync(join(root, 'src/main/platform/windows/helper-tool.ts'), 'utf8')
+    expect(relativeImports(helperToolSource, false), 'helper-tool still names SpawnHelper').toContain('./helper-client')
+    expect(relativeImports(helperToolSource, true), 'helper-tool imports helper-client by type only').not.toContain('./helper-client')
+    for (const file of importClosure(join(root, 'src/main/platform/windows/helper-tool.ts'), { valueOnly: true })) {
+      expect(relative(root, file), 'helper-tool loads it at run time').not.toMatch(/helper-client|process-tree|supervisor|survivors|ports\.ts$|[\\/]index\.ts$/)
+    }
+
+    // 4. The helper's `ports` subcommand, which the reader runs, opens processes for query only (task 2.3).
+    expect(portsCommandViolations(readFileSync(join(root, 'src/main/platform/windows/helper/veydr-helper.cs'), 'utf8'))).toEqual([])
+  })
+
+  it('the Windows composition gives a port inspector nothing but the helper\'s ports reader', () => {
+    const composition = withoutComments(readFileSync(join(root, 'src/main/platform/windows/index.ts'), 'utf8'))
+    const created = composition.match(/\bcreateWindowsPortInspector\s*\(/g)?.length ?? 0
+    // Each inspector reads ports through a reader of the platform's helper, and gets nothing else but the log.
+    const wired = [...composition.matchAll(/\bcreateWindowsPortInspector\(\{\s*readPorts:\s*createHelperPortsReader\(\{([^{}]*)\}\)\s*(?:,\s*(?:\.\.\.logOption|log:\s*options\.log)\s*)?,?\s*\}\)/g)]
+    expect(wired).toHaveLength(created)
+    for (const [, readerOptions] of wired) {
+      expect((readerOptions ?? '').split(',').map((option) => option.trim().split(':')[0]).filter((key) => key !== '').sort()).toEqual(['check', 'helperPath'])
+    }
+    expect(composition.match(/\bcreateHelperPortsReader\s*\(/g)?.length ?? 0).toBe(created)
+    // Until task 5.1 wires it, Windows has no port inspector and rejects every listing.
+    if (created === 0) expect(composition).toMatch(/portInspector: UNSUPPORTED_PORT_INSPECTOR,/)
   })
 
   describe('the helper\'s ports subcommand (task 2.3; design D6)', () => {
@@ -425,9 +565,6 @@ static class Native
       expect(violations.some((violation) => reason.test(violation)), violations.join('\n')).toBe(true)
     })
   })
-
-  // Group 3 (task 3.3) adds the Windows inspector's import closure and tags both halves together.
-  it.todo('[spec:port-inspection/windows-inspection-queries-only] the Windows inspector starts nothing itself, and the helper\'s ports opens processes for query only')
 
   it('the service receives nothing but the inspector and the attribution sets', () => {
     expectTypeOf<keyof PortServiceDeps>().toEqualTypeOf<'inspector' | 'attribution'>()

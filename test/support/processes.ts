@@ -331,14 +331,25 @@ const isChromiumHelper = (row: WindowsRow): boolean => row.name.toLowerCase() ==
  * Chromium's own sandboxed processes, which never run a command. Unreadable processes started by
  * anything else are other users' or the system's, and cannot carry the tag.
  *
+ * Windows never clears a parent PID, so a process whose parent exited long ago (csrss.exe and
+ * wininit.exe, started at boot by a session's smss.exe) names a PID that a tagged process may now
+ * hold. A process created before that tagged process cannot be its child, and is not counted; when
+ * either creation time is unknown (`0`), it is, so the check never passes for lack of a time.
+ *
  * The check is one level deep: a child of an unreadable process, or an unreadable process whose
  * tagged parent has already exited, is not caught. No fixture starts such a process.
  */
 export function taggedFromRows(rows: readonly WindowsRow[]): ProcessView[] {
   const tagged = rows.filter((row) => row.status === 'tagged')
-  const taggedPids = new Set(tagged.map((row) => row.pid))
+  const taggedStart = new Map(tagged.map((row) => [row.pid, BigInt(row.starttime)]))
+  const startedBy = (row: WindowsRow): boolean => {
+    const parentStart = taggedStart.get(row.ppid)
+    if (parentStart === undefined) return false
+    const start = BigInt(row.starttime)
+    return parentStart === 0n || start === 0n || start >= parentStart
+  }
   const missed = rows.filter(
-    (row) => row.status === 'unreadable' && taggedPids.has(row.ppid) && !WINDOWS_INFRASTRUCTURE.has(row.name.toLowerCase()) && !isChromiumHelper(row),
+    (row) => row.status === 'unreadable' && startedBy(row) && !WINDOWS_INFRASTRUCTURE.has(row.name.toLowerCase()) && !isChromiumHelper(row),
   )
   if (missed.length > 0) {
     throw new Error(`could not read the environment of processes started by tagged ones: ${missed.map((row) => `${row.name} (PID ${row.pid}, parent ${row.ppid})`).join(', ')}`)

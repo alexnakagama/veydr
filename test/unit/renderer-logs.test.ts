@@ -4,7 +4,7 @@ import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
 import { colorCss, spanStyle } from '../../src/renderer/src/ansi-style'
-import { formatCaptureTime, LogView, REDACTION_NOTICE, RETENTION_NOTICE } from '../../src/renderer/src/LogView'
+import { formatCaptureTime, LOG_ROW_HEIGHT, LogView, REDACTION_NOTICE, RETENTION_NOTICE, scrollChange } from '../../src/renderer/src/LogView'
 import { connectLogStore, createLogViewStore, filterItems, plainText, utf8Length, type LogItem } from '../../src/renderer/src/state/logs'
 import { DEFAULT_STYLE } from '../../src/shared/ansi'
 import type { ApiResult, LogBatch, LogLine, ReadLogsRequest, ReadLogsResponse, VeydrApi } from '../../src/shared/api'
@@ -345,5 +345,31 @@ describe('log view rendering', () => {
     for (const file of files(root)) {
       expect(readFileSync(file, 'utf8'), file).not.toMatch(/dangerouslySetInnerHTML|innerHTML|outerHTML|insertAdjacentHTML|document\.write|createContextualFragment/)
     }
+  })
+})
+
+describe('following the log on scroll', () => {
+  // A 400 px view over 2,000 px of rows: the end is at scrollTop 1,600.
+  const at = (scrollTop: number, following: boolean, ownScrollTop: number | null = null) => scrollChange({ following, scrollTop, scrollHeight: 2_000, clientHeight: 400, ownScrollTop })
+
+  it('pauses when the user scrolls up, and resumes when they scroll back to the end', () => {
+    expect(at(0, true)).toBe('pause')
+    expect(at(1_600 - LOG_ROW_HEIGHT - 1, true)).toBe('pause')
+    expect(at(1_600, false)).toBe('follow')
+    // Within one row of the end counts as the end.
+    expect(at(1_600 - LOG_ROW_HEIGHT, false)).toBe('follow')
+  })
+
+  it('changes nothing while the position already matches', () => {
+    expect(at(1_600, true)).toBeNull()
+    expect(at(0, false)).toBeNull()
+  })
+
+  it('[spec:process-logs/pause-following] does not undo Pause with the scroll event of the view\'s own scroll to the end', () => {
+    // The view scrolled itself to 1,600 while following; the user pressed Pause before that event was handled.
+    expect(at(1_600, false, 1_600)).toBeNull()
+    // Once the user scrolls, to the end again (new rows arrived) or up, it is theirs.
+    expect(scrollChange({ following: false, scrollTop: 1_620, scrollHeight: 2_020, clientHeight: 400, ownScrollTop: 1_600 })).toBe('follow')
+    expect(at(0, true, 1_600)).toBe('pause')
   })
 })
