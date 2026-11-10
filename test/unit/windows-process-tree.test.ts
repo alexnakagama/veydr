@@ -116,19 +116,19 @@ describe('full paths', () => {
 
 describe('the helper\'s protocol version', () => {
   it('rejects a helper that speaks another version, and starts no run', async () => {
-    const error = await spawnError(createWindowsProcessTree(options('3\n')).spawn(plan()))
+    const error = await spawnError(createWindowsProcessTree(options('4\n')).spawn(plan()))
     expect(error).toMatchObject({
       reason: 'other',
-      message: `The Windows helper ${helperPath} speaks protocol version 3, but Veydr needs version ${PROTOCOL_VERSION}`,
+      message: `The Windows helper ${helperPath} speaks protocol version 4, but Veydr needs version ${PROTOCOL_VERSION}`,
     })
     expect(versionReads).toEqual([helperPath])
     expect(spawned).toEqual([])
   })
 
-  it('rejects a stale version 1 helper by name, and starts no run', async () => {
-    expect(PROTOCOL_VERSION).toBe(2)
-    const error = await spawnError(createWindowsProcessTree(options('1\r\n')).spawn(plan()))
-    expect(error).toMatchObject({ reason: 'other', message: `The Windows helper ${helperPath} speaks protocol version 1, but Veydr needs version 2` })
+  it('rejects a stale version 2 helper by name, and starts no run', async () => {
+    expect(PROTOCOL_VERSION).toBe(3)
+    const error = await spawnError(createWindowsProcessTree(options('2\r\n')).spawn(plan()))
+    expect(error).toMatchObject({ reason: 'other', message: `The Windows helper ${helperPath} speaks protocol version 2, but Veydr needs version 3` })
     expect(spawned).toEqual([])
   })
 
@@ -605,10 +605,10 @@ describe('survivors', () => {
       )
       writeFileSync(helperPath, 'a helper')
       await expect(
-        createWindowsProcessTree(survivorOptions(() => ({ stdout: inspected() }), { readHelperVersion: () => Promise.resolve('3\n') })).findSurvivors([
+        createWindowsProcessTree(survivorOptions(() => ({ stdout: inspected() }), { readHelperVersion: () => Promise.resolve('2\n') })).findSurvivors([
           entry(identity(LEADER)),
         ]),
-      ).rejects.toThrow(/speaks protocol version 3/)
+      ).rejects.toThrow(/speaks protocol version 2, but Veydr needs version 3/)
       expect(calls).toEqual([])
     })
   })

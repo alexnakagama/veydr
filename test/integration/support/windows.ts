@@ -1,9 +1,9 @@
 import { execFileSync } from 'node:child_process'
 import { sleep } from '../../support/proc'
 
-// Windows test helpers shared by the Windows integration tests (windows-process-tree.test.ts and
-// windows-commands.test.ts). Every claim about which processes exist is read with Win32_Process,
-// independently of the helper and of the code under test.
+// Windows test helpers shared by the Windows integration tests (windows-process-tree.test.ts,
+// windows-commands.test.ts and windows-ports.test.ts). Every claim about which processes exist is
+// read with Win32_Process, independently of the helper and of the code under test.
 
 
 /** Runs a Windows PowerShell script, passed encoded so that no quoting reaches the command line. */
@@ -193,4 +193,33 @@ public static class VeydrJobs {
 [VeydrJobs]::InJob(${String(Math.trunc(pid))})`,
   )
   return JSON.parse(output.trim()) as boolean | null
+}
+
+/**
+ * Creation times (decimal FILETIME) of the live processes among `pids`, read with GetProcessTimes
+ * from PowerShell, independently of the helper. A PID that cannot be read is left out.
+ */
+export function creationTimes(pids: readonly number[]): Map<number, string> {
+  const list = pids.map((pid) => String(Math.trunc(pid))).join(',')
+  const output = powershell(
+    `Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class VeydrTimes {
+  [DllImport("kernel32.dll", SetLastError = true)] static extern IntPtr OpenProcess(uint access, bool inherit, uint pid);
+  [DllImport("kernel32.dll", SetLastError = true)] static extern bool GetProcessTimes(IntPtr process, out long creation, out long exit, out long kernel, out long user);
+  [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr handle);
+  public static string Created(uint pid) {
+    IntPtr process = OpenProcess(0x1000, false, pid);
+    if (process == IntPtr.Zero) return "";
+    try {
+      long creation, exit, kernel, user;
+      return GetProcessTimes(process, out creation, out exit, out kernel, out user) ? creation.ToString(System.Globalization.CultureInfo.InvariantCulture) : "";
+    } finally { CloseHandle(process); }
+  }
+}
+'@
+ConvertTo-Json -Compress -InputObject @(@(${list}) | ForEach-Object { [pscustomobject]@{ pid = [int]$_; created = [VeydrTimes]::Created([uint32]$_) } } | Where-Object { $_.created -ne '' })`,
+  )
+  return new Map((parseArray(output) as { pid: number; created: string }[]).map((p) => [p.pid, p.created]))
 }

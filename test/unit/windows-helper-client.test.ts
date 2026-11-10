@@ -350,7 +350,7 @@ describe('starting the helper', () => {
     const pending = start(harness.options())
     const helper = await waitForHelper()
     await helper.connect(JSON.stringify({ type: 'ready', version: PROTOCOL_VERSION + 1, token: await helper.token(), pid: HELPER_PID }))
-    const error = await expectSpawnError(pending, /protocol version 3.*needs version 2/)
+    const error = await expectSpawnError(pending, new RegExp(`protocol version ${PROTOCOL_VERSION + 1}.*needs version ${PROTOCOL_VERSION}`))
     expect(error.reason).toBe('other')
     expect(helper.kills).toEqual(['SIGKILL'])
     expect(helper.stdout.destroyed).toBe(true)
@@ -791,7 +791,7 @@ describe('with a real helper process', () => {
       const [token, request] = input.split('\\n')
       const s = net.connect(pipe, () => {
         const send = (m) => s.write(JSON.stringify(m) + '\\n')
-        send({ type: 'ready', version: 2, token, pid: process.pid })
+        send({ type: 'ready', version: ${PROTOCOL_VERSION}, token, pid: process.pid })
         send({ type: 'started', pid: process.pid, created: '134067012345678901', utf8Console: false, ansiCodePage: 1252, consoleError: 'no console in the test' })
         process.stdout.write('request:' + request + ' cwd-env:' + process.env.VEYDR_TEST_MARK + '\\n')
         send({ type: 'members', answer: false, members: [] })

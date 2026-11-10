@@ -61,7 +61,9 @@ describe('createHelperCheck', () => {
   })
 
   it('refuses another protocol version with a SpawnError naming both versions, and does not remember the failure', async () => {
+    // A version 2 helper, built before `ports` existed (add-windows-port-inspection design D2).
     const stale = PROTOCOL_VERSION - 1
+    expect(stale).toBe(2)
     let version = `${stale}\n`
     const check = createHelperCheck(helperPath, () => {
       versionReads++
