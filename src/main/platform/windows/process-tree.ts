@@ -1,4 +1,4 @@
-import { execFile, spawn as spawnChild, type ChildProcess } from 'node:child_process'
+import { spawn as spawnChild, type ChildProcess } from 'node:child_process'
 import { once } from 'node:events'
 import { stat } from 'node:fs/promises'
 import { DEFAULT_STOP_TIMEOUT_MS } from '../../../shared/config'
@@ -14,25 +14,26 @@ import {
   type SpawnHelper,
   type WindowsManagedProcess,
 } from './helper-client'
+import { createHelperCheck, runHelperTool, type HelperCheck, type ReadHelperVersion } from './helper-tool'
 import { parseWindowsIdentity, windowsIdentity } from './identity'
 import {
   encodeIdentities,
   MAX_GRACE_MS,
   MAX_TOOL_IDENTITIES,
-  MAX_TOOL_OUTPUT_BYTES,
   parseInspectOutput,
   parseTerminateOutput,
-  PROTOCOL_VERSION,
   ProtocolError,
   type HelperMember,
   type WindowsProcessRef,
 } from './protocol'
 
-/** Reads what `veydr-helper.exe version` prints; rejects if it cannot be run. */
-export type ReadHelperVersion = (helperPath: string) => Promise<string>
-
 export interface WindowsProcessTreeOptions extends HelperClientOptions {
-  /** `veydr-helper.exe version` outside tests. */
+  /**
+   * The check of `helperPath`, shared with everything else that runs the same helper; its
+   * `helperPath` must be this tree's. Without it the tree makes its own, with `readHelperVersion`.
+   */
+  readonly helperCheck?: HelperCheck
+  /** `veydr-helper.exe version` outside tests; only without `helperCheck`. */
   readonly readHelperVersion?: ReadHelperVersion
   /** Time survivors get to end after Ctrl+Break (the default stop timeout, 5 s). */
   readonly survivorGraceMs?: number
@@ -51,30 +52,13 @@ export interface WindowsProcessTree extends Pick<ProcessTree, 'launchDetached' |
   spawn(plan: SpawnPlan): Promise<WindowsManagedProcess>
 }
 
-/** How long `veydr-helper.exe version` may take. */
-export const VERSION_TIMEOUT_MS = 10_000
-
 /** How long `veydr-helper.exe inspect` may take. */
 export const INSPECT_TIMEOUT_MS = 30_000
-
-/** Most bytes of a subcommand's stderr kept for its error message. */
-const MAX_TOOL_STDERR_BYTES = 4096
 
 const errnoOf = (error: unknown): string | undefined => (error as NodeJS.ErrnoException | null)?.code
 const messageOf = (error: unknown): string => (error instanceof Error ? error.message : String(error))
 
 export { isFullyQualified }
-
-/** Runs `<helper> version`, hidden, and resolves with its stdout. */
-export const runHelperVersion: ReadHelperVersion = (helperPath) =>
-  new Promise((resolve, reject) => {
-    execFile(
-      helperPath,
-      ['version'],
-      { encoding: 'utf8', windowsHide: true, timeout: VERSION_TIMEOUT_MS, maxBuffer: 1024, shell: false },
-      (error: Error | null, stdout: string) => (error === null ? resolve(stdout) : reject(error)),
-    )
-  })
 
 /**
  * Windows process trees (add-windows-process-supervision design D1): each command runs through its
@@ -90,33 +74,8 @@ export function createWindowsProcessTree(options: WindowsProcessTreeOptions): Wi
   requireMs('survivorGraceMs', survivorGraceMs, 0)
   requireMs('inspectTimeoutMs', inspectTimeoutMs, 1)
   requireMs('stopMarginMs', stopMarginMs, 0)
-  const readVersion = options.readHelperVersion ?? runHelperVersion
-  /** The checked helper file (size and modification time) and its check, shared by concurrent spawns. */
-  let checked: { readonly key: string; readonly result: Promise<void> } | null = null
-
-  async function checkHelper(): Promise<void> {
-    const { helperPath } = options
-    if (helperPath === '') throw new SpawnError('other', 'The Windows helper path is not configured')
-    // A bare name would be looked up on PATH.
-    if (!isFullyQualified(helperPath)) throw new SpawnError('other', `The Windows helper path must be absolute: ${helperPath}`)
-    let key: string
-    try {
-      const info = await stat(helperPath)
-      if (!info.isFile()) throw new Error('not a file')
-      key = `${info.size}:${info.mtimeMs}`
-    } catch {
-      throw new SpawnError('other', `Windows helper not found: ${helperPath}`)
-    }
-    if (checked?.key !== key) {
-      const result = verifyVersion(helperPath, readVersion)
-      checked = { key, result }
-      // A failed check is not remembered: the next spawn checks again.
-      result.catch(() => {
-        if (checked?.result === result) checked = null
-      })
-    }
-    return checked.result
-  }
+  const helperCheck = sharedHelperCheck(options)
+  const checkHelper = (): Promise<void> => helperCheck.verify()
 
   /**
    * Runs a survivor subcommand on `targets`, at most MAX_TOOL_IDENTITIES per call; `call` gives each
@@ -268,111 +227,23 @@ export function createWindowsProcessTree(options: WindowsProcessTreeOptions): Wi
 
 const refKey = (ref: WindowsProcessRef): string => `${ref.pid}:${ref.created}`
 
-/** Largest delay `setTimeout` honours; longer ones fire at once. */
-const MAX_TIMER_MS = 0x7fff_ffff
+/**
+ * The tree's helper check: the one it was given, which must check the very file the tree runs, or
+ * its own. A check of another file would let the tree run a helper whose version nobody read.
+ */
+function sharedHelperCheck(options: WindowsProcessTreeOptions): HelperCheck {
+  const { helperCheck } = options
+  if (helperCheck === undefined) return createHelperCheck(options.helperPath, options.readHelperVersion)
+  if (options.readHelperVersion !== undefined) throw new RangeError('Give the Windows process tree either helperCheck or readHelperVersion, not both')
+  if (helperCheck.helperPath !== options.helperPath) {
+    throw new RangeError(`The helper check is for ${helperCheck.helperPath}, but the process tree runs ${options.helperPath}`)
+  }
+  return helperCheck
+}
 
 function requireMs(name: string, value: number, min: number): void {
   if (!Number.isInteger(value) || value < min || value > MAX_GRACE_MS) {
     throw new RangeError(`${name} must be an integer from ${min} to ${MAX_GRACE_MS}: ${String(value)}`)
-  }
-}
-
-/** `setTimeout` for any delay, also beyond MAX_TIMER_MS; returns its cancel function. */
-function setLongTimeout(ms: number, cb: () => void): () => void {
-  const deadline = Date.now() + ms
-  let timer: NodeJS.Timeout
-  const arm = (): void => {
-    const left = Math.max(0, deadline - Date.now())
-    timer = left > MAX_TIMER_MS ? setTimeout(arm, MAX_TIMER_MS) : setTimeout(cb, left)
-  }
-  arm()
-  return () => clearTimeout(timer)
-}
-
-/**
- * Runs `<helper> <args>`, hidden and never detached, writes `input` on its stdin, and resolves with
- * its stdout once it exited with 0. Rejects if it cannot be started, exits otherwise, prints more
- * than MAX_TOOL_OUTPUT_BYTES, or takes longer than `timeoutMs` (it is then killed).
- */
-export function runHelperTool(
-  helperPath: string,
-  args: readonly string[],
-  input: string,
-  { spawnHelper, timeoutMs }: { readonly spawnHelper: SpawnHelper; readonly timeoutMs: number },
-): Promise<string> {
-  const what = `The Windows helper's ${args[0] ?? ''}`
-  return new Promise((resolve, reject) => {
-    let child
-    try {
-      child = spawnHelper(helperPath, args, { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true, detached: false, shell: false })
-    } catch (error) {
-      reject(new Error(`${what} could not be started: ${messageOf(error)}`))
-      return
-    }
-    const { stdin, stdout, stderr } = child
-    let settled = false
-    const finish = (error: Error | null, output = ''): void => {
-      if (settled) return
-      settled = true
-      cancelTimer()
-      if (error === null) return resolve(output)
-      // Whatever it was doing, it must not go on unobserved.
-      if (child.exitCode === null && child.signalCode === null) {
-        try {
-          child.kill('SIGKILL')
-        } catch {
-          // Already gone.
-        }
-      }
-      reject(error)
-    }
-    const cancelTimer = setLongTimeout(timeoutMs, () => finish(new Error(`${what} did not finish within ${timeoutMs} ms`)))
-    if (stdin === null || stdout === null || stderr === null) {
-      finish(new Error(`${what} was started without pipes`))
-      return
-    }
-    const out: Buffer[] = []
-    let outBytes = 0
-    let err = Buffer.alloc(0)
-    child.on('error', (error) => finish(new Error(`${what} could not be run: ${error.message}`)))
-    stdout.on('data', (chunk: Buffer) => {
-      outBytes += chunk.length
-      if (outBytes > MAX_TOOL_OUTPUT_BYTES) return finish(new ProtocolError('line-too-long', `${what} printed more than ${MAX_TOOL_OUTPUT_BYTES} bytes`))
-      out.push(chunk)
-    })
-    stderr.on('data', (chunk: Buffer) => {
-      if (err.length < MAX_TOOL_STDERR_BYTES) err = Buffer.concat([err, chunk]).subarray(0, MAX_TOOL_STDERR_BYTES)
-    })
-    // The helper may exit before reading all of stdin (e.g. on a usage error); its exit says why.
-    stdin.on('error', () => undefined)
-    stdin.end(input)
-    child.on('close', (code: number | null, signal: NodeJS.Signals | null) => {
-      if (code !== 0) {
-        const detail = err.toString('utf8').trim()
-        return finish(new Error(`${what} failed (exit code ${String(code ?? signal)})${detail === '' ? '' : `: ${detail}`}`))
-      }
-      let text: string
-      try {
-        text = new TextDecoder('utf-8', { fatal: true }).decode(Buffer.concat(out))
-      } catch {
-        return finish(new ProtocolError('malformed', `${what} output is not valid UTF-8`))
-      }
-      finish(null, text)
-    })
-  })
-}
-
-async function verifyVersion(helperPath: string, readVersion: ReadHelperVersion): Promise<void> {
-  let output: string
-  try {
-    output = await readVersion(helperPath)
-  } catch (error) {
-    throw new SpawnError('other', `The Windows helper ${helperPath} could not report its protocol version: ${messageOf(error)}`)
-  }
-  const version = output.trim()
-  if (version !== String(PROTOCOL_VERSION)) {
-    const shown = /^[0-9]{1,9}$/.test(version) ? version : JSON.stringify(version.slice(0, 40))
-    throw new SpawnError('other', `The Windows helper ${helperPath} speaks protocol version ${shown}, but Veydr needs version ${PROTOCOL_VERSION}`)
   }
 }
 

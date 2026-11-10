@@ -205,7 +205,7 @@ describe('ports view', () => {
     expect(render({ snapshot: null, loading: true, error: null })).toContain('Reading listening ports…')
   })
 
-  it('[spec:port-inspection/ports-on-windows] shows that port inspection is not yet available on Windows', async () => {
+  it('shows that port inspection is not yet available on Windows', async () => {
     // Main: the Windows port inspector is unsupported, and IPC turns that into a typed error.
     const listeners = new Map<string, (event: InvokeEvent, ...args: unknown[]) => unknown>()
     const frame = { url: 'app://veydr/index.html' }

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { isFiletime, parseWindowsIdentity, sameWindowsIdentity, windowsIdentity } from '../../src/main/platform/windows/identity'
+import { imageName, isFiletime, parseWindowsIdentity, sameWindowsIdentity, windowsIdentity } from '../../src/main/platform/windows/identity'
 
 // The Windows process identity: PID plus creation time as a decimal FILETIME string
 // (add-windows-process-supervision design D4).
@@ -42,5 +42,19 @@ describe('Windows process identity', () => {
     // Invalid identities are never equal, not even to themselves.
     const invalid = { pid: 4242, token: '' }
     expect(sameWindowsIdentity(invalid, invalid)).toBe(false)
+  })
+})
+
+describe('imageName', () => {
+  it('is the file name of an image path, with either separator', () => {
+    expect(imageName('C:\\Windows\\System32\\svchost.exe')).toBe('svchost.exe')
+    expect(imageName('C:/Program Files/nodejs/node.exe')).toBe('node.exe')
+    expect(imageName('\\\\?\\C:\\tools\\a/b\\c.exe')).toBe('c.exe')
+    expect(imageName('System')).toBe('System')
+  })
+
+  it('is empty for an empty path or one ending in a separator, so callers fall back to the PID', () => {
+    expect(imageName('')).toBe('')
+    expect(imageName('C:\\tools\\')).toBe('')
   })
 })

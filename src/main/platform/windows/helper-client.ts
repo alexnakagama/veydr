@@ -7,7 +7,7 @@ import { SpawnError } from '../errors'
 import type { ExitInfo, ManagedProcess, PlatformLog, ProcInfo, ProcessIdentity, SpawnPlan, StopResult } from '../types'
 import { ansiCodePageLabel } from './code-page'
 import { helperLaunch } from './command-line'
-import { windowsIdentity } from './identity'
+import { imageName, windowsIdentity } from './identity'
 import {
   encodeControlMessage,
   encodeRunRequest,
@@ -62,9 +62,6 @@ const asError = (error: unknown): Error => (error instanceof Error ? error : new
 
 /** A fresh named pipe in the local namespace, named with 128 random bits (design D2). */
 export const randomPipePath = (): string => `\\\\.\\pipe\\veydr-${randomBytes(16).toString('hex')}`
-
-/** The image file name of a full Windows image path. */
-export const imageName = (image: string): string => image.slice(Math.max(image.lastIndexOf('\\'), image.lastIndexOf('/')) + 1)
 
 /** A job member as shown to the user; the image path stands in for the command line (design D4). */
 export const procInfo = (m: HelperMember): ProcInfo => ({ pid: m.pid, name: imageName(m.image) || `PID ${m.pid}`, commandLine: m.image })

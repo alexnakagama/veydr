@@ -129,6 +129,9 @@ describe('read-only port inspection', () => {
     }
   })
 
+  // Groups 2 and 3 (tasks 2.3 and 3.3): the Windows inspector's import closure and the helper's `ports` source.
+  it.todo('[spec:port-inspection/windows-inspection-queries-only] the Windows inspector starts nothing itself, and the helper\'s ports opens processes for query only')
+
   it('the service receives nothing but the inspector and the attribution sets', () => {
     expectTypeOf<keyof PortServiceDeps>().toEqualTypeOf<'inspector' | 'attribution'>()
     expectTypeOf<keyof PortServiceDeps['inspector']>().toEqualTypeOf<'list'>()

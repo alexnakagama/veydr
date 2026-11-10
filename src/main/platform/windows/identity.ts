@@ -39,3 +39,10 @@ export function parseWindowsIdentity(identity: ProcessIdentity): { readonly pid:
 export function sameWindowsIdentity(a: ProcessIdentity, b: ProcessIdentity): boolean {
   return parseWindowsIdentity(a) !== null && a.pid === b.pid && a.token === b.token
 }
+
+/**
+ * The image file name of a full Windows image path (`C:\Windows\System32\svchost.exe` →
+ * `svchost.exe`); a bare name such as `System` unchanged; empty for an empty path or one that
+ * ends in a separator.
+ */
+export const imageName = (image: string): string => image.slice(Math.max(image.lastIndexOf('\\'), image.lastIndexOf('/')) + 1)
