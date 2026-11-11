@@ -60,6 +60,21 @@ param(
 Set-StrictMode -Version 3.0
 $ErrorActionPreference = 'Stop'
 
+# Windows PowerShell's own module directories, before any cmdlet that is auto-loaded from a module
+# runs. Started from PowerShell 7 through other programs (a CI step's pwsh, then npm, node and
+# vitest), this process inherits PSModulePath with PowerShell 7's module directories first, and
+# would load PowerShell 7's Microsoft.PowerShell.Utility or .Security in their place, which fails
+# (the windows job of #53: Get-FileHash not found, then ConvertTo-SecureString's types clashing).
+# pwsh removes them itself only when it starts powershell.exe directly, as windows-probe.yml does.
+# The machine's PSModulePath holds the system directory; Program Files' is added as Windows
+# PowerShell does by default. User module directories are left out: the script needs none. No
+# cmdlet is used here, since any of them could come from the wrong module.
+$modulePaths = @([System.IO.Path]::Combine($env:ProgramFiles, 'WindowsPowerShell', 'Modules'))
+foreach ($entry in ([string][Environment]::GetEnvironmentVariable('PSModulePath', 'Machine') -split ';')) {
+  if ($entry -ne '' -and $modulePaths -notcontains $entry) { $modulePaths += $entry }
+}
+$env:PSModulePath = $modulePaths -join ';'
+
 $AccountName = 'veydr-probe'
 $ProbeRoot = 'C:\veydr-probe-std'
 # The only file name -Helper may have, compared case-sensitively.
@@ -334,10 +349,8 @@ function Get-HelperProblem([string] $Path) {
   return $null
 }
 
-# The SHA-256 of a file, as upper-case hex, through .NET rather than Get-FileHash: that cmdlet is a
-# script function of the Microsoft.PowerShell.Utility module, which is auto-loaded from
-# PSModulePath, and a Windows PowerShell started from PowerShell 7 (the default shell of a CI step)
-# inherits PowerShell 7's module directories first, so it finds PowerShell 7's module and fails.
+# The SHA-256 of a file, as upper-case hex, through .NET rather than Get-FileHash, a script function
+# of a module: it then depends on no module being found on PSModulePath (see above).
 function Get-Sha256([string] $Path) {
   $sha = [System.Security.Cryptography.SHA256]::Create()
   try {

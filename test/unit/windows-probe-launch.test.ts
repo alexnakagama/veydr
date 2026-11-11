@@ -671,6 +671,26 @@ describe('standard-user.ps1 -Helper', () => {
     // PowerShell 7, whose module directories come first there (the windows job's first run failed so).
     expect(lines.filter((l) => !l.trimStart().startsWith('#') && /Get-FileHash/i.test(l))).toEqual([])
     expect(text).toContain('[System.Security.Cryptography.SHA256]::Create()')
+    // Windows PowerShell's own module path, set before the first cmdlet that a module provides: started
+    // through npm from a PowerShell 7 step, the script inherits PowerShell 7's module directories first
+    // (the windows job's second run failed so, in ConvertTo-SecureString).
+    const modulePath = at("$env:PSModulePath = $modulePaths -join ';'")
+    const block = lines.slice(at("$modulePaths = @([System.IO.Path]::Combine($env:ProgramFiles, 'WindowsPowerShell', 'Modules'))"), modulePath + 1)
+    expect(block.map((l) => l.trim())).toEqual([
+      "$modulePaths = @([System.IO.Path]::Combine($env:ProgramFiles, 'WindowsPowerShell', 'Modules'))",
+      "foreach ($entry in ([string][Environment]::GetEnvironmentVariable('PSModulePath', 'Machine') -split ';')) {",
+      "if ($entry -ne '' -and $modulePaths -notcontains $entry) { $modulePaths += $entry }",
+      '}',
+      "$env:PSModulePath = $modulePaths -join ';'",
+    ])
+    // Right after the preamble: no code between $ErrorActionPreference and the reset, which is before every cmdlet of the run.
+    const stop = at("$ErrorActionPreference = 'Stop'")
+    const reset = at("$modulePaths = @([System.IO.Path]::Combine(")
+    expect(stop).toBeGreaterThan(at('[CmdletBinding('))
+    expect(lines.slice(stop + 1, reset).filter((l) => l.trim() !== '' && !l.trimStart().startsWith('#'))).toEqual([])
+    // The reset itself calls no cmdlet (a Verb-Noun command), and is the only write of PSModulePath.
+    expect(block.filter((l) => /\b[A-Z][a-z]+-[A-Z][A-Za-z]+\b/.test(l))).toEqual([])
+    expect(lines.filter((l) => /\$env:PSModulePath\s*=/.test(l))).toEqual([lines[modulePath]])
     // Every directory above the file too, up to the drive: a junction on the way is refused.
     expect(check).toContain('for ($directory = [System.IO.Path]::GetDirectoryName($Path); -not [string]::IsNullOrEmpty($directory); $directory = [System.IO.Path]::GetDirectoryName($directory))')
     expect(check).toContain('return "must not lead through a link, but $directory is one"')
