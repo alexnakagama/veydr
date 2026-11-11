@@ -45,9 +45,16 @@ test('[windows-only: the process-tree helper] the app finds the helper below its
   try {
     const { app, window } = veydr
     // The app's path is the repository root, so the helper it uses is the one the windows job built.
-    const appPath = await app.evaluate(({ app: electronApp }) => electronApp.getAppPath())
+    // The same three values the composition root passes (src/main/index.ts); `process.resourcesPath`
+    // is a global Electron adds to the main process's `process`, not an `app` API.
+    const { appPath, packaged, resourcesPath } = await app.evaluate(({ app: electronApp }) => ({
+      appPath: electronApp.getAppPath(),
+      packaged: electronApp.isPackaged,
+      resourcesPath: process.resourcesPath,
+    }))
     expect(appPath).toBe(repoRoot)
-    expect(existsSync(windowsHelperPath(appPath))).toBe(true)
+    expect(packaged).toBe(false)
+    expect(existsSync(windowsHelperPath({ packaged, appPath, resourcesPath }))).toBe(true)
     expect(await appInfo(window)).toMatchObject({ platform: 'windows', platformSupported: true })
 
     // Starting a command needs the helper: a missing or stale one fails the start instead.

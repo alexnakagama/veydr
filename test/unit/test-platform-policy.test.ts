@@ -277,7 +277,7 @@ describe('platform skip policy (design D7)', () => {
     // The allowed dispatch is the one in processes.ts, and nothing else there branches on the platform.
     expect(violations.filter((v) => v.file === PROCESS_DISPATCH.file).map(describeViolation)).toHaveLength(PROCESS_DISPATCH.count)
     // The scan is not passing vacuously: it sees every test tree and the guarded Linux-only suites.
-    for (const tree of ['test/unit/', 'test/integration/', 'test/e2e/', 'test/packaging/']) {
+    for (const tree of ['test/unit/', 'test/integration/', 'test/e2e/', 'test/packaging/', 'test/packaging-windows/']) {
       expect(files.some((f) => f.startsWith(tree)), tree).toBe(true)
     }
     expect(files.length).toBeGreaterThan(100)

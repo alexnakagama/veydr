@@ -30,8 +30,8 @@ Plan review (2026-11-11): reviewer2 found 1 high, 4 medium, 5 low and 2 nits in 
 
 ## 1. Helper path and scenario mapping
 
-- [ ] 1.1 Change `windowsHelperPath` in `src/main/platform/index.ts` to take `{ packaged, appPath, resourcesPath }` (design D2): packaged gives `<resourcesPath>\veydr-helper.exe`, unpackaged keeps `<appPath>\out-helper\veydr-helper.exe`. Update the caller in `src/main/index.ts` (`app.isPackaged`, `app.getAppPath()`, `process.resourcesPath`) and the comment that records this for W4. Verify: `test/unit/platform.test.ts` covers both cases, including that the packaged path is never below a path ending in `app.asar`; `npm run typecheck` and `npm test` pass; the `windows` CI job still passes `windows-app.spec.ts` ("the helper is found").
-- [ ] 1.2 Map every new scenario of this change (19) with one tagged `it.todo` per scenario, in the file where its test will live, each inside a suite guarded as the platform skip policy requires:
+- [x] 1.1 Change `windowsHelperPath` in `src/main/platform/index.ts` to take `{ packaged, appPath, resourcesPath }` (design D2): packaged gives `<resourcesPath>\veydr-helper.exe`, unpackaged keeps `<appPath>\out-helper\veydr-helper.exe`. Update the caller in `src/main/index.ts` (`app.isPackaged`, `app.getAppPath()`, `process.resourcesPath`) and the comment that records this for W4. Verify: `test/unit/platform.test.ts` covers both cases, including that the packaged path is never below a path ending in `app.asar`; `npm run typecheck` and `npm test` pass; the `windows` CI job still passes `windows-app.spec.ts` ("the helper is found").
+- [x] 1.2 Map every new scenario of this change (19) with one tagged `it.todo` per scenario, in the file where its test will live, each inside a suite guarded as the platform skip policy requires:
   - `test/packaging-windows/fuses.test.ts`: `desktop-shell/modified-archive-refused-on-windows`;
   - `test/unit/security.test.ts` or the test that reads `docs/security-baseline.md`: `desktop-shell/archive-validation-limits-documented`;
   - `test/packaging-windows/package-contents.test.ts`: `desktop-shell/no-update-metadata`, `desktop-shell/helper-outside-the-archive`;
@@ -41,7 +41,16 @@ Plan review (2026-11-11): reviewer2 found 1 high, 4 medium, 5 low and 2 nits in 
   - `test/unit/workflow-policy.test.ts`: `quality-gates/helper-build-failure-fails-windows-packaging`, `release-automation/windows-gate-fails`, `release-automation/checksum-of-the-windows-installer`, `release-automation/building-the-windows-installer-of-a-branch`, `release-automation/record-matches-the-attached-installer`, `release-automation/record-names-another-installer`.
 
   Add the `packaging-windows` project to `vitest.config.ts` (`test/packaging-windows/**/*.test.ts`, one file at a time, test and hook timeouts of 600 s), include the new tree in the test `tsconfig` and the lint configuration as `test/packaging/` is, and add `test/packaging-windows/` to the trees `test-platform-policy.test.ts` requires its scan to see. Verify: `npm run spec-coverage` reports zero unmapped scenarios; `test-platform-policy.test.ts` passes; `npm run typecheck` and `npm run lint` pass; `openspec validate add-windows-packaging --strict` passes.
-- [ ] 1.3 Hand off group 1 to `reviewer2`, fix the findings, have them re-reviewed, and record the outcome below this group.
+- [x] 1.3 Hand off group 1 to `reviewer2`, fix the findings, have them re-reviewed, and record the outcome below this group.
+
+Group 1 outcome (2026-11-11):
+- Verification on Linux: `npm run typecheck`, `npm run lint`, `npm test` (1397 passed, 8 todo), `npm run spec-coverage` (190 scenarios, 0 unmapped, 19 new ones tagged), `openspec validate add-windows-packaging --strict`, `vitest run --project packaging-windows` (4 files skipped on Linux, 11 todo). `windows-app.spec.ts` ("the helper is found") runs in the `windows` CI job on the pull request; not yet run.
+- Review (reviewer2): no high or medium; 2 low, 2 nits.
+  - low: the packaged path with an empty `resourcesPath` was not pinned. Fixed: a test asserts the path is relative and that the Windows platform refuses to start it.
+  - nit: the "never below `app.asar`" case used only host-separator paths. Fixed: a backslash path with `APP.ASAR` in capitals is checked on every system.
+  - nit: the e2e test's read of `process.resourcesPath` was unexplained. Fixed with a comment.
+  - low, deferred to task 6.3: `docs/deferred-checks.md` (the "Windows process supervision" and "Windows packaging and helper placement" rows) still says the helper is below the application path and that W4 must move it. These are dated history rows that `processes-docs.test.ts` asserts; task 6.3's dated "Windows packaging" section must state that the packaged helper is now `resources\veydr-helper.exe` and close that row. No docs test catches the stale wording, so 6.3 must not skip it.
+- Re-review (reviewer2): no findings.
 
 ## 2. Package configuration, package tests, and the CI job
 

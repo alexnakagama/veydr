@@ -92,3 +92,9 @@ describe('disableProxyDiscovery', () => {
     expect(appendSwitch.mock.calls).toEqual([['no-proxy-server']])
   })
 })
+
+// The documented limits of the archive validation on Windows (add-windows-packaging design D3, D8).
+// Task 6.3 implements this against docs/security-baseline.md, once task 2.4 has measured them.
+describe('archive validation on Windows, documented', () => {
+  it.todo('[spec:desktop-shell/archive-validation-limits-documented] states what the validation covers on Windows, what it does not, and that the application binary is unsigned (task 6.3)')
+})
