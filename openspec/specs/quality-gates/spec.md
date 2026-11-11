@@ -111,7 +111,7 @@ A test that cannot run on an operating system SHALL be skipped there with a stat
 - **THEN** the test is reported as skipped, and its skip reason names that facility
 
 ### Requirement: Windows helper built from source
-The Windows process-tree helper SHALL be built from source committed to the repository each time it is needed. No helper binary SHALL be committed. A check that needs the helper SHALL fail, not skip, when the helper cannot be built.
+The Windows helper, which runs process trees and reads the listening ports, SHALL be built from source committed to the repository each time it is needed. No helper binary SHALL be committed. A check that needs the helper SHALL fail, not skip, when the helper cannot be built.
 
 #### Scenario: No committed helper binary
 - **WHEN** the repository contains an executable or library file under the helper's source or build directories
