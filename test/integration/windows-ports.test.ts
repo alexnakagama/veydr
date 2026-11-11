@@ -23,7 +23,7 @@ import type { CommandConfig } from '../../src/shared/config'
 import { command, project, quietLog } from '../unit/support/config'
 import { fixture, readLedger, scenario, sleep, TAG_VARIABLE, waitUntil, type LedgerEntry, type Scenario } from '../support/proc'
 import { taggedProcesses } from '../support/processes'
-import { creationTimes, powershell } from './support/windows'
+import { creationTimes, denyOtherAccounts, powershell } from './support/windows'
 
 // Windows port inspection through the real helper's `ports`, the supervisor and
 // `createHelperPortsReader` (add-windows-port-inspection design D7): the raw helper (task 2.4), a
@@ -345,7 +345,7 @@ describe.runIf(process.platform === 'win32')('[windows-only: Windows accounts]',
   })
 
   it.skipIf(process.env['CI'] !== 'true')(
-    '[spec:port-inspection/owner-hidden-from-a-standard-user-on-windows] [spec:port-inspection/windows-port-inspection-verified-natively] shows a standard user the owner of the runner\'s listener, and of another listener, as restricted',
+    '[spec:port-inspection/owner-hidden-from-a-standard-user-on-windows] [spec:port-inspection/windows-port-inspection-verified-natively] shows a standard user the owner of a listener it may not query, and of another listener, as restricted',
     // The launcher's own limit, then -Cleanup if it left the account.
     { timeout: LAUNCHER_TIMEOUT_MS + 180_000 },
     async () => {
@@ -356,13 +356,24 @@ describe.runIf(process.platform === 'win32')('[windows-only: Windows accounts]',
       const results = join(dir, 'results.jsonl')
       writeFileSync(results, '')
 
-      // A listener of the runner's account, which the standard user may not query.
+      // Two listeners of the runner's account: one whose process admits only SYSTEM, Administrators
+      // and the runner's account, which the standard user therefore may not query (asserted
+      // restricted), and one with the default DACL, whose owner is only recorded (the runner's
+      // processes turned out to be queryable to a standard user, so `known` is right for it).
       const ledger = join(dir, 'ledger.jsonl')
-      const child = spawn(process.execPath, [fixture('listen'), '--ledger', ledger, '--role', 'runner'], { stdio: 'ignore', windowsHide: true })
-      children.push(child)
-      await waitUntil(() => existsSync(ledger) && readLedger(ledger).some((e) => e.role === 'runner'), `the runner's listener in ${ledger}`, 30_000)
-      const runner = readLedger(ledger).find((e) => e.role === 'runner')
-      if (runner?.port === undefined || runner.port === null) throw new Error('the runner\'s listener recorded no port')
+      for (const role of ['denied', 'default']) {
+        const child = spawn(process.execPath, [fixture('listen'), '--ledger', ledger, '--role', role], { stdio: 'ignore', windowsHide: true })
+        children.push(child)
+      }
+      const entry = async (role: string): Promise<LedgerEntry & { port: number }> => {
+        await waitUntil(() => existsSync(ledger) && readLedger(ledger).some((e) => e.role === role), `the ${role} listener in ${ledger}`, 30_000)
+        const found = readLedger(ledger).find((e) => e.role === role)
+        if (found?.port === undefined || found.port === null) throw new Error(`the ${role} listener recorded no port`)
+        return { ...found, port: found.port }
+      }
+      const denied = await entry('denied')
+      const plain = await entry('default')
+      denyOtherAccounts(denied.pid)
       await sleep(FIXTURE_AGE_MS)
 
       let launched: Awaited<ReturnType<typeof runLauncher>> | undefined
@@ -398,9 +409,10 @@ describe.runIf(process.platform === 'win32')('[windows-only: Windows accounts]',
       if (typeof stdout !== 'string') throw new Error('the driver kept no stdout of the helper')
 
       const listed = (await createWindowsPortInspector({ readPorts: () => Promise.resolve(stdout) }).list()).ports
-      expect(at(listed, runner.port)).toEqual([{ family: 'ipv4', address: '127.0.0.1', port: runner.port, owner: { kind: 'restricted' } }])
-      const others = listed.filter((p) => p.port !== runner.port && p.owner.kind === 'restricted')
+      expect(at(listed, denied.port)).toEqual([{ family: 'ipv4', address: '127.0.0.1', port: denied.port, owner: { kind: 'restricted' } }])
+      const others = listed.filter((p) => p.port !== denied.port && p.port !== plain.port && p.owner.kind === 'restricted')
       expect(others.length, 'listeners of other accounts, such as system services').toBeGreaterThan(0)
+      console.info(`as the standard user, a listener of the runner's account with the default DACL is ${at(listed, plain.port).map((p) => p.owner.kind).join(', ') || 'not listed'}`)
       console.info(`as the standard user: ${listed.length} listening sockets, ${listed.filter((p) => p.owner.kind === 'restricted').length} restricted, ${listed.filter((p) => p.owner.kind === 'known').length} known`)
     },
   )
