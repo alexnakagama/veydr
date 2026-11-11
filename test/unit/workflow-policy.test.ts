@@ -747,6 +747,9 @@ const linesContaining = (source: Source, needles: readonly string[]): string[] =
 
 describe('ci.yml (design D4)', () => {
   const { source: ci, lines, jobs, job, jobField, permissions, scripts, withValue, on, branches } = loadWorkflow('.github/workflows/ci.yml')
+
+  // add-windows-packaging task 2.6 implements this; the tag keeps spec coverage at zero unmapped.
+  it.todo('[spec:quality-gates/helper-build-failure-fails-windows-packaging] dist:windows builds the helper first in an && chain, and windows-package has no continue-on-error (task 2.6)')
   /** Runs ci-ok's script as the runner does (`bash -e`), with `NEEDS` set to `needs` or left unset. */
   const runCiOk = (needs: string | undefined): { status: number | null; stdout: string } => {
     const step = stepsOf(lines, job('ci-ok')).find((s) => stepField(lines, s)('run') !== undefined)
@@ -1328,6 +1331,9 @@ if (args[0] === 'issue' && args[1] === 'list') process.stdout.write(process.env.
 describe('build.yml', () => {
   const w = loadWorkflow('.github/workflows/build.yml')
 
+  // add-windows-packaging task 5.2 implements this; the tag keeps spec coverage at zero unmapped.
+  it.todo('[spec:release-automation/building-the-windows-installer-of-a-branch] builds the Windows installer of the same ref with its SHA256SUMS, read-only (task 5.2)')
+
   /** Runs the SHA256SUMS step in a directory holding `files`; returns the run and the SHA256SUMS it wrote. */
   const checksums = (files: string[]): { run: ScriptRun; sums: string | undefined } => {
     const dir = mkdtempSync(join(tmpdir(), 'veydr-build-sums-'))
@@ -1675,6 +1681,12 @@ const releaseScripts = ['scripts/release-version.mjs', 'scripts/npm.mjs']
 // those processes takes several times longer on the Windows runner. A hang still fails, after a minute.
 describe('release.yml (design D6)', { timeout: 60_000 }, () => {
   const w = loadWorkflow('.github/workflows/release.yml')
+
+  // add-windows-packaging task 5.3 implements these; the tags keep spec coverage at zero unmapped.
+  it.todo('[spec:release-automation/windows-gate-fails] publish needs both Windows gate jobs, so a Windows failure publishes nothing, Linux packages included (task 5.3)')
+  it.todo('[spec:release-automation/checksum-of-the-windows-installer] the installer\'s line in SHA256SUMS is the SHA-256 of the attached installer (task 5.3)')
+  it.todo('[spec:release-automation/record-matches-the-attached-installer] the Windows install record names the SHA-256 of the attached installer (task 5.3)')
+  it.todo('[spec:release-automation/record-names-another-installer] a record naming another digest fails publish before the push step (task 5.3)')
   const gates = ['verify', 'e2e', 'package']
   const packageTests = ['smoke', 'acceptance']
   const sourceSha = '${{ needs.validate.outputs.source_sha }}'

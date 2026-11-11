@@ -34,6 +34,19 @@ export default defineConfig({
         },
       },
       {
+        // Inspects, runs and installs the Windows package in dist\ (`npm run test:packaging:windows`
+        // builds it first; add-windows-packaging design D3). One file at a time: the installer tests
+        // install into the runner's profile, and an install with its uninstall takes minutes.
+        test: {
+          name: 'packaging-windows',
+          include: ['test/packaging-windows/**/*.test.ts'],
+          environment: 'node',
+          testTimeout: 600_000,
+          hookTimeout: 600_000,
+          fileParallelism: false,
+        },
+      },
+      {
         // Measurements recorded as task notes (`npm run measure`); not part of `verify`.
         test: {
           name: 'measure',

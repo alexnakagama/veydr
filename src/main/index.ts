@@ -55,7 +55,7 @@ if (!app.requestSingleInstanceLock()) {
  * declaration, so it is hoisted: `start()` and `startSmokeTest()` run above this point.
  */
 function helperPath(): string {
-  return windowsHelperPath(app.getAppPath())
+  return windowsHelperPath({ packaged: app.isPackaged, appPath: app.getAppPath(), resourcesPath: process.resourcesPath })
 }
 
 /** Settings shared by the app and the smoke test; must run before `ready`. */

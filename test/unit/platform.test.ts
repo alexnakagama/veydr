@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { isAbsolute, join, sep } from 'node:path'
 import { SpawnError } from '../../src/main/platform/errors'
 import { selectPlatform, UnsupportedPlatformError, windowsHelperPath, type Platform } from '../../src/main/platform'
 import { duplicateEnvName, envNameKey } from '../../src/shared/config'
@@ -296,8 +296,42 @@ describe('Windows platform', () => {
     })
   })
 
-  it('the composition root finds the helper where the build script puts it', () => {
-    expect(windowsHelperPath(join('app', 'root'))).toBe(join('app', 'root', 'out-helper', 'veydr-helper.exe'))
+  it('unpackaged, the composition root finds the helper where the build script puts it', () => {
+    const location = { packaged: false, appPath: join('app', 'root'), resourcesPath: join('electron', 'resources') }
+    expect(windowsHelperPath(location)).toBe(join('app', 'root', 'out-helper', 'veydr-helper.exe'))
+  })
+
+  it('packaged, the composition root finds the helper beside app.asar, where the package places it', () => {
+    const resourcesPath = join('C:', 'Users', 'u', 'AppData', 'Local', 'Programs', 'veydr', 'resources')
+    const location = { packaged: true, appPath: join(resourcesPath, 'app.asar'), resourcesPath }
+    expect(windowsHelperPath(location)).toBe(join(resourcesPath, 'veydr-helper.exe'))
+  })
+
+  it('packaged, the helper path is never below a directory ending in app.asar, from which nothing can be started', () => {
+    // Every ancestor of the path is checked, case-insensitively as on Windows, splitting on both
+    // separators: the helper path is joined with the host's separator, so on Linux the
+    // backslash-separated inputs below still give a Windows-shaped path, covered on every system.
+    // The application path itself always ends in app.asar when packaged.
+    const belowAnArchive = (path: string): boolean =>
+      path.split(/[\\/]/).slice(0, -1).some((segment) => segment.toLowerCase().endsWith('app.asar'))
+    const windowsResources = 'C:\\Users\\u\\AppData\\Local\\Programs\\veydr\\resources'
+    for (const resourcesPath of [windowsResources, join('C:', 'Program Files', 'veydr', 'resources'), join('opt', 'veydr', 'resources'), join('resources')]) {
+      const appPath = `${resourcesPath}${resourcesPath === windowsResources ? '\\' : sep}APP.ASAR`
+      expect(belowAnArchive(windowsHelperPath({ packaged: false, appPath, resourcesPath }))).toBe(true)
+      const packaged = windowsHelperPath({ packaged: true, appPath, resourcesPath })
+      expect(belowAnArchive(packaged)).toBe(false)
+      expect(packaged.endsWith('veydr-helper.exe')).toBe(true)
+    }
+  })
+
+  it('packaged without a resources path, the helper path is relative, which the platform refuses to start', async () => {
+    const path = windowsHelperPath({ packaged: true, appPath: '', resourcesPath: '' })
+    expect(path).toBe('veydr-helper.exe')
+    expect(isAbsolute(path)).toBe(false)
+    await expect(createWindowsPlatform({ helperPath: path }).processTree.spawn(plan)).rejects.toMatchObject({
+      name: 'SpawnError',
+      message: 'The Windows helper path must be absolute: veydr-helper.exe',
+    })
   })
 })
 
