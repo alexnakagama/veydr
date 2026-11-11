@@ -667,6 +667,10 @@ describe('standard-user.ps1 -Helper', () => {
     expect(check).toContain('$full -cne $Path')
     expect(check).toContain('Test-Path -LiteralPath $Path -PathType Leaf')
     expect(check).toContain('[System.IO.FileAttributes]::ReparsePoint')
+    // No cmdlet auto-loaded from PSModulePath for the hash: CI starts Windows PowerShell from
+    // PowerShell 7, whose module directories come first there (the windows job's first run failed so).
+    expect(lines.filter((l) => !l.trimStart().startsWith('#') && /Get-FileHash/i.test(l))).toEqual([])
+    expect(text).toContain('[System.Security.Cryptography.SHA256]::Create()')
     // Every directory above the file too, up to the drive: a junction on the way is refused.
     expect(check).toContain('for ($directory = [System.IO.Path]::GetDirectoryName($Path); -not [string]::IsNullOrEmpty($directory); $directory = [System.IO.Path]::GetDirectoryName($directory))')
     expect(check).toContain('return "must not lead through a link, but $directory is one"')
@@ -702,7 +706,7 @@ describe('standard-user.ps1 -Helper', () => {
     const uses = lines.map((l, i) => [i, l] as const).filter(([, l]) => /\$Helper\b/i.test(l))
     expect(uses.map(([i]) => i).every((i) => i < results)).toBe(true)
     // Hashed once accepted, before the account exists.
-    const hashed = at('$helperHash = (Get-FileHash -LiteralPath $Helper -Algorithm SHA256).Hash')
+    const hashed = at('$helperHash = Get-Sha256 $Helper')
     expect(helperCheck).toBeLessThan(hashed)
     expect(hashed).toBeLessThan(results)
     const copy = at('Copy-Item -LiteralPath $helperSource -Destination $helperCopy -Force')
@@ -711,7 +715,7 @@ describe('standard-user.ps1 -Helper', () => {
       'if ($null -ne $helperSource) {',
       '$helperCopy = Join-Path $stdScripts $HelperName',
       'Copy-Item -LiteralPath $helperSource -Destination $helperCopy -Force',
-      'if ((Get-FileHash -LiteralPath $helperCopy -Algorithm SHA256).Hash -cne $helperHash) { throw "$helperSource changed after it was checked" }',
+      'if ((Get-Sha256 $helperCopy) -cne $helperHash) { throw "$helperSource changed after it was checked" }',
       '}',
     ])
     expect(lines.filter((l) => /\$helperSource\b/.test(l)).map((l) => l.trim())).toEqual([
@@ -719,7 +723,7 @@ describe('standard-user.ps1 -Helper', () => {
       '$helperSource = $Helper',
       'if ($null -ne $helperSource) {',
       'Copy-Item -LiteralPath $helperSource -Destination $helperCopy -Force',
-      'if ((Get-FileHash -LiteralPath $helperCopy -Algorithm SHA256).Hash -cne $helperHash) { throw "$helperSource changed after it was checked" }',
+      'if ((Get-Sha256 $helperCopy) -cne $helperHash) { throw "$helperSource changed after it was checked" }',
     ])
   })
 

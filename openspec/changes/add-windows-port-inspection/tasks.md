@@ -169,6 +169,8 @@ Group 4 review (2026-11-10): reviewer2 found 0 high, 0 medium, 2 low and 3 nits.
 
 Verified on Linux: typecheck, lint, `npm test` (1391 passed, 8 skipped), `npm run spec-coverage` (171/171), `openspec validate --strict`, and no `it.todo` of this change left. The Windows-only cases (the `-Helper` runtime checks, the integration cases, the latency figures and the standard-user run) are verified only by the `windows` CI job on the pull request.
 
+CI on the pull request (#53): the `windows` job failed in the unit and integration steps. `standard-user.ps1` hashed `-Helper` with `Get-FileHash`, a script function of `Microsoft.PowerShell.Utility`. The CI steps run in PowerShell 7, which puts its own module directories first in `PSModulePath`; the Windows PowerShell 5.1 it starts inherits them, so `Get-FileHash` could not be found and the run stopped before the account existed. The script now hashes with .NET (`Get-Sha256`), and a static test forbids `Get-FileHash`. The rest of the job passed, including the latency check: a median of 63.8 ms for 1,045 listening sockets (helper start and both tables).
+
 ## 5. Ports on Windows, end to end
 
 - [ ] 5.1 In `windows/index.ts`, replace `UNSUPPORTED_PORT_INSPECTOR` with `createWindowsPortInspector({ readPorts: createHelperPortsReader(...) })`, sharing the helper check with the process tree, and update the JSDoc and the helper's header (design D6, D8). Verify: `platform.test.ts` expects a working inspector on Windows (a fake reader), and the composition check of task 3.3 passes.

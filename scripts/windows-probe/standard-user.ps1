@@ -334,6 +334,24 @@ function Get-HelperProblem([string] $Path) {
   return $null
 }
 
+# The SHA-256 of a file, as upper-case hex, through .NET rather than Get-FileHash: that cmdlet is a
+# script function of the Microsoft.PowerShell.Utility module, which is auto-loaded from
+# PSModulePath, and a Windows PowerShell started from PowerShell 7 (the default shell of a CI step)
+# inherits PowerShell 7's module directories first, so it finds PowerShell 7's module and fails.
+function Get-Sha256([string] $Path) {
+  $sha = [System.Security.Cryptography.SHA256]::Create()
+  try {
+    $stream = [System.IO.File]::OpenRead($Path)
+    try {
+      return ([System.BitConverter]::ToString($sha.ComputeHash($stream)) -replace '-', '')
+    } finally {
+      $stream.Dispose()
+    }
+  } finally {
+    $sha.Dispose()
+  }
+}
+
 # Paths are checked before the account exists, so a misconfigured step changes nothing.
 if ($Driver -notmatch '^[a-z0-9-]+\.mjs$' -or -not (Test-Path -LiteralPath (Join-Path $PSScriptRoot $Driver) -PathType Leaf)) {
   [Console]::Error.WriteLine("standard-user.ps1: -Driver must name a driver in scripts/windows-probe, not '$Driver'")
@@ -356,7 +374,12 @@ if ($PSBoundParameters.ContainsKey('Helper')) {
   }
   $helperSource = $Helper
   # The copy must be the file checked here: a file replaced in between is refused after copying.
-  $helperHash = (Get-FileHash -LiteralPath $Helper -Algorithm SHA256).Hash
+  try {
+    $helperHash = Get-Sha256 $Helper
+  } catch {
+    [Console]::Error.WriteLine("standard-user.ps1: -Helper cannot be read: $(Get-ErrorText $_)")
+    exit 1
+  }
 }
 $resultsPath = [System.IO.Path]::GetFullPath([System.IO.Path]::Combine((Get-Location).ProviderPath, $Results))
 if (-not (Test-Path -LiteralPath $resultsPath -PathType Leaf)) {
@@ -425,7 +448,7 @@ try {
       if ($null -ne $helperSource) {
         $helperCopy = Join-Path $stdScripts $HelperName
         Copy-Item -LiteralPath $helperSource -Destination $helperCopy -Force
-        if ((Get-FileHash -LiteralPath $helperCopy -Algorithm SHA256).Hash -cne $helperHash) { throw "$helperSource changed after it was checked" }
+        if ((Get-Sha256 $helperCopy) -cne $helperHash) { throw "$helperSource changed after it was checked" }
       }
     } catch {
       throw "cannot prepare ${ProbeRoot}: $(Get-ErrorText $_)"
