@@ -3,7 +3,9 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
 import { createDiagnosticLog } from '../../src/main/app/diagnostics'
 import { createIpcRegistry, type InvokeEvent } from '../../src/main/ipc/register'
+import { selectPlatform } from '../../src/main/platform'
 import { createWindowsPlatform } from '../../src/main/platform/windows'
+import type { PortInspector } from '../../src/main/platform/types'
 import { createPortService } from '../../src/main/ports/service'
 import { PortsContent } from '../../src/renderer/src/PortsView'
 import { createPortsPoller, pollWhileVisible, PORTS_POLL_INTERVAL_MS, type PollTimers, type PortsState } from '../../src/renderer/src/state/ports'
@@ -205,8 +207,8 @@ describe('ports view', () => {
     expect(render({ snapshot: null, loading: true, error: null })).toContain('Reading listening ports…')
   })
 
-  it('shows that port inspection is not yet available on Windows', async () => {
-    // Main: the Windows port inspector is unsupported, and IPC turns that into a typed error.
+  /** The Ports view after one listing through main's IPC handler, from the given inspector. */
+  async function viewThroughIpc(inspector: PortInspector): Promise<{ result: ApiResult<PortSnapshot>; view: string }> {
     const listeners = new Map<string, (event: InvokeEvent, ...args: unknown[]) => unknown>()
     const frame = { url: 'app://veydr/index.html' }
     const registry = createIpcRegistry({
@@ -215,21 +217,35 @@ describe('ports view', () => {
       trustedOrigin: 'app://veydr',
       log: createDiagnosticLog(() => undefined),
     })
-    const service = createPortService({ inspector: createWindowsPlatform({ helperPath: 'C:\\veydr\\out-helper\\veydr-helper.exe' }).portInspector, attribution: () => Promise.resolve([]) })
+    const service = createPortService({ inspector, attribution: () => Promise.resolve([]) })
     registry.handle(channels.ports.list, contract.ports.list.request, contract.ports.list.response, () => service.list())
     const sender = { id: 1, isDestroyed: () => false, send: () => undefined }
     const result = (await listeners.get(channels.ports.list)?.({ senderFrame: frame, sender })) as ApiResult<PortSnapshot>
-    expect(result).toEqual({ ok: false, error: { code: 'unsupported_platform', message: 'portInspector.list is not supported on this platform (win32)' } })
-
-    // Renderer: the view shows it instead of a list, without a Refresh button.
     const poller = createPortsPoller({ list: () => Promise.resolve(result) }, manualTimers())
     poller.start()
     await new Promise((done) => setTimeout(done, 0))
-    const view = render(poller.getState())
+    return { result, view: render(poller.getState()) }
+  }
+
+  it('shows that port inspection is not yet available on a platform without an implementation', async () => {
+    // Main: the unsupported platform's inspector rejects, and IPC turns that into a typed error.
+    const { result, view } = await viewThroughIpc(selectPlatform('darwin').portInspector)
+    expect(result).toEqual({ ok: false, error: { code: 'unsupported_platform', message: 'portInspector.list is not supported on this platform (darwin)' } })
+    // Renderer: the view shows it instead of a list, without a Refresh button.
     expect(view).toContain('Port inspection is not yet available on this platform.')
     expect(view).toContain('role="alert"')
     expect(view).not.toContain('<button')
     expect(view).not.toContain('<table')
+  })
+
+  it('on Windows, a listing the helper cannot give is a read error, not an unsupported platform', async () => {
+    // The helper is missing: the inspector rejects with a plain Error, which IPC reports as internal.
+    const { result, view } = await viewThroughIpc(createWindowsPlatform({ helperPath: 'C:\\veydr\\out-helper\\veydr-helper.exe' }).portInspector)
+    expect(result).toMatchObject({ ok: false, error: { code: 'internal' } })
+    expect(view).not.toContain('Port inspection is not yet available')
+    expect(view).toContain('Ports could not be read')
+    // The user can try again.
+    expect(view).toContain('Refresh')
   })
 })
 

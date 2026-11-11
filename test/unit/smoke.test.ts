@@ -138,22 +138,48 @@ describe('runSmokeTest', () => {
     expect(failed.checks.find((c) => c.name === 'platform')).toEqual({ name: 'platform', ok: false, detail: 'environment unreadable' })
   })
 
-  it('says so when the platform cannot inspect ports yet, as on Windows, and fails on any other port error', async () => {
-    const windows = await runSmokeTest(
+  it('reports the listening sockets a Windows listing read, and fails when it cannot be read', async () => {
+    const listed = await runSmokeTest(
       deps({
         implementation: implementation({
           name: 'windows',
-          portInspector: { list: () => Promise.reject(new UnsupportedPlatformError('win32', 'portInspector.list')) },
+          portInspector: {
+            list: () =>
+              Promise.resolve({
+                takenAt: 0,
+                ports: [
+                  { family: 'ipv4', address: '127.0.0.1', port: 5173, owner: { kind: 'restricted' } },
+                  { family: 'ipv6', address: '::1', port: 5173, owner: { kind: 'unknown' } },
+                ],
+              }),
+          },
         }),
       }),
     )
-    expect(windows.result).toBe('pass')
-    expect(windows.checks.find((c) => c.name === 'platform')).toEqual({ name: 'platform', ok: true, detail: 'windows: 2 environment variables, port inspection not yet available' })
+    expect(listed.result).toBe('pass')
+    expect(listed.checks.find((c) => c.name === 'platform')).toEqual({ name: 'platform', ok: true, detail: 'windows: 2 environment variables, 2 listening sockets readable' })
 
-    // An error that merely looks like it is not the platform's refusal.
-    const lookalike = Object.assign(new Error('portInspector.list is not supported on this platform (win32)'), { name: 'UnsupportedPlatformError' })
-    const other = await runSmokeTest(deps({ implementation: implementation({ name: 'windows', portInspector: { list: () => Promise.reject(lookalike) } }) }))
-    expect(other.result).toBe('fail')
+    const failing = await runSmokeTest(
+      deps({
+        implementation: implementation({
+          name: 'windows',
+          portInspector: { list: () => Promise.reject(new Error('The Windows helper could not list the listening ports: Windows helper not found: C:\\veydr\\out-helper\\veydr-helper.exe')) },
+        }),
+      }),
+    )
+    expect(failing.result).toBe('fail')
+    expect(failing.checks.find((c) => c.name === 'platform')).toEqual({
+      name: 'platform',
+      ok: false,
+      detail: 'The Windows helper could not list the listening ports: Windows helper not found: C:\\veydr\\out-helper\\veydr-helper.exe',
+    })
+
+    // The platform's own refusal is no longer a pass: every supported platform lists ports (design D8).
+    const refused = await runSmokeTest(
+      deps({ implementation: implementation({ name: 'windows', portInspector: { list: () => Promise.reject(new UnsupportedPlatformError('win32', 'portInspector.list')) } }) }),
+    )
+    expect(refused.result).toBe('fail')
+    expect(refused.checks.find((c) => c.name === 'platform')?.ok).toBe(false)
   })
 
   it('fails when the interface does not load, does not render, or is not isolated', async () => {

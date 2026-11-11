@@ -173,9 +173,9 @@ CI on the pull request (#53): the `windows` job failed in the unit and integrati
 
 ## 5. Ports on Windows, end to end
 
-- [ ] 5.1 In `windows/index.ts`, replace `UNSUPPORTED_PORT_INSPECTOR` with `createWindowsPortInspector({ readPorts: createHelperPortsReader(...) })`, sharing the helper check with the process tree, and update the JSDoc and the helper's header (design D6, D8). Verify: `platform.test.ts` expects a working inspector on Windows (a fake reader), and the composition check of task 3.3 passes.
-- [ ] 5.2 Remove the `UnsupportedPlatformError` branch from `runSmokeTest`'s platform check (design D8). Verify: `smoke.test.ts` covers the listed-ports detail and a failing inspector, and the renderer banner test still passes for the unsupported platform. `processes-docs.test.ts` and `accessibility.spec.ts` also mention "not yet available": update them together with the docs in 5.3 and 5.4, and confirm nothing in groups 1–4 changes that text. The renderer test `shows that port inspection is not yet available on Windows` lost its `ports-on-windows` tag in task 1.3 (the requirement is REMOVED); delete it here or rewrite it for a platform without an implementation, so it does not stay as an orphan asserting the old behavior.
-- [ ] 5.3 End-to-end (design D7):
+- [x] 5.1 In `windows/index.ts`, replace `UNSUPPORTED_PORT_INSPECTOR` with `createWindowsPortInspector({ readPorts: createHelperPortsReader(...) })`, sharing the helper check with the process tree, and update the JSDoc and the helper's header (design D6, D8). Verify: `platform.test.ts` expects a working inspector on Windows (a fake reader), and the composition check of task 3.3 passes.
+- [x] 5.2 Remove the `UnsupportedPlatformError` branch from `runSmokeTest`'s platform check (design D8). Verify: `smoke.test.ts` covers the listed-ports detail and a failing inspector, and the renderer banner test still passes for the unsupported platform. `processes-docs.test.ts` and `accessibility.spec.ts` also mention "not yet available": update them together with the docs in 5.3 and 5.4, and confirm nothing in groups 1–4 changes that text. The renderer test `shows that port inspection is not yet available on Windows` lost its `ports-on-windows` tag in task 1.3 (the requirement is REMOVED); delete it here or rewrite it for a platform without an implementation, so it does not stay as an orphan asserting the old behavior.
+- [x] 5.3 End-to-end (design D7):
   - make `ports.spec.ts` portable, with only its restricted test kept as `[linux-only: another user's process]`;
   - extend `support/ports-probe.cjs` to log helper calls with arguments exactly `['ports']`, and add a support function that counts listings from either log, for test 2;
   - add a `test/support` function that gives the Node executable's display name from `process.execPath` (no platform branch), and use it in the name assertions of tests 1 and 2;
@@ -183,7 +183,7 @@ CI on the pull request (#53): the `windows` job failed in the unit and integrati
   - update the classification table in `docs/ci.md`.
 
   Verify: the e2e suite passes in the Linux job and in the `windows` job, `test-platform-policy.test.ts` passes, and `npm run spec-coverage` reports zero unmapped scenarios.
-- [ ] 5.4 Docs:
+- [x] 5.4 Docs:
   - `docs/ports.md`: a "Windows preview" section covering the helper, the fence, restricted for a standard user, the IPv6 scope, the latency figures, and what the runner cannot verify (a real PID reuse);
   - README: remove the three "port inspection is not available on Windows" statements;
   - `docs/processes.md`;
@@ -191,7 +191,22 @@ CI on the pull request (#53): the `windows` job failed in the unit and integrati
   - `docs/windows-evidence.md`: mark "Ports (W3)" as resolved, as W2 did for its items.
 
   Verify: `windows-evidence.test.ts` passes, and `grep -rn "not yet available\|W3" README.md docs` shows no stale claim.
-- [ ] 5.5 Hand off group 5 to `reviewer2`, fix the findings, have them re-reviewed, and record the outcome below this group.
+- [x] 5.5 Hand off group 5 to `reviewer2`, fix the findings, have them re-reviewed, and record the outcome below this group.
+
+Group 5 review (2026-11-11): reviewer2 found 0 high, 2 medium, 4 low and 2 nits. All are fixed, and the re-review approved them with no open findings:
+- medium:
+  - the docs claimed more than had run: `docs/ports.md` and `docs/deferred-checks.md` now say that the Windows integration tests passed in CI (2026-11-10), and only that the portable `ports.spec.ts` is part of the `windows` job's end-to-end step. 5.3 stays checked on the condition that 6.1 records the pull request's `windows` job; if that job fails on `ports.spec.ts`, 5.3 is reopened;
+  - the listing counter could pass vacuously if the probe's `child_process` patch never took effect: `ports.spec.ts` now requires at least one counted listing once the view opens, and fails without the probe's log (mutation-checked).
+- low:
+  - checked: `test-platform-policy.test.ts` compares the skip reason strings, so the renamed `[linux-only: POSIX shell scripts]` is checked;
+  - comments: the probe's patch is intentionally unconditional, and `nodeDisplayName` holds only while the fixtures are started with `process.execPath`;
+  - checked: no workflow runs a Windows smoke test, which a missing helper now fails (design D8).
+- nits: `platform.test.ts` resets its recorded wiring in a `beforeEach`, and a test title uses double quotes.
+- deviation, accepted: `no-network.spec.ts`'s reason `[linux-only: port inspection and a POSIX shell]` is now `[linux-only: POSIX shell scripts]`, since port inspection no longer keeps it off Windows; `docs/ci.md` follows.
+- also: `security.spec.ts` asserts that `ports.list` answers with a listing, and a renderer test shows that a Windows helper failure is a read error, not the "not yet available" banner.
+- the run 42969615490 figures (64–67 ms for 1,045 sockets) measure the same reader and inspector that `windows/index.ts` now wires.
+
+Verified on Linux: typecheck, lint, `npm test` (1394 passed, 8 skipped), `npm run test:integration` (50 passed, 50 skipped), the e2e suite (72 passed, 4 skipped, all Windows-only), `npm run spec-coverage` (171/171) and `openspec validate --strict`. One unrelated flake: `supervisor.test.ts` › "stops what the leader left behind when it exits on its own" failed once in a full run, then passed 5 of 5 alone and in a full rerun; it is to be noted if it recurs. The Windows end-to-end run of the portable `ports.spec.ts` is verified only by the `windows` CI job on the pull request (task 6.1).
 
 ## 6. Integration check
 

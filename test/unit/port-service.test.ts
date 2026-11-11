@@ -481,8 +481,14 @@ describe('read-only port inspection', () => {
       expect((readerOptions ?? '').split(',').map((option) => option.trim().split(':')[0]).filter((key) => key !== '').sort()).toEqual(['check', 'helperPath'])
     }
     expect(composition.match(/\bcreateHelperPortsReader\s*\(/g)?.length ?? 0).toBe(created)
-    // Until task 5.1 wires it, Windows has no port inspector and rejects every listing.
-    if (created === 0) expect(composition).toMatch(/portInspector: UNSUPPORTED_PORT_INSPECTOR,/)
+    // Windows lists ports (task 5.1): exactly one inspector, as the platform's, and no stand-in left.
+    expect(created).toBe(1)
+    expect(composition).toMatch(/\bportInspector:\s*createWindowsPortInspector\(/)
+    expect(composition).not.toMatch(/\bUNSUPPORTED_PORT_INSPECTOR\b|\bUnsupportedPlatformError\b/)
+    // The reader is given the check the process tree shares, of the platform's own helper.
+    expect(composition).toMatch(/\bconst helperCheck = createHelperCheck\(options\.helperPath\)/)
+    expect(composition).toMatch(/\bcreateWindowsProcessTree\(\{\s*helperPath:\s*options\.helperPath,\s*helperCheck,/)
+    expect(composition).toMatch(/\bcreateHelperPortsReader\(\{\s*helperPath:\s*options\.helperPath,\s*check:\s*helperCheck\s*\}\)/)
   })
 
   describe('the helper\'s ports subcommand (task 2.3; design D6)', () => {

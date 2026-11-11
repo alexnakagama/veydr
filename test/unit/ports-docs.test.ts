@@ -2,6 +2,8 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { PORTS_POLL_INTERVAL_MS } from '../../src/renderer/src/state/ports'
+import { PORTS_TIMEOUT_MS } from '../../src/main/platform/windows/helper-tool'
+import { MAX_PORTS_OUTPUT_BYTES } from '../../src/main/platform/windows/protocol'
 
 // Task 8.5: docs/ports.md describes the scope, the restricted case, and the refresh behavior of the code.
 
@@ -31,6 +33,18 @@ describe('docs/ports.md', () => {
     expect(section('Refreshing')).toContain(`every ${PORTS_POLL_INTERVAL_MS / 1000} seconds while the view is open and the window is visible`)
     expect(section('Read-only')).toContain('it starts no program, sends no signal, and opens no network connection')
     expect(doc).toContain('Windows')
+  })
+
+  it('describes Windows as a preview with its own limits, not as unavailable (W3)', () => {
+    const windows = section('Windows (preview)')
+    expect(windows).toContain('**Windows: preview. Run from source; verified in CI on Windows Server 2025. No Windows package yet.**')
+    for (const topic of ['veydr-helper.exe ports', '**The time fence.**', '20 milliseconds', '**Restricted.**', 'a standard user', '**IPv6 scope.**', '**Speed.**', 'a real PID reuse']) {
+      expect(windows, topic).toContain(topic)
+    }
+    // The inspector's limits, as the code sets them.
+    expect(windows).toContain(`takes longer than ${PORTS_TIMEOUT_MS / 1000} seconds`)
+    expect(section('Read-only')).toContain(`(${PORTS_TIMEOUT_MS / 1000} seconds, ${MAX_PORTS_OUTPUT_BYTES / 2 ** 20} MiB)`)
+    expect(doc).not.toMatch(/not (?:yet )?available/)
   })
 
   it('names tests that exist', () => {

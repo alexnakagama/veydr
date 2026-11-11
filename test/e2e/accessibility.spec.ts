@@ -176,9 +176,8 @@ test('every view and dialog has named controls, document-order focus, and a visi
     for (const view of ['Ports', 'Settings', 'About']) {
       await window.getByRole('button', { name: view, exact: true }).click()
       await expect(window.getByRole('heading', { level: 1, name: view })).toBeVisible()
-      // The Ports view once loaded: its port list, or where port inspection is not yet available
-      // (Windows, before W3), the notice saying so. Either is audited as shown.
-      if (view === 'Ports') await expect(window.getByTestId('ports-refreshed').or(window.getByTestId('ports-unsupported'))).toBeVisible()
+      // The Ports view once loaded: its port list, on Linux and on Windows alike.
+      if (view === 'Ports') await expect(window.getByTestId('ports-refreshed')).toBeVisible()
       // The editor form replaces "Loading…" once the settings arrive; audit the loaded view.
       if (view === 'Settings') await expect(window.getByLabel('Editor executable', { exact: true })).toBeVisible()
       await audit(window, view)

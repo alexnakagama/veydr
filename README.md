@@ -100,7 +100,7 @@ Single-key shortcuts for common actions. Press <kbd>?</kbd> in the app to see th
 |---|---|
 | **Linux x64** | Supported (see the distribution table below) |
 | Linux on other architectures | Not supported; packages are built for x64 only |
-| Windows x64 | **Preview.** Run from source; verified in CI on Windows Server 2025. No Windows package yet. Port inspection is not available on Windows yet. See [Running from source on Windows](#running-from-source-on-windows) and the [Windows limits](docs/processes.md#windows-preview) |
+| Windows x64 | **Preview.** Run from source; verified in CI on Windows Server 2025. No Windows package yet. See [Running from source on Windows](#running-from-source-on-windows) and the [Windows limits](docs/processes.md#windows-preview) |
 | macOS | Not supported |
 
 **Linux distributions.** These results come from `scripts/smoke-linux.sh`, which ran the packaged app's built-in smoke test inside Docker containers on 2026-10-25. They are not results from full desktop installations. Details are in [install-linux.md](docs/install-linux.md#supported-distributions).
@@ -119,7 +119,7 @@ Single-key shortcuts for common actions. Press <kbd>?</kbd> in the app to see th
 
 | Available now | Not available yet |
 |---|---|
-| Projects, commands (direct and shell), environment overrides, secret masking | A Windows package, and port inspection on Windows (Windows runs from source, as a preview) |
+| Projects, commands (direct and shell), environment overrides, secret masking | A Windows package (Windows runs from source, as a preview) |
 | Start, stop, restart; process-tree stop; clean quit; crash recovery | Keychain-backed secret storage (secrets are stored unencrypted for now) |
 | Live output with colors, filter, follow/pause, copy, clear | Viewing a previous run's output (it is kept, but not shown yet) |
 | Listening-port inspection | A stable release (only release candidates are published so far) |
@@ -239,7 +239,7 @@ This starts Veydr with hot reload for the interface. See [Development](#developm
 
 `node scripts/build-windows-helper.mjs` builds `veydr-helper.exe`, the helper that runs each command in a Windows Job Object, into `out-helper/`. It compiles the helper's source with the .NET Framework 4.8 compiler that Windows includes, so no other toolchain is needed (see [dependencies.md](docs/dependencies.md#windows-process-tree-helper-gate-g-4-2026-11-03)). Run it again after updating the repository: Veydr refuses a helper of another protocol version. The helper is not signed yet, so antivirus software or SmartScreen may flag it.
 
-On Windows, shell mode runs `cmd.exe` only, commands get the environment Veydr was started with (restart Veydr after changing `PATH`), and the **Ports** view says that port inspection is not yet available. The rules are in [commands.md](docs/commands.md#windows-preview), [processes.md](docs/processes.md#windows-preview) and [logs.md](docs/logs.md#windows-preview), together with what the CI runner cannot verify.
+On Windows, shell mode runs `cmd.exe` only, commands get the environment Veydr was started with (restart Veydr after changing `PATH`), and the **Ports** view lists ports through Veydr's helper, showing the holders a standard user may not query, such as system services, as restricted. The rules are in [commands.md](docs/commands.md#windows-preview), [processes.md](docs/processes.md#windows-preview), [logs.md](docs/logs.md#windows-preview) and [ports.md](docs/ports.md#windows-preview), together with what the CI runner cannot verify.
 
 ## Quick start
 

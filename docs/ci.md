@@ -77,9 +77,9 @@ Every spec is classified below, and `test-platform-policy.test.ts` checks this t
 | `failure.spec.ts` | portable | `[linux-only: POSIX file modes]` (an unwritable configuration directory) |
 | `keyboard.spec.ts` | portable | none |
 | `logs.spec.ts` | portable | none |
-| `no-network.spec.ts` | portable | `[linux-only: port inspection and a POSIX shell]` (the full session reads a port in the Ports view) |
+| `no-network.spec.ts` | portable | `[linux-only: POSIX shell scripts]` (the full session runs shell scripts in shell mode, which is `cmd.exe` on Windows) |
 | `offline.spec.ts` | Linux-only | `[linux-only: network namespaces]` |
-| `ports.spec.ts` | Linux-only | `[linux-only: port inspection]` (until W3; `windows-ports.spec.ts` checks the Windows view) |
+| `ports.spec.ts` | portable | `[linux-only: another user's process]` (a listener of another user; the app runs as the runner's account, which on Windows can query every owner it starts, so the Windows standard-user case is in `windows-ports.test.ts`) |
 | `processes.spec.ts` | portable | `[linux-only: POSIX signals]` (the signal that ended a stopped run) |
 | `projects.spec.ts` | portable | none |
 | `quit.spec.ts` | portable | `[linux-only: POSIX signals]` (signals to Veydr, and processes that refuse them) |
@@ -89,7 +89,6 @@ Every spec is classified below, and `test-platform-policy.test.ts` checks this t
 | `single-instance.spec.ts` | portable | none |
 | `state-sync.spec.ts` | portable | none |
 | `windows-app.spec.ts` | Windows-specific | `[windows-only: the process-tree helper]` |
-| `windows-ports.spec.ts` | Windows-specific | `[windows-only: no port inspection before W3]` |
 | `windows-recovery.spec.ts` | Windows-specific | `[windows-only: Job Objects]` |
 
 `offline.spec.ts` counts itself: its runner re-runs the file in a network namespace and requires exactly `1 passed` and `1 skipped`, so a test, guard or placeholder added to that file changes what the runner must expect. Its Linux-only guard adds no test, so the counts are unchanged.

@@ -1,19 +1,20 @@
 import { spawn } from 'node:child_process'
-import { existsSync, readFileSync } from 'node:fs'
+import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Locator, Page } from '@playwright/test'
 import type { Config } from '../../src/shared/config'
+import { nodeDisplayName } from '../support/executable'
 import { fixture, readLedger, TAG_VARIABLE, type LedgerEntry } from '../support/proc'
 import { killTagged, taggedProcesses } from '../support/processes'
 import { expect, expectNoOutboundConnections, launchVeydr, test, type VeydrApp } from './support/fixtures'
+import { portListingLogs } from './support/port-listings'
 import { seed } from './support/seed'
 import { removeDir, tempDir } from './support/temp'
 
-// Task 8.3: the ports view against real listeners, managed and not.
-//
-// Linux-only until W3 (add-windows-port-inspection): on Windows the Ports view says that port
-// inspection is not yet available, which windows-ports.spec.ts checks.
-test.skip(process.platform !== 'linux', '[linux-only: port inspection]')
+// Task 8.3: the ports view against real listeners, managed and not, on Linux and on Windows
+// (add-windows-port-inspection design D7). Only the restricted owner is Linux-only: the app runs as
+// the runner's account, which on Windows can query every owner the test can start. The Windows
+// standard-user case is test/integration/windows-ports.test.ts's.
 
 const PROJECT_ID = '7a2e9b5d-4d2f-4f66-8b8c-1e7e2a3c0b12'
 const DEV_ID = '6f1f8a4c-3c1e-4e55-9a7b-0d6d1f2b9a01'
@@ -58,8 +59,11 @@ function seededConfig(s: Scene): Config {
 
 /** Starts a listener outside Veydr (an unmanaged process). */
 function startUnmanaged(s: Scene, role: string): void {
-  spawn(process.execPath, [fixture('listen'), '--ledger', s.ledger, '--role', role], { env: s.env, stdio: 'ignore' })
+  spawn(process.execPath, [fixture('listen'), '--ledger', s.ledger, '--role', role], { env: s.env, stdio: 'ignore', windowsHide: true })
 }
+
+/** What the Ports view shows for a fixture: Node's name (`node`, or `node.exe`) and its PID. */
+const nodeProcess = (pid: number): string => `${nodeDisplayName()} PID ${pid}`
 
 async function recorded(s: Scene, role: string): Promise<LedgerEntry> {
   await expect.poll(() => readLedger(s.ledger).some((e) => e.role === role), { message: `${role} listening` }).toBe(true)
@@ -84,7 +88,7 @@ async function cleanup(veydr: VeydrApp | null, s: Scene, extra: readonly string[
   for (const path of [s.dir, ...extra]) removeDir(path)
 }
 
-test('[linux-only: port inspection] [spec:port-inspection/dev-server-port-shown] [spec:port-inspection/port-opened-by-a-child-process] shows the ports of running commands, including one opened by a grandchild', async () => {
+test('[spec:port-inspection/dev-server-port-shown] [spec:port-inspection/port-opened-by-a-child-process] shows the ports of running commands, including one opened by a grandchild', async () => {
   const s = scene()
   const seeded = seed({ 'config.json': JSON.stringify(seededConfig(s)) })
   let veydr: VeydrApp | null = null
@@ -108,11 +112,11 @@ test('[linux-only: port inspection] [spec:port-inspection/dev-server-port-shown]
     const devRow = portRow(window, 'ports-managed-table', dev.port ?? 0)
     await expect(devRow).toHaveCount(1)
     await expect(devRow.getByTestId('port-command')).toHaveText('fixtures › dev')
-    await expect(devRow.getByTestId('port-process')).toHaveText(`node PID ${dev.pid}`)
+    await expect(devRow.getByTestId('port-process')).toHaveText(nodeProcess(dev.pid))
     await expect(devRow).toContainText('127.0.0.1')
     const nestedRow = portRow(window, 'ports-managed-table', nested.port ?? 0)
     await expect(nestedRow.getByTestId('port-command')).toHaveText('fixtures › nested')
-    await expect(nestedRow.getByTestId('port-process')).toHaveText(`node PID ${nested.pid}`)
+    await expect(nestedRow.getByTestId('port-process')).toHaveText(nodeProcess(nested.pid))
     // Both also appear in the list of all listeners, as managed.
     await expect(portRow(window, 'ports-all-table', dev.port ?? 0)).toHaveAttribute('data-managed', 'true')
     await expect(portRow(window, 'ports-all-table', nested.port ?? 0)).toHaveAttribute('data-managed', 'true')
@@ -133,19 +137,23 @@ test('[linux-only: port inspection] [spec:port-inspection/dev-server-port-shown]
   }
 })
 
-test('[linux-only: port inspection] [spec:port-inspection/unmanaged-listener-owned-by-user] [spec:port-inspection/no-actions-on-unrelated-processes] [spec:port-inspection/refresh] lists unmanaged listeners without actions and refreshes on demand and every 3 s', async () => {
+test('[spec:port-inspection/unmanaged-listener-owned-by-user] [spec:port-inspection/no-actions-on-unrelated-processes] [spec:port-inspection/refresh] lists unmanaged listeners without actions and refreshes on demand and every 3 s', async () => {
   const s = scene()
-  const reads = join(s.dir, 'port-reads.log')
+  // Listings are counted by the probe: /proc/net/tcp reads on Linux, helper `ports` runs on Windows.
+  const listings = portListingLogs(s.dir)
   let veydr: VeydrApp | null = null
   try {
-    veydr = await launchVeydr({ preloads: [probePath], env: { VEYDR_TEST_PORT_READS: reads } })
+    veydr = await launchVeydr({ preloads: [probePath], env: listings.env })
     const { window } = veydr
-    const readCount = (): number => (existsSync(reads) ? readFileSync(reads, 'utf8').split('\n').filter(Boolean).length : 0)
+    const readCount = listings.count
     // Nothing is read until the view is opened.
     await expect(window.getByRole('heading', { level: 1, name: 'Projects' })).toBeVisible()
     expect(readCount()).toBe(0)
 
     await openPorts(window)
+    // The probe sees the listing: without this, the "nothing read" checks above and below could
+    // pass because the probe's log is never written (on Windows: its child_process patch missed).
+    await expect.poll(readCount, { message: 'the probe counted the listing that opening the view made' }).toBeGreaterThanOrEqual(1)
     const refreshed = window.getByTestId('ports-refreshed')
     const first = await refreshed.getAttribute('dateTime')
 
@@ -170,7 +178,7 @@ test('[linux-only: port inspection] [spec:port-inspection/unmanaged-listener-own
 
     // Not started by Veydr: PID and name, marked not managed, and no action of any kind.
     await expect(row).toHaveAttribute('data-managed', 'false')
-    await expect(row.getByTestId('port-process')).toHaveText(`node PID ${manual.pid}`)
+    await expect(row.getByTestId('port-process')).toHaveText(nodeProcess(manual.pid))
     await expect(row.getByTestId('port-command')).toHaveText('Not managed')
     await expect(row.locator('button, a, input, select, [role="button"], [role="menu"]')).toHaveCount(0)
     await expect(window.getByTestId('ports-managed-table')).toHaveCount(0)
@@ -207,7 +215,8 @@ test('[linux-only: port inspection] [spec:port-inspection/unmanaged-listener-own
   }
 })
 
-test('[linux-only: port inspection] [spec:port-inspection/port-owned-by-another-user] shows a port whose owner is hidden from the user as restricted', async () => {
+test("[linux-only: another user's process] [spec:port-inspection/port-owned-by-another-user] shows a port whose owner is hidden from the user as restricted", async () => {
+  test.skip(process.platform !== 'linux', "[linux-only: another user's process]")
   const s = scene()
   let veydr: VeydrApp | null = null
   try {
@@ -247,7 +256,7 @@ test('[linux-only: port inspection] [spec:port-inspection/port-owned-by-another-
   }
 })
 
-test('[linux-only: port inspection] the ports view is reachable by keyboard and its refresh time is announced as text', async () => {
+test('the ports view is reachable by keyboard and its refresh time is announced as text', async () => {
   const s = scene()
   let veydr: VeydrApp | null = null
   try {
