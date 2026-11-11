@@ -1,9 +1,11 @@
-import { spawnSync } from 'node:child_process'
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { type ChildProcess, type SpawnOptions, spawnSync } from 'node:child_process'
+import { EventEmitter } from 'node:events'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { PassThrough } from 'node:stream'
 import { afterEach, describe, expect, it } from 'vitest'
-import { CHECKS } from '../../scripts/windows-probe/checks.mjs'
+import { CHECKS, PROBE_AREAS } from '../../scripts/windows-probe/checks.mjs'
 import {
   type ContextMeasurement,
   type ProbeDirectory,
@@ -17,6 +19,20 @@ import {
   runDriver,
 } from '../../scripts/windows-probe/driver.mjs'
 import { LaunchUsageError, isResultLine, launch, parseLaunchArgs } from '../../scripts/windows-probe/launch-detached.mjs'
+import {
+  type HelperRun,
+  AREA,
+  CATALOG,
+  EXIT_ID,
+  HELPER_PATH,
+  HELPER_TIMEOUT_MS,
+  MAX_OUTPUT_BYTES,
+  OUTPUT_ID,
+  helperAnswers,
+  runHelperPorts,
+  runPortsStandardUser,
+} from '../../scripts/windows-probe/ports-standard-user.mjs'
+import { MAX_PORTS_OUTPUT_BYTES } from '../../src/main/platform/windows/protocol'
 
 // The execution contexts of the Windows probes (tasks 3.1–3.2, design D9): the launcher that starts
 // every driver without a console, and the driver runtime that reports the context checks first.
@@ -474,5 +490,311 @@ describe('launch-detached.mjs', () => {
     expect(spawnSync(process.execPath, [script, '--timeout', '30', '--out', out, '--', join(dir, 'missing.mjs')], { encoding: 'utf8', env }).status).toBe(2)
     const failing = driver('process.exitCode = 1')
     expect(spawnSync(process.execPath, [script, '--timeout', '30', '--out', failing.out, '--', failing.file], { encoding: 'utf8', env }).status).toBe(1)
+  })
+})
+
+// The standard user's port listing (add-windows-port-inspection task 4.1, design D7): the driver that
+// runs the helper's `ports` as the temporary standard user, and the -Helper parameter that gives
+// standard-user.ps1 the helper to copy for it. The real run is in test/integration/windows-ports.test.ts.
+
+describe('ports-standard-user.mjs', () => {
+  type Line = { id: string; answer: unknown; detail: string; data: Record<string, unknown> }
+  const okRun = (stdout: string, overrides: Partial<HelperRun> = {}): HelperRun => ({ code: 0, signal: null, stdout: Buffer.from(stdout), stderr: '', ms: 12, ...overrides })
+  const PORTS_LINE = '{"type":"ports","takenAt":"133000000000000000","listeners":[],"owners":[]}\n'
+  const run = async (args: string[], runHelper: () => Promise<HelperRun> = () => Promise.resolve(okRun(PORTS_LINE))) => {
+    const lines: string[] = []
+    const error = await runPortsStandardUser(args, { runHelper, measure: (pid) => Promise.resolve(measured({}, pid)), probeDirectory: () => ({ usable: true }), write: (l) => lines.push(l) }).then(
+      () => undefined,
+      (e: unknown) => e,
+    )
+    return { lines: lines.map((l) => JSON.parse(l) as Line), error }
+  }
+
+  it('reports the context checks, ctx-standard-user among them, then the helper\'s exit code and its exact stdout', async () => {
+    let ran = 0
+    const { lines, error } = await run(['--user', 'standard'], () => {
+      ran++
+      return Promise.resolve(okRun(PORTS_LINE))
+    })
+    expect(error).toBeUndefined()
+    expect(ran).toBe(1)
+    expect(lines.map((l) => [l.id, l.answer])).toEqual([
+      ['ctx-no-console', 'yes'],
+      ['ctx-job', 'no'],
+      ['ctx-standard-user', 'yes'],
+      [EXIT_ID, 'yes'],
+      [OUTPUT_ID, 'yes'],
+    ])
+    expect(lines[3]?.data).toEqual({ ms: 12, exitCode: 0, context: { user: 'standard', console: 'none' } })
+    expect(lines[4]?.data).toEqual({ bytes: PORTS_LINE.length, stdout: PORTS_LINE, context: { user: 'standard', console: 'none' } })
+  })
+
+  it('accepts only `--user standard [--unavailable <reason>]`, refusing extra arguments before running anything', async () => {
+    for (const args of [['extra', '--user', 'standard'], ['--user', 'standard', 'C:\\Windows\\System32\\cmd.exe'], ['--user', 'admin'], ['--user', 'standard', '--helper', 'x'], []]) {
+      let ran = false
+      const { lines, error } = await run(args, () => {
+        ran = true
+        return Promise.resolve(okRun(PORTS_LINE))
+      })
+      expect(error, args.join(' ')).toBeInstanceOf(DriverUsageError)
+      expect(lines, args.join(' ')).toEqual([])
+      expect(ran, args.join(' ')).toBe(false)
+    }
+  })
+
+  it('answers every line with the reason when the standard user is unavailable, without running the helper', async () => {
+    const { lines, error } = await run(['--user', 'standard', '--unavailable', 'cannot create the account veydr-probe'], () => Promise.reject(new Error('ran')))
+    expect(error).toBeUndefined()
+    expect(lines.map((l) => l.id)).toEqual(['ctx-no-console', 'ctx-job', 'ctx-standard-user', EXIT_ID, OUTPUT_ID])
+    for (const line of lines) {
+      expect(line.answer, line.id).toBeNull()
+      expect(line.data['unavailable'], line.id).toBe(true)
+    }
+  })
+
+  it('stays out of the probe registries: its area and lines are its own, which a probe driver cannot report', async () => {
+    expect(PROBE_AREAS).not.toContain(AREA)
+    expect(CHECKS.filter((c) => (c.area as string) === AREA || c.id === EXIT_ID || c.id === OUTPUT_ID)).toEqual([])
+    for (const file of ['scripts/windows-probe/checks.mjs', 'scripts/windows-probe/summary.mjs', '.github/workflows/windows-probe.yml', 'test/unit/workflow-policy.test.ts', 'test/unit/windows-probe-summary.test.ts']) {
+      expect(readFileSync(join(root, file), 'utf8'), file).not.toMatch(/ports-standard-user|ports-std-helper/)
+    }
+    // runDriver looks the area up in the catalog it is given, so the probe catalog refuses it, and its catalog refuses the probe areas and the context area.
+    const write = () => undefined
+    const measure = () => Promise.reject(new Error('measured'))
+    await expect(runDriver({ area: AREA, user: 'standard', ids: [EXIT_ID], probe: () => undefined, measure, write })).rejects.toThrow(DriverUsageError)
+    await expect(runDriver({ area: 'ports', user: 'standard', ids: ['port-ps-std'], catalog: CATALOG, probe: () => undefined, measure, write })).rejects.toThrow(DriverUsageError)
+    await expect(runDriver({ area: 'context', user: 'standard', ids: ['ctx-job'], catalog: { areas: ['context'], checks: CHECKS }, probe: () => undefined, measure, write })).rejects.toThrow(DriverUsageError)
+  })
+
+  it('answers from the helper\'s run: exit code, a single line, and why there is none', () => {
+    expect(helperAnswers(okRun(PORTS_LINE))).toMatchObject({ exit: { answer: 'yes' }, output: { answer: 'yes', data: { stdout: PORTS_LINE } } })
+    const failed = helperAnswers(okRun('', { code: 1, stderr: 'veydr-helper: GetExtendedTcpTable failed\r\n' }))
+    expect(failed.exit).toEqual({ answer: 'no', detail: 'the helper exited with 1: veydr-helper: GetExtendedTcpTable failed', data: { ms: 12, exitCode: 1, stderr: 'veydr-helper: GetExtendedTcpTable failed' } })
+    expect(failed.output).toMatchObject({ answer: 'no', detail: 'the helper printed nothing' })
+    for (const stdout of ['{"a":1}', '{"a":1}\n{"b":2}\n', '\n', ' \n', '{"a":1}\n\n']) {
+      expect(helperAnswers(okRun(stdout)).output, JSON.stringify(stdout)).toMatchObject({ answer: 'no', detail: 'the helper did not print exactly one line ending in a line feed', data: { stdout } })
+    }
+    expect(helperAnswers(okRun('', { stdout: Buffer.from([0x7b, 0xff, 0x0a]) })).output).toEqual({ answer: 'no', detail: 'the helper\'s stdout is not UTF-8', data: { bytes: 3 } })
+    expect(helperAnswers(okRun('', { code: null, signal: 'SIGKILL' })).exit).toMatchObject({ answer: 'no', detail: 'the helper exited with SIGKILL', data: { exitCode: null, signal: 'SIGKILL' } })
+    for (const [overrides, detail] of [
+      [{ code: null, error: 'spawn C:\\veydr-probe-std\\scripts\\windows-probe\\veydr-helper.exe ENOENT' }, 'the helper did not start: spawn'],
+      [{ code: null, signal: 'SIGTERM', stopped: 'timeout' }, `did not finish within ${HELPER_TIMEOUT_MS / 1000} s`],
+      [{ code: null, signal: 'SIGTERM', stopped: 'output' }, `more than ${MAX_OUTPUT_BYTES} bytes`],
+    ] as const) {
+      const answers = helperAnswers(okRun('', overrides))
+      expect(answers.exit.answer, detail).toBeNull()
+      expect(answers.output.answer, detail).toBeNull()
+      expect(answers.exit.detail, detail).toContain(detail)
+    }
+  })
+
+  it('runs exactly `veydr-helper.exe ports` from its own directory, with stdin closed, and stops it at its time and output limits', async () => {
+    expect(HELPER_PATH).toBe(join(root, 'scripts', 'windows-probe', 'veydr-helper.exe'))
+    // The limit Veydr itself accepts for a listing.
+    expect(MAX_OUTPUT_BYTES).toBe(MAX_PORTS_OUTPUT_BYTES)
+
+    type Fake = EventEmitter & { stdout: PassThrough; stderr: PassThrough; killed: number; kill: () => boolean }
+    const calls: { file: string; args: readonly string[]; options: SpawnOptions }[] = []
+    const fake = (behave: (child: Fake) => void) => (file: string, args: readonly string[], options: SpawnOptions): ChildProcess => {
+      calls.push({ file, args, options })
+      const child = Object.assign(new EventEmitter(), { stdout: new PassThrough(), stderr: new PassThrough(), killed: 0 }) as Fake
+      child.kill = () => {
+        child.killed++
+        setImmediate(() => child.emit('close', null, 'SIGTERM'))
+        return true
+      }
+      setImmediate(() => behave(child))
+      return child as unknown as ChildProcess
+    }
+    const helper = join(tmpdir(), 'probe-dir', 'veydr-helper.exe')
+
+    const ok = await runHelperPorts(helper, {
+      spawnImpl: fake((child) => {
+        child.stdout.write(PORTS_LINE)
+        child.stderr.write('note')
+        setImmediate(() => child.emit('close', 0, null))
+      }),
+    })
+    expect(calls[0]).toEqual({ file: helper, args: ['ports'], options: { cwd: join(tmpdir(), 'probe-dir'), stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true, shell: false } })
+    expect(ok).toMatchObject({ code: 0, signal: null, stderr: 'note' })
+    expect(ok.stdout.toString('utf8')).toBe(PORTS_LINE)
+    expect(ok.stopped).toBeUndefined()
+
+    let hung: Fake | undefined
+    const timedOut = await runHelperPorts(helper, { timeoutMs: 20, spawnImpl: fake((child) => (hung = child)) })
+    expect(timedOut).toMatchObject({ stopped: 'timeout', code: null })
+    expect(hung?.killed).toBe(1)
+
+    let flooding: Fake | undefined
+    const flooded = await runHelperPorts(helper, {
+      maxOutputBytes: 8,
+      spawnImpl: fake((child) => {
+        flooding = child
+        child.stdout.write('12345')
+        child.stdout.write('6789')
+        child.stdout.write('more')
+      }),
+    })
+    expect(flooded).toMatchObject({ stopped: 'output' })
+    expect(flooded.stdout.toString('utf8')).toBe('12345')
+    expect(flooding?.killed).toBe(1)
+
+    const missing = await runHelperPorts(helper, { spawnImpl: fake((child) => child.emit('error', new Error('spawn ENOENT'))) })
+    expect(missing).toMatchObject({ code: null, error: 'spawn ENOENT' })
+    const throwing = await runHelperPorts(helper, {
+      spawnImpl: () => {
+        throw new Error('EACCES')
+      },
+    })
+    expect(throwing).toMatchObject({ code: null, error: 'EACCES' })
+  })
+})
+
+describe('standard-user.ps1 -Helper', () => {
+  const text = readFileSync(join(root, 'scripts/windows-probe/standard-user.ps1'), 'utf8')
+  const lines = text.split(/\r?\n/)
+  const at = (needle: string): number => {
+    const found = lines.filter((l) => l.includes(needle))
+    expect(found, needle).toHaveLength(1)
+    return lines.findIndex((l) => l.includes(needle))
+  }
+
+  it('is an optional parameter of the Run mode only, checked case-sensitively for its name, as a full path to a regular file', () => {
+    expect(text).toContain("  [Parameter(ParameterSetName = 'Run')] [string] $Helper,\n")
+    expect(text).toContain("$HelperName = 'veydr-helper.exe'\n")
+    const check = text.slice(text.indexOf('function Get-HelperProblem('), text.indexOf('\n}\n', text.indexOf('function Get-HelperProblem(')))
+    expect(check).toContain('[System.IO.Path]::GetFileName($Path) -cne $HelperName')
+    expect(check).toContain('$full -cne $Path')
+    expect(check).toContain('Test-Path -LiteralPath $Path -PathType Leaf')
+    expect(check).toContain('[System.IO.FileAttributes]::ReparsePoint')
+    // No cmdlet auto-loaded from PSModulePath for the hash: CI starts Windows PowerShell from
+    // PowerShell 7, whose module directories come first there (the windows job's first run failed so).
+    expect(lines.filter((l) => !l.trimStart().startsWith('#') && /Get-FileHash/i.test(l))).toEqual([])
+    expect(text).toContain('[System.Security.Cryptography.SHA256]::Create()')
+    // Windows PowerShell's own module path, set before the first cmdlet that a module provides: started
+    // through npm from a PowerShell 7 step, the script inherits PowerShell 7's module directories first
+    // (the windows job's second run failed so, in ConvertTo-SecureString).
+    const modulePath = at("$env:PSModulePath = $modulePaths -join ';'")
+    const block = lines.slice(at("$modulePaths = @([System.IO.Path]::Combine($env:ProgramFiles, 'WindowsPowerShell', 'Modules'))"), modulePath + 1)
+    expect(block.map((l) => l.trim())).toEqual([
+      "$modulePaths = @([System.IO.Path]::Combine($env:ProgramFiles, 'WindowsPowerShell', 'Modules'))",
+      "foreach ($entry in ([string][Environment]::GetEnvironmentVariable('PSModulePath', 'Machine') -split ';')) {",
+      "if ($entry -ne '' -and $modulePaths -notcontains $entry) { $modulePaths += $entry }",
+      '}',
+      "$env:PSModulePath = $modulePaths -join ';'",
+    ])
+    // Right after the preamble: no code between $ErrorActionPreference and the reset, which is before every cmdlet of the run.
+    const stop = at("$ErrorActionPreference = 'Stop'")
+    const reset = at("$modulePaths = @([System.IO.Path]::Combine(")
+    expect(stop).toBeGreaterThan(at('[CmdletBinding('))
+    expect(lines.slice(stop + 1, reset).filter((l) => l.trim() !== '' && !l.trimStart().startsWith('#'))).toEqual([])
+    // The reset itself calls no cmdlet (a Verb-Noun command), and is the only write of PSModulePath.
+    expect(block.filter((l) => /\b[A-Z][a-z]+-[A-Z][A-Za-z]+\b/.test(l))).toEqual([])
+    expect(lines.filter((l) => /\$env:PSModulePath\s*=/.test(l))).toEqual([lines[modulePath]])
+    // Every directory above the file too, up to the drive: a junction on the way is refused.
+    expect(check).toContain('for ($directory = [System.IO.Path]::GetDirectoryName($Path); -not [string]::IsNullOrEmpty($directory); $directory = [System.IO.Path]::GetDirectoryName($directory))')
+    expect(check).toContain('return "must not lead through a link, but $directory is one"')
+    // No case-insensitive comparison of the name anywhere: -eq, -ne, -like and -match ignore case in PowerShell.
+    expect(text).not.toMatch(/\$HelperName\b[^\n]*-(?:i?eq|i?ne|i?like|i?notlike|i?match|i?notmatch)\b/)
+    expect(text).not.toMatch(/-(?:i?eq|i?ne|i?like|i?notlike)\s+\$HelperName\b/)
+  })
+
+  it('accepts as fully qualified only a path from a drive letter, so a relative, rooted, UNC or device path is refused', () => {
+    const source = /\$Path -notmatch '([^']+)'/.exec(text)?.[1]
+    expect(source).toBe('^[A-Za-z]:\\\\[^\\\\]')
+    const pattern = new RegExp(source ?? '$^')
+    expect(pattern.test('C:\\a\\out-helper\\veydr-helper.exe')).toBe(true)
+    for (const path of ['veydr-helper.exe', 'out-helper\\veydr-helper.exe', '.\\veydr-helper.exe', '\\out-helper\\veydr-helper.exe', 'C:veydr-helper.exe', 'C:\\\\veydr-helper.exe', '\\\\server\\share\\veydr-helper.exe', '\\\\?\\C:\\veydr-helper.exe', '']) {
+      expect(pattern.test(path), path).toBe(false)
+    }
+  })
+
+  it('is checked with the other arguments, before the results file and before the account exists, and copied only into the account\'s directory', () => {
+    const driverCheck = at("if ($Driver -notmatch '^[a-z0-9-]+\\.mjs$'")
+    const helperCheck = at('$problem = Get-HelperProblem $Helper')
+    const results = at('$resultsPath = [System.IO.Path]::GetFullPath(')
+    const password = at('$password = New-ProbePassword')
+    const account = at('$account = New-LocalUser')
+    expect(driverCheck).toBeLessThan(helperCheck)
+    expect(helperCheck).toBeLessThan(results)
+    expect(results).toBeLessThan(password)
+    expect(password).toBeLessThan(account)
+    // A refused -Helper exits before anything else runs.
+    expect(lines.slice(helperCheck, helperCheck + 4).join('\n')).toMatch(/\[Console\]::Error\.WriteLine\("standard-user\.ps1: -Helper \$problem, not '\$Helper'"\)\n\s+exit 1/)
+
+    // $Helper is read only to be checked and hashed; what is copied is the checked value, and only next to the drivers.
+    const uses = lines.map((l, i) => [i, l] as const).filter(([, l]) => /\$Helper\b/i.test(l))
+    expect(uses.map(([i]) => i).every((i) => i < results)).toBe(true)
+    // Hashed once accepted, before the account exists.
+    const hashed = at('$helperHash = Get-Sha256 $Helper')
+    expect(helperCheck).toBeLessThan(hashed)
+    expect(hashed).toBeLessThan(results)
+    const copy = at('Copy-Item -LiteralPath $helperSource -Destination $helperCopy -Force')
+    expect(copy).toBe(at('Copy-Item -LiteralPath $PSScriptRoot') + 4)
+    expect(lines.slice(copy - 2, copy + 3).map((l) => l.trim())).toEqual([
+      'if ($null -ne $helperSource) {',
+      '$helperCopy = Join-Path $stdScripts $HelperName',
+      'Copy-Item -LiteralPath $helperSource -Destination $helperCopy -Force',
+      'if ((Get-Sha256 $helperCopy) -cne $helperHash) { throw "$helperSource changed after it was checked" }',
+      '}',
+    ])
+    expect(lines.filter((l) => /\$helperSource\b/.test(l)).map((l) => l.trim())).toEqual([
+      '$helperSource = $null',
+      '$helperSource = $Helper',
+      'if ($null -ne $helperSource) {',
+      'Copy-Item -LiteralPath $helperSource -Destination $helperCopy -Force',
+      'if ((Get-Sha256 $helperCopy) -cne $helperHash) { throw "$helperSource changed after it was checked" }',
+    ])
+  })
+
+  // The checks run before the account exists, so they need no administrator; the Windows unit lane
+  // runs them. The results file never exists, so a -Helper that passed would fail on it instead.
+  it.skipIf(process.platform !== 'win32')('[windows-only: Windows PowerShell 5.1] refuses a -Helper that is not a fully qualified veydr-helper.exe, before anything else', { timeout: 180_000 }, () => {
+    const dir = realpathSync.native(mkdtempSync(join(tmpdir(), 'veydr-probe-helper-')))
+    try {
+      const good = join(dir, 'good')
+      const upper = join(dir, 'upper')
+      for (const sub of [good, upper, join(dir, 'folder', 'veydr-helper.exe')]) mkdirSync(sub, { recursive: true })
+      writeFileSync(join(good, 'veydr-helper.exe'), '')
+      // A junction (no administrator needed) whose target holds a valid helper.
+      const junction = join(dir, 'junction')
+      symlinkSync(good, junction, 'junction')
+      writeFileSync(join(upper, 'VEYDR-HELPER.EXE'), '')
+      writeFileSync(join(good, 'other.exe'), '')
+      const powershell = join(process.env['SystemRoot'] ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
+      const script = join(root, 'scripts/windows-probe/standard-user.ps1')
+      const missingResults = join(dir, 'no-such-results.jsonl')
+      const launch = (helper: string) =>
+        spawnSync(powershell, ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', script, '-Results', missingResults, '-Timeout', '60', '-Driver', 'ports-standard-user.mjs', '-Helper', helper], {
+          encoding: 'utf8',
+          windowsHide: true,
+          cwd: good,
+          timeout: 60_000,
+        })
+      const refused: [string, string][] = [
+        [join(good, 'other.exe'), 'must name a file called exactly veydr-helper.exe'],
+        [join(upper, 'VEYDR-HELPER.EXE'), 'must name a file called exactly veydr-helper.exe'],
+        ['veydr-helper.exe', 'must be a fully qualified path'],
+        ['.\\veydr-helper.exe', 'must be a fully qualified path'],
+        [`${good}\\..\\good\\veydr-helper.exe`, 'must be a fully qualified path'],
+        [join(good, 'veydr-helper.exe').replace(/\\/g, '/'), 'must be a fully qualified path'],
+        [join(dir, 'missing', 'veydr-helper.exe'), 'must name an existing file'],
+        [join(dir, 'folder', 'veydr-helper.exe'), 'must name an existing file'],
+        [join(junction, 'veydr-helper.exe'), `must not lead through a link, but ${junction} is one`],
+      ]
+      for (const [helper, message] of refused) {
+        const run = launch(helper)
+        expect(run.status, `${helper}: ${run.stdout}${run.stderr}`).toBe(1)
+        expect(run.stderr, helper).toContain(`standard-user.ps1: -Helper ${message}`)
+        expect(run.stdout, helper).not.toContain('::add-mask::')
+      }
+      // Accepted: the run goes on to the next check, the results file, and stops there.
+      const accepted = launch(join(good, 'veydr-helper.exe'))
+      expect(accepted.status).toBe(1)
+      expect(accepted.stderr).not.toContain('-Helper')
+      expect(accepted.stderr).toContain('does not exist; identity.mjs writes its first line')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 })

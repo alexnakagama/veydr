@@ -1,7 +1,7 @@
 # Runs a probe driver as a temporary local standard user (design D9), because the runner account is
 # an administrator. Runs under Windows PowerShell 5.1 (design D2), as administrator:
 #
-#   powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/windows-probe/standard-user.ps1 -Results <results-file> -Timeout <seconds> -Driver <driver.mjs> [<driver args>...]
+#   powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/windows-probe/standard-user.ps1 -Results <results-file> -Timeout <seconds> -Driver <driver.mjs> [-Helper <path>] [<driver args>...]
 #   powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/windows-probe/standard-user.ps1 -Cleanup
 #   powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/windows-probe/standard-user.ps1 -CheckPasswords <count>
 #
@@ -13,7 +13,8 @@
 #    file, a result line or a command line;
 # 2. copies scripts/windows-probe to C:\veydr-probe-std, which only that account, Administrators and
 #    SYSTEM can access (the job collects the results as administrator), and checks, as the account,
-#    that the Node runtime's directory is readable to it;
+#    that the Node runtime's directory is readable to it. With -Helper, it also copies that file next
+#    to the drivers, as veydr-helper.exe;
 # 3. starts the Secondary Logon service and, through CreateProcessWithLogonW (LOGON_WITH_PROFILE,
 #    CREATE_NO_WINDOW, no environment block, no desktop), starts launch-detached.mjs as the account
 #    with the absolute node.exe path. The account's registry hive is loaded and its environment is
@@ -37,6 +38,12 @@
 # -CheckPasswords generates that many passwords and checks each against the complexity rules with a
 # separate check, printing only counts (tasks 3.2).
 #
+# -Helper (add-windows-port-inspection design D7) gives the Windows helper that
+# ports-standard-user.mjs runs as the account. It must be the fully qualified, normalized path of an
+# existing regular file (not a link) named exactly veydr-helper.exe, compared case-sensitively. It is
+# checked with the other arguments, before the account exists, so a wrong one changes nothing. No
+# other program is copied, and nothing else is run as the account but the driver.
+#
 # Exit codes: 0 the driver ran as the standard user and the launcher succeeded (or the check
 # passed); 1 anything else.
 [CmdletBinding(DefaultParameterSetName = 'Run', PositionalBinding = $false)]
@@ -44,6 +51,7 @@ param(
   [Parameter(Mandatory = $true, ParameterSetName = 'Run')] [string] $Results,
   [Parameter(Mandatory = $true, ParameterSetName = 'Run')] [ValidateRange(1, 3600)] [int] $Timeout,
   [Parameter(Mandatory = $true, ParameterSetName = 'Run')] [string] $Driver,
+  [Parameter(ParameterSetName = 'Run')] [string] $Helper,
   [Parameter(ParameterSetName = 'Run', ValueFromRemainingArguments = $true)] [string[]] $DriverArgs = @(),
   [Parameter(Mandatory = $true, ParameterSetName = 'Cleanup')] [switch] $Cleanup,
   [Parameter(Mandatory = $true, ParameterSetName = 'CheckPasswords')] [ValidateRange(1, 100000)] [int] $CheckPasswords
@@ -52,8 +60,25 @@ param(
 Set-StrictMode -Version 3.0
 $ErrorActionPreference = 'Stop'
 
+# Windows PowerShell's own module directories, before any cmdlet that is auto-loaded from a module
+# runs. Started from PowerShell 7 through other programs (a CI step's pwsh, then npm, node and
+# vitest), this process inherits PSModulePath with PowerShell 7's module directories first, and
+# would load PowerShell 7's Microsoft.PowerShell.Utility or .Security in their place, which fails
+# (the windows job of #53: Get-FileHash not found, then ConvertTo-SecureString's types clashing).
+# pwsh removes them itself only when it starts powershell.exe directly, as windows-probe.yml does.
+# The machine's PSModulePath holds the system directory; Program Files' is added as Windows
+# PowerShell does by default. User module directories are left out: the script needs none. No
+# cmdlet is used here, since any of them could come from the wrong module.
+$modulePaths = @([System.IO.Path]::Combine($env:ProgramFiles, 'WindowsPowerShell', 'Modules'))
+foreach ($entry in ([string][Environment]::GetEnvironmentVariable('PSModulePath', 'Machine') -split ';')) {
+  if ($entry -ne '' -and $modulePaths -notcontains $entry) { $modulePaths += $entry }
+}
+$env:PSModulePath = $modulePaths -join ';'
+
 $AccountName = 'veydr-probe'
 $ProbeRoot = 'C:\veydr-probe-std'
+# The only file name -Helper may have, compared case-sensitively.
+$HelperName = 'veydr-helper.exe'
 $PasswordLength = 32
 $Upper = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'
 $Lower = 'abcdefghijklmnopqrstuvwxyz'
@@ -303,6 +328,43 @@ function Format-ExitCode([int] $Code) {
   return [string]$Code
 }
 
+# Why -Helper cannot be copied for the account, or $null if it can: a fully qualified, normalized
+# path (a drive, no '.' or '..' segment, no '/' or doubled '\'), of an existing regular file named
+# exactly veydr-helper.exe, with no link (symbolic link, junction or other reparse point) on the way:
+# neither the file nor any directory above it, so the path names the file that is copied.
+function Get-HelperProblem([string] $Path) {
+  $full = $null
+  try {
+    $full = [System.IO.Path]::GetFullPath($Path)
+  } catch {
+    $full = $null
+  }
+  if ($Path -notmatch '^[A-Za-z]:\\[^\\]' -or $null -eq $full -or $full -cne $Path) { return 'must be a fully qualified path such as C:\out-helper\veydr-helper.exe' }
+  if ([System.IO.Path]::GetFileName($Path) -cne $HelperName) { return "must name a file called exactly $HelperName" }
+  if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return 'must name an existing file' }
+  if (((Get-Item -LiteralPath $Path -Force).Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) { return 'must name a regular file, not a link' }
+  for ($directory = [System.IO.Path]::GetDirectoryName($Path); -not [string]::IsNullOrEmpty($directory); $directory = [System.IO.Path]::GetDirectoryName($directory)) {
+    if (((Get-Item -LiteralPath $directory -Force).Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) { return "must not lead through a link, but $directory is one" }
+  }
+  return $null
+}
+
+# The SHA-256 of a file, as upper-case hex, through .NET rather than Get-FileHash, a script function
+# of a module: it then depends on no module being found on PSModulePath (see above).
+function Get-Sha256([string] $Path) {
+  $sha = [System.Security.Cryptography.SHA256]::Create()
+  try {
+    $stream = [System.IO.File]::OpenRead($Path)
+    try {
+      return ([System.BitConverter]::ToString($sha.ComputeHash($stream)) -replace '-', '')
+    } finally {
+      $stream.Dispose()
+    }
+  } finally {
+    $sha.Dispose()
+  }
+}
+
 # Paths are checked before the account exists, so a misconfigured step changes nothing.
 if ($Driver -notmatch '^[a-z0-9-]+\.mjs$' -or -not (Test-Path -LiteralPath (Join-Path $PSScriptRoot $Driver) -PathType Leaf)) {
   [Console]::Error.WriteLine("standard-user.ps1: -Driver must name a driver in scripts/windows-probe, not '$Driver'")
@@ -312,6 +374,23 @@ foreach ($arg in $DriverArgs) {
   # Plain words only: the driver's options are added here, and nothing else reaches its command line.
   if ($arg -notmatch '^[a-z0-9][a-z0-9-]*$') {
     [Console]::Error.WriteLine("standard-user.ps1: driver arguments must be plain words, not '$arg'")
+    exit 1
+  }
+}
+$helperSource = $null
+$helperHash = $null
+if ($PSBoundParameters.ContainsKey('Helper')) {
+  $problem = Get-HelperProblem $Helper
+  if ($null -ne $problem) {
+    [Console]::Error.WriteLine("standard-user.ps1: -Helper $problem, not '$Helper'")
+    exit 1
+  }
+  $helperSource = $Helper
+  # The copy must be the file checked here: a file replaced in between is refused after copying.
+  try {
+    $helperHash = Get-Sha256 $Helper
+  } catch {
+    [Console]::Error.WriteLine("standard-user.ps1: -Helper cannot be read: $(Get-ErrorText $_)")
     exit 1
   }
 }
@@ -378,6 +457,12 @@ try {
       $directory.SetAccessControl($acl)
       New-Item -ItemType Directory -Path (Join-Path $ProbeRoot 'scripts'), (Join-Path $ProbeRoot 'results') | Out-Null
       Copy-Item -LiteralPath $PSScriptRoot -Destination (Join-Path $ProbeRoot 'scripts') -Recurse
+      # Under the directory's access rules, like the drivers.
+      if ($null -ne $helperSource) {
+        $helperCopy = Join-Path $stdScripts $HelperName
+        Copy-Item -LiteralPath $helperSource -Destination $helperCopy -Force
+        if ((Get-Sha256 $helperCopy) -cne $helperHash) { throw "$helperSource changed after it was checked" }
+      }
     } catch {
       throw "cannot prepare ${ProbeRoot}: $(Get-ErrorText $_)"
     }

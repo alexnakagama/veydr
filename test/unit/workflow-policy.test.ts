@@ -877,6 +877,27 @@ describe('ci.yml (design D4)', () => {
     )
   })
 
+  it('leaves CI as the runner sets it in the windows job, so the standard-user port test runs there rather than skips (add-windows-port-inspection design D7)', () => {
+    // GitHub sets CI=true for every step. windows-ports.test.ts runs its standard-user case only when
+    // CI is exactly "true", so nothing in the job may set or override it. Windows names are case-insensitive.
+    const setsCi = (l: Line): boolean => l.kind === 'node' && l.key?.toUpperCase() === 'CI'
+    const workflowEnv = topLevelBlock(lines, 'env')
+    expect(workflowEnv === undefined ? [] : within(lines, workflowEnv).filter(setsCi)).toEqual([])
+    expect(within(lines, job('windows')).filter(setsCi)).toEqual([])
+    // Nor through a script: PowerShell's $env:CI, an assignment, setx, or GITHUB_ENV, which carries a value to later steps.
+    const overrides = /\$env:CI\b|\bCI\s*=|\bsetx\b|GITHUB_ENV/i
+    expect(scripts('windows').filter((s) => overrides.test(s))).toEqual([])
+    // The local setup action runs inside the job too.
+    const action = githubFiles().find((f) => f.path === '.github/actions/setup/action.yml')?.text ?? ''
+    expect(action).not.toBe('')
+    expect(parse(action).filter(setsCi)).toEqual([])
+    expect(action).not.toMatch(overrides)
+    // The test step runs this script as it is, which sets nothing.
+    const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')) as { scripts: Record<string, string> }
+    expect(pkg.scripts['test:windows']).toBe('vitest run --project integration windows-')
+    expect(scripts('windows')).toContain('npm run test:windows')
+  })
+
   it('[spec:quality-gates/helper-build-failure-fails-the-windows-check] runs the Windows integration tests only after a successful helper build (design D8)', () => {
     const steps = stepsOf(lines, job('windows')).map((s) => stepField(lines, s))
     const names = steps.map((field) => field('name')?.value)

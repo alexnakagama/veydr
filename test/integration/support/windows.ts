@@ -223,3 +223,51 @@ ConvertTo-Json -Compress -InputObject @(@(${list}) | ForEach-Object { [pscustomo
   )
   return new Map((parseArray(output) as { pid: number; created: string }[]).map((p) => [p.pid, p.created]))
 }
+
+/**
+ * Replaces the DACL of process `pid` with a protected one that grants access only to SYSTEM,
+ * Administrators and the account running the tests, through SetSecurityInfo from PowerShell. Any
+ * other account, such as a temporary standard user, then gets ERROR_ACCESS_DENIED from OpenProcess
+ * for any right, PROCESS_QUERY_LIMITED_INFORMATION included: what a process it may not query looks
+ * like. The runner's processes do not look so by default (the standard user can query them, as
+ * add-windows-port-inspection's group 4 found on the windows-2025 image). Handles opened before
+ * keep their access, so the test can still end the process.
+ */
+export function denyOtherAccounts(pid: number): void {
+  if (!Number.isSafeInteger(pid) || pid <= 0) throw new Error(`not a process ID: ${String(pid)}`)
+  powershell(
+    `Add-Type -TypeDefinition @'
+using System;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+public static class VeydrProcessDacl {
+  const uint WRITE_DAC = 0x40000;
+  const int SE_KERNEL_OBJECT = 6;
+  const uint DACL_SECURITY_INFORMATION = 0x4, PROTECTED_DACL_SECURITY_INFORMATION = 0x80000000;
+  [DllImport("kernel32.dll", SetLastError = true)] static extern IntPtr OpenProcess(uint access, bool inherit, uint pid);
+  [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr handle);
+  [DllImport("kernel32.dll")] static extern IntPtr LocalFree(IntPtr memory);
+  [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)] static extern bool ConvertStringSecurityDescriptorToSecurityDescriptorW(string sddl, uint revision, out IntPtr descriptor, IntPtr size);
+  [DllImport("advapi32.dll", SetLastError = true)] static extern bool GetSecurityDescriptorDacl(IntPtr descriptor, out bool present, out IntPtr dacl, out bool defaulted);
+  [DllImport("advapi32.dll")] static extern uint SetSecurityInfo(IntPtr handle, int type, uint information, IntPtr owner, IntPtr group, IntPtr dacl, IntPtr sacl);
+  public static void Restrict(uint pid, string sddl) {
+    IntPtr descriptor;
+    if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl, 1, out descriptor, IntPtr.Zero)) throw new Win32Exception(Marshal.GetLastWin32Error());
+    try {
+      bool present, defaulted;
+      IntPtr dacl;
+      if (!GetSecurityDescriptorDacl(descriptor, out present, out dacl, out defaulted) || !present) throw new Win32Exception(Marshal.GetLastWin32Error());
+      IntPtr process = OpenProcess(WRITE_DAC, false, pid);
+      if (process == IntPtr.Zero) throw new Win32Exception(Marshal.GetLastWin32Error());
+      try {
+        uint error = SetSecurityInfo(process, SE_KERNEL_OBJECT, DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION, IntPtr.Zero, IntPtr.Zero, dacl, IntPtr.Zero);
+        if (error != 0) throw new Win32Exception((int)error);
+      } finally { CloseHandle(process); }
+    } finally { LocalFree(descriptor); }
+  }
+}
+'@
+$me = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+[VeydrProcessDacl]::Restrict([uint32]${String(pid)}, "D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GA;;;$me)")`,
+  )
+}

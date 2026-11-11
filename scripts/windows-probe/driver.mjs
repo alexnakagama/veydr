@@ -400,17 +400,34 @@ export async function reportCheck(report, id, check) {
   report(id, result.answer, result.detail, result.data)
 }
 
+/** The probe areas and their checks (checks.mjs), which every probe driver answers from. */
+const PROBE_CATALOG = Object.freeze({ areas: PROBE_AREAS, checks: CHECKS })
+
 /**
  * Runs a driver: reports the context checks, then calls `probe(report)`, which reports each of
  * `ids` (the area's checks this driver answers as `user`) once with `report(id, answer, detail, data)`.
  * Every line goes to `write` as JSON with `data.context` set to `{ user, console: 'none' }`, the
  * context the driver was started for. Throws if `probe` throws, a report is invalid, or an ID was
  * not reported; the lines written until then stay written.
+ *
+ * `catalog` (`{ areas, checks }`) is where `area` and `ids` are looked up: the probe catalog of
+ * checks.mjs by default. A driver that is not a probe area, such as ports-standard-user.mjs, passes
+ * its own, so it stays out of the probe registries; the context checks always come from checks.mjs.
  */
-export async function runDriver({ area, user, ids, probe, unavailable, measure = measureContext, probeDirectory = checkProbeDirectory, write = (line) => process.stdout.write(`${line}\n`) }) {
-  if (!PROBE_AREAS.includes(area)) throw new DriverUsageError(`area must be one of ${PROBE_AREAS.join(', ')}, not ${JSON.stringify(area)}`)
+export async function runDriver({
+  area,
+  user,
+  ids,
+  probe,
+  unavailable,
+  catalog = PROBE_CATALOG,
+  measure = measureContext,
+  probeDirectory = checkProbeDirectory,
+  write = (line) => process.stdout.write(`${line}\n`),
+}) {
+  if (area === CONTEXT_AREA || !catalog.areas.includes(area)) throw new DriverUsageError(`area must be one of ${catalog.areas.join(', ')}, not ${JSON.stringify(area)}`)
   if (!USERS.includes(user)) throw new DriverUsageError(`user must be admin or standard, not ${JSON.stringify(user)}`)
-  const byId = new Map(CHECKS.map((c) => [c.id, c]))
+  const byId = new Map(catalog.checks.map((c) => [c.id, c]))
   for (const id of ids) {
     const entry = byId.get(id)
     if (entry?.kind !== 'check' || entry.area !== area || !runsAs(entry, user)) throw new DriverUsageError(`${id} is not a check of area ${area} that runs as ${user}`)
