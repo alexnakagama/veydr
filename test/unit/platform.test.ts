@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { SpawnError } from '../../src/main/platform/errors'
@@ -7,7 +7,46 @@ import { duplicateEnvName, envNameKey } from '../../src/shared/config'
 import type { CommandSpec, LedgerEntry, SpawnPlan } from '../../src/main/platform/types'
 import { createWindowsPlatform } from '../../src/main/platform/windows'
 import { batchCommandLine } from '../../src/main/platform/windows/command-line'
+import type * as HelperTool from '../../src/main/platform/windows/helper-tool'
+import type { HelperCheck, HelperPortsReaderOptions } from '../../src/main/platform/windows/helper-tool'
+import type * as ProcessTree from '../../src/main/platform/windows/process-tree'
+import type { WindowsProcessTreeOptions } from '../../src/main/platform/windows/process-tree'
 import { windowsFs } from './support/windows-fs'
+
+// What the Windows composition hands the helper's runners (task 5.1): the real functions run, and
+// are only recorded, unless a test sets `fakePorts`, which stands in for the helper's `ports` output.
+const wiring = vi.hoisted(() => ({
+  checks: [] as HelperCheck[],
+  readers: [] as HelperPortsReaderOptions[],
+  trees: [] as WindowsProcessTreeOptions[],
+  fakePorts: null as string | null,
+}))
+vi.mock('../../src/main/platform/windows/helper-tool', async (importOriginal) => {
+  const actual = await importOriginal<typeof HelperTool>()
+  return {
+    ...actual,
+    createHelperCheck: (...args: Parameters<typeof actual.createHelperCheck>) => {
+      const check = actual.createHelperCheck(...args)
+      wiring.checks.push(check)
+      return check
+    },
+    createHelperPortsReader: (options: HelperPortsReaderOptions) => {
+      wiring.readers.push(options)
+      const read = actual.createHelperPortsReader(options)
+      return () => (wiring.fakePorts === null ? read() : Promise.resolve(wiring.fakePorts))
+    },
+  }
+})
+vi.mock('../../src/main/platform/windows/process-tree', async (importOriginal) => {
+  const actual = await importOriginal<typeof ProcessTree>()
+  return {
+    ...actual,
+    createWindowsProcessTree: (options: WindowsProcessTreeOptions) => {
+      wiring.trees.push(options)
+      return actual.createWindowsProcessTree(options)
+    },
+  }
+})
 
 // A full path on every system, so that only the helper's absence is what these tests meet.
 const plan: SpawnPlan = { file: process.execPath, args: [], cwd: '/tmp', env: {} }
@@ -76,6 +115,11 @@ describe('environment variable name keys', () => {
 })
 
 describe('Windows platform', () => {
+  // Each test sees only the wiring of the platforms it creates itself.
+  beforeEach(() => {
+    for (const list of [wiring.checks, wiring.readers, wiring.trees]) list.length = 0
+    wiring.fakePorts = null
+  })
   // An absolute path on every system, under a directory that does not exist, so no helper is found.
   const missingHelper = join(tmpdir(), `veydr-no-helper-${process.pid}`, 'veydr-helper.exe')
   const windows = createWindowsPlatform({
@@ -161,13 +205,43 @@ describe('Windows platform', () => {
     await expect(windows.processTree.launchDetached({ file: 'C:\\tools\\code.cmd', args: ['C:\\project'], cwd: 'C:\\project', env: {} })).rejects.toBeInstanceOf(SpawnError)
   })
 
-  it('portInspector.list still rejects with UnsupportedPlatformError (W3)', async () => {
+  it("lists ports through the helper's ports reader, given the helper check the process tree uses", async () => {
+    const platform = createWindowsPlatform({ helperPath: missingHelper, inherited: { SystemRoot: 'C:\\Windows' } })
+    // One check of the platform's helper, shared by the process tree and the ports reader.
+    expect(wiring.checks).toHaveLength(1)
+    expect(wiring.checks[0]?.helperPath).toBe(missingHelper)
+    expect(wiring.trees).toHaveLength(1)
+    expect(wiring.trees[0]?.helperCheck).toBe(wiring.checks[0])
+    expect(wiring.readers).toHaveLength(1)
+    expect(wiring.readers[0]).toEqual({ helperPath: missingHelper, check: wiring.checks[0] })
+
+    // A fake `ports` line: the platform's inspector lists it, as the helper's output would be.
+    const created = '133485407400000000'
+    wiring.fakePorts = `${JSON.stringify({
+      type: 'ports',
+      takenAt: '133485408000000000',
+      listeners: [{ family: 'ipv4', address: '7f000001', port: 5173, pid: 4248 }],
+      owners: [{ pid: 4248, state: 'known', created, image: 'C:\\Program Files\\nodejs\\node.exe' }],
+    })}\n`
+    try {
+      await expect(platform.portInspector.list()).resolves.toEqual({
+        takenAt: Date.UTC(2024, 0, 1),
+        ports: [{ family: 'ipv4', address: '127.0.0.1', port: 5173, owner: { kind: 'known', processes: [{ identity: { pid: 4248, token: created }, name: 'node.exe' }] } }],
+      })
+    } finally {
+      wiring.fakePorts = null
+    }
+  })
+
+  it('portInspector.list is implemented: without the helper it rejects with a plain Error naming it', async () => {
     const error: unknown = await operations['portInspector.list']?.().then(
       () => null,
       (e: unknown) => e,
     )
-    expect(error).toBeInstanceOf(UnsupportedPlatformError)
-    expect(error).toMatchObject({ code: 'unsupported_platform', platform: 'win32', operation: 'portInspector.list' })
+    expect(error).toBeInstanceOf(Error)
+    expect(error).not.toBeInstanceOf(UnsupportedPlatformError)
+    expect(error).not.toBeInstanceOf(SpawnError)
+    expect(error).toMatchObject({ message: `The Windows helper could not list the listening ports: Windows helper not found: ${missingHelper}` })
   })
 
   it('spawns through the helper, and refuses to start without it', async () => {

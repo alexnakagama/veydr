@@ -1,19 +1,15 @@
-import { UnsupportedPlatformError } from '../errors'
-import type { Platform, PlatformConventions, PlatformLog, PortInspector } from '../types'
+import type { Platform, PlatformConventions, PlatformLog } from '../types'
 import { createWindowsEnvProvider, inheritedValue } from './environment'
+import { createHelperCheck, createHelperPortsReader } from './helper-tool'
+import { createWindowsPortInspector } from './ports'
 import { createWindowsProcessTree } from './process-tree'
 import { createWindowsCommandResolver, isUsableSystemRoot, systemCmdExe, type WindowsResolverFs } from './resolver'
-
-/** Port inspection on Windows is W3's (`ports` in the helper); until then it rejects. */
-const UNSUPPORTED_PORT_INSPECTOR: PortInspector = {
-  list: () => Promise.reject(new UnsupportedPlatformError('win32', 'portInspector.list')),
-}
 
 export interface WindowsPlatformOptions {
   /**
    * Full path of `veydr-helper.exe`, chosen by the composition root. Every process-tree operation
-   * that needs the helper rejects while it is missing, not fully qualified, or of another protocol
-   * version; nothing is looked up on `PATH`.
+   * that needs the helper, and every port listing, rejects while it is missing, not fully qualified,
+   * or of another protocol version; nothing is looked up on `PATH`.
    */
   readonly helperPath: string
   readonly log?: PlatformLog
@@ -32,7 +28,11 @@ export interface WindowsPlatformOptions {
  * - the D2 command resolver, with `cmd.exe` in the Windows system directory as the default shell
  *   and as the program that runs batch files;
  * - the D3 environment: Veydr's inherited one, names merged regardless of case;
- * - no port inspection yet (W3): `portInspector.list` rejects with `UnsupportedPlatformError`.
+ * - the port inspector of W3 (add-windows-port-inspection design D4, D6): each listing runs the
+ *   helper's `ports` subcommand, and nothing else, through `createHelperPortsReader`.
+ *
+ * The process tree and the port inspector share one helper check, so the helper's protocol version
+ * is read once for both, and again only after the helper file changes.
  *
  * Exactly one resolver is created per platform and shared by every start, and by the editor launch:
  * it remembers checks that have not answered yet (a hung network share), and a resolver per start
@@ -50,7 +50,8 @@ export function createWindowsPlatform(options: WindowsPlatformOptions): Platform
     options.log?.record('warn', 'platform.windows-system-root-fallback', { set: systemRoot !== undefined, cmdExe })
   }
   const conventions: PlatformConventions = { envNames: 'case-insensitive', defaultShell: cmdExe, directorySync: false }
-  const tree = createWindowsProcessTree({ helperPath: options.helperPath, ...logOption })
+  const helperCheck = createHelperCheck(options.helperPath)
+  const tree = createWindowsProcessTree({ helperPath: options.helperPath, helperCheck, ...logOption })
   return {
     name: 'windows',
     supported: true,
@@ -63,6 +64,6 @@ export function createWindowsPlatform(options: WindowsPlatformOptions): Platform
     },
     commandResolver: createWindowsCommandResolver({ cmdExe, ...logOption, ...(options.resolverFs === undefined ? {} : { fs: options.resolverFs }) }),
     envProvider: createWindowsEnvProvider({ inherited, ...logOption }),
-    portInspector: UNSUPPORTED_PORT_INSPECTOR,
+    portInspector: createWindowsPortInspector({ readPorts: createHelperPortsReader({ helperPath: options.helperPath, check: helperCheck }), ...logOption }),
   }
 }

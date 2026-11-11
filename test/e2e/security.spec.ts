@@ -181,10 +181,12 @@ test('[spec:desktop-shell/only-declared-operations-are-available] window.veydr e
   })
   expect(unsubscribe).toBe('function')
 
-  // Every operation answers with a typed result, not a rejected promise. (Ports, which Windows does
-  // not list yet, answer there with a typed refusal: windows-ports.spec.ts.)
+  // Every operation answers with a typed result, not a rejected promise; ports are listed on Linux
+  // and on Windows alike.
   const listed = await window.evaluate(() => globalThis.window.veydr.processes.snapshot())
   expect(listed).toMatchObject({ ok: true, value: { commands: expect.any(Array) as unknown } })
+  const ports = await window.evaluate(() => globalThis.window.veydr.ports.list())
+  expect(ports).toMatchObject({ ok: true, value: { ports: expect.any(Array) as unknown } })
   const invalid = await window.evaluate(() =>
     globalThis.window.veydr.processes.start({ commandId: 'not-a-uuid' }),
   )

@@ -103,9 +103,10 @@ test('the production build contains no network probe', () => {
 })
 
 // The full session (support/session.ts) reads a listener's port in the Ports view and runs POSIX
-// shell scripts; port inspection reaches Windows with W3.
-test('[linux-only: port inspection and a POSIX shell] [spec:desktop-shell/no-outbound-connections] [spec:config-storage/project-directories-untouched] a full session opens no outbound connections and leaves the project folder untouched', async () => {
-  test.skip(process.platform !== 'linux', '[linux-only: port inspection and a POSIX shell]')
+// shell scripts, which Windows does not run; the Ports view itself is checked on Windows by
+// ports.spec.ts.
+test('[linux-only: POSIX shell scripts] [spec:desktop-shell/no-outbound-connections] [spec:config-storage/project-directories-untouched] a full session opens no outbound connections and leaves the project folder untouched', async () => {
+  test.skip(process.platform !== 'linux', '[linux-only: POSIX shell scripts]')
   const work = tempDir('veydr-e2e-session-')
   const project = join(work, 'shop')
   mkdirSync(join(project, 'src'), { recursive: true })

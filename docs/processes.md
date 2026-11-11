@@ -130,7 +130,7 @@ Evidence: `test/unit/linux-process-tree.test.ts` › "reports a process it is no
 
 ## Windows (preview)
 
-**Windows: preview. Run from source; verified in CI on Windows Server 2025. No Windows package yet.** On Windows, commands start, stop and are recovered from the app as described below, and the process-tree behavior is tested on a native Windows runner (GitHub's `windows-2025`, Windows Server 2025) for every pull request and push to `master`. To run Veydr on Windows, see [Running from source on Windows](../README.md#running-from-source-on-windows). How the program is found, which environment a command gets, and how its output is decoded are in [commands.md](commands.md#windows-preview) and [logs.md](logs.md#windows-preview). Port inspection is not yet available on Windows. The limits below, and the conditions the runner cannot verify, are part of the preview.
+**Windows: preview. Run from source; verified in CI on Windows Server 2025. No Windows package yet.** On Windows, commands start, stop and are recovered from the app as described below, and the process-tree behavior is tested on a native Windows runner (GitHub's `windows-2025`, Windows Server 2025) for every pull request and push to `master`. To run Veydr on Windows, see [Running from source on Windows](../README.md#running-from-source-on-windows). How the program is found, which environment a command gets, and how its output is decoded are in [commands.md](commands.md#windows-preview) and [logs.md](logs.md#windows-preview). The Ports view lists ports on Windows too, as described in [ports.md](ports.md#windows-preview). The limits below, and the conditions the runner cannot verify, are part of the preview.
 
 ### Containment
 
@@ -169,7 +169,7 @@ These tests run on GitHub's `windows-2025` runner, which cannot show the followi
 - a desktop session on Windows 10 or 11, including Windows Terminal as the default console;
 - logging off or shutting down Windows while commands run;
 - Veydr started with no Job Object around it, as when it is started from Explorer (the runner runs every step inside a job);
-- a standard user account: the CI job runs as the runner's administrator only;
+- a standard user account: the CI job runs Veydr as the runner's administrator only (only the helper's `ports` subcommand is also run as a standard user, see [ports.md](ports.md#windows-preview));
 - localized ANSI code pages: the runner uses code page 1252 (and OEM code page 437), so 932, 936, 949 and 950 are tested with synthetic bytes only;
 - a user-customized `PATHEXT`;
 - App Execution Aliases other than those the runner has (for example `winget`);

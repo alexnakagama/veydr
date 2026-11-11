@@ -2,7 +2,6 @@ import { randomBytes } from 'node:crypto'
 import { mkdir, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { contract } from '../../shared/api'
-import { UnsupportedPlatformError } from '../platform/errors'
 import type { EnvProvider, PortInspector } from '../platform/types'
 
 /** `veydr --smoke-test`: checks a build can run on this system, then exits (task 9.2). */
@@ -115,23 +114,17 @@ export async function runSmokeTest(deps: SmokeDeps): Promise<SmokeReport> {
     if (checks.at(-1)?.ok !== true) return
 
     // The implementation as a start uses it: the environment commands would start from (only its
-    // size is reported, since values can be secrets), and the listening sockets where they can be
-    // listed yet. A provider that fell back (Linux: the login shell could not be read) passes with
-    // its warnings counted, as the app then still starts commands with Veydr's own environment; a
-    // provider that rejects fails the check.
+    // size is reported, since values can be secrets), and the listening sockets. A provider that
+    // fell back (Linux: the login shell could not be read) passes with its warnings counted, as the
+    // app then still starts commands with Veydr's own environment; a provider or a port inspector
+    // that rejects fails the check. Every supported platform lists ports (add-windows-port-inspection
+    // design D8); an unsupported one has already failed on `supported`.
     await check('platform', async () => {
       const { name, supported, envProvider, portInspector } = deps.implementation
       if (!supported) throw new Error(`no platform implementation for ${name}`)
       const { env, warnings } = await envProvider.base()
       const environment = `${Object.keys(env).length} environment variables${warnings.length === 0 ? '' : ` (${warnings.length} ${warnings.length === 1 ? 'warning' : 'warnings'}: see the diagnostic log)`}`
-      let ports: string
-      try {
-        ports = `${(await portInspector.list()).ports.length} listening sockets readable`
-      } catch (error) {
-        // Only the platform's own "not implemented here" (Windows until W3); any other error fails.
-        if (!(error instanceof UnsupportedPlatformError)) throw error
-        ports = 'port inspection not yet available'
-      }
+      const ports = `${(await portInspector.list()).ports.length} listening sockets readable`
       return `${name}: ${environment}, ${ports}`
     })
 

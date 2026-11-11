@@ -142,7 +142,9 @@ describe('docs/processes.md matches the implementation', () => {
     const preview = deferred.slice(deferred.indexOf('\n## Windows preview (2026-11-08)\n'))
     expect(preview).toContain(`| Windows commands | **${WINDOWS_PREVIEW}**`)
     expect(preview).toContain('| Windows packaging and helper placement | Unchanged, owned by W4')
-    expect(preview).toContain('| Windows port inspection | Not available until W3')
+    // W3 replaced the "not available" row: Windows lists ports, as a preview verified in CI.
+    expect(preview).toContain('| Windows port inspection | **Preview since W3 (2026-11-11), verified in CI on Windows Server 2025 by the integration tests.**')
+    expect(preview).not.toContain('| Windows port inspection | Not available until W3')
   })
 })
 

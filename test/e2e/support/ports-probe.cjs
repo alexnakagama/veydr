@@ -1,7 +1,11 @@
 'use strict'
 // Test-only: loaded with `-r`. For the port-inspection E2E tests:
 // - appends one line to `$VEYDR_TEST_PORT_READS` each time the main process reads /proc/net/tcp
-//   (one per port listing), so a test can tell when the ports view polls;
+//   (one per port listing on Linux), so a test can tell when the ports view polls;
+// - appends one line to `$VEYDR_TEST_HELPER_PORTS` each time the main process starts a program with
+//   the arguments exactly `['ports']` through `child_process.spawn` or `execFile` (one per port
+//   listing on Windows, where the helper's `ports` subcommand lists them). The call itself is passed
+//   on unchanged;
 // - simulates a listener owned by another user (root): reading the open files of a process whose
 //   command line contains `restricted-listener` fails with EACCES, its /proc/<pid>/status reports
 //   root's user IDs, and its sockets are listed with uid 0 in /proc/net/tcp{,6}.
@@ -10,6 +14,31 @@ const { appendFileSync, readdirSync, readFileSync, readlinkSync } = require('nod
 const promises = require('node:fs/promises')
 
 const readsLog = process.env.VEYDR_TEST_PORT_READS
+const helperLog = process.env.VEYDR_TEST_HELPER_PORTS
+
+// Patched whenever the log is asked for, on every system: on Linux nothing runs `ports`, so the log
+// stays empty there, and the wrapper passes every call on unchanged.
+if (helperLog !== undefined) {
+  // Patched before the app is loaded, so every later `require('node:child_process')` sees it; the
+  // composition reads `spawn` from the module object when it creates the ports reader.
+  const childProcess = require('node:child_process')
+  const isPorts = (args) => Array.isArray(args) && args.length === 1 && args[0] === 'ports'
+  const logged = (original) =>
+    function (file, args, ...rest) {
+      if (isPorts(args)) appendFileSync(helperLog, `${Date.now()}\n`)
+      return original.call(this, file, args, ...rest)
+    }
+  const { promisify } = require('node:util')
+  for (const name of ['spawn', 'execFile']) {
+    const original = childProcess[name]
+    const wrapped = logged(original)
+    // `execFile` has its own promisified form (resolving with stdout and stderr); keep it, logged too.
+    if (typeof original[promisify.custom] === 'function') {
+      Object.defineProperty(wrapped, promisify.custom, { value: logged(original[promisify.custom]), enumerable: false, configurable: true, writable: true })
+    }
+    childProcess[name] = wrapped
+  }
+}
 
 /** PIDs of the simulated other user's processes. */
 function restrictedPids() {
