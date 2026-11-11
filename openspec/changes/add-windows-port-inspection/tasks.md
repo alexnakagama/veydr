@@ -210,7 +210,14 @@ Verified on Linux: typecheck, lint, `npm test` (1394 passed, 8 skipped), `npm ru
 
 ## 6. Integration check
 
-- [ ] 6.1 Run the full checks on the pull request: Linux typecheck, lint, `npm test`, `npm run test:integration`, e2e, `npm run spec-coverage`, and `openspec validate add-windows-port-inspection --strict`, plus the whole `windows` job. Confirm that no `it.todo` of this change remains (`grep -rn "it.todo" test | grep port-inspection` is empty). Verify: `ci-ok` is green, and record the counts here.
+- [x] 6.1 Run the full checks on the pull request: Linux typecheck, lint, `npm test`, `npm run test:integration`, e2e, `npm run spec-coverage`, and `openspec validate add-windows-port-inspection --strict`, plus the whole `windows` job. Confirm that no `it.todo` of this change remains (`grep -rn "it.todo" test | grep port-inspection` is empty). Verify: `ci-ok` is green, and record the counts here.
+
+Integration check (2026-11-11), on master at 02b264c (the merge of #54, which completes the change):
+- CI on the pull request #54 (run 43041115731): every job passed, including `ci-ok`, `windows`, `e2e`, `integration`, `unit`, `static` and `package`, and the Security workflow (CodeQL, dependency review). The push run on the merge commit (CI 43042992604, Security 43042992771) passed every job too.
+- `windows` job of #54: `npm test` 1323 passed, 79 skipped (Linux-only); `npm run test:windows` 50 of 50 passed; e2e 61 passed, 15 skipped (Linux-only). The portable `ports.spec.ts` passed on Windows (3 passed, and only the `[linux-only: another user's process]` case was skipped), which meets the condition under which group 5's review kept 5.3 checked. Latency: inspector median 49.2 ms, and `ports.list` with attribution median 50.0 ms, for 1,045 listening sockets. As the standard user, the helper listed 47 listening sockets: 46 restricted and 1 known (the runner's default-DACL fixture).
+- Linux, run locally: typecheck, lint, `npm test` (1394 passed, 8 skipped), `npm run test:integration` (50 passed, 50 skipped), e2e (72 passed, 4 skipped, all Windows-only), `npm run spec-coverage` (171/171, 0 unmapped), and `openspec validate add-windows-port-inspection --strict` (valid).
+- `grep -rn "it.todo" test | grep port-inspection` is empty.
+- Unrelated, not caused by this change: the Nightly `acceptance` job failed on 2026-11-11 (run 42999517110). The Linux packaged-acceptance driver called `xdotool getactivewindow` 5 ms after launch, before the window manager had an active window (`scripts/acceptance-driver.mjs`, `registerProject`). This is a race in the driver; no port step ran. It is to be fixed separately.
 
 ## Workflow follow-up
 
