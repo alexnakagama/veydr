@@ -27,7 +27,9 @@
     "spec-coverage": "node scripts/spec-coverage.mjs",
     "verify": "node scripts/verify.mjs",
     "dist:linux": "node scripts/ensure-electron.cjs && npm run build && electron-builder --linux --publish never",
-    "test:packaging": "npm run dist:linux && vitest run --project packaging"
+    "test:packaging": "npm run dist:linux && vitest run --project packaging",
+    "dist:windows": "node scripts/build-windows-helper.mjs && node scripts/ensure-electron.cjs && npm run build && electron-builder --win --publish never",
+    "test:packaging:windows": "npm run dist:windows && vitest run --project packaging-windows"
   },
   "dependencies": {
     "zod": "4.6.7"
