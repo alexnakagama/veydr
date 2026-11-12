@@ -93,7 +93,7 @@ Group 2 outcome:
 - [x] 3.3 Implement `desktop-shell/command-started-through-the-installed-helper`: build `createWindowsPlatform` with the installed helper's path, start a command that starts a child and opens a listener, find the listener in the port listing with the command as its owner, stop the command, and check that both processes are gone. Verify in the `windows-package` CI job.
 - [x] 3.4 Implement `desktop-shell/install-directory-not-writable-by-others` (design D4): read the access control lists of the install directory, `Veydr.exe`, `resources\app.asar` and `resources\veydr-helper.exe` with `Get-Acl`, as JSON with every identity translated to its SID, and fail on any allow entry with write, modify, delete, change-permissions or take-ownership rights for a SID outside the allowed set: the installing user's own, `S-1-5-18`, `S-1-5-32-544`, `S-1-3-0` and `S-1-3-4`. Names are never compared, and an identity without a SID is rejected. The decision function is pure and lives in a module both `support.ts` and the standard-user driver can import. Verify: unit tests feed it SIDs: Users `S-1-5-32-545` with write access (rejected), Everyone `S-1-1-0` with full control (rejected), Authenticated Users `S-1-5-11` with modify (rejected), an untranslated identity (rejected), another user's SID with write access (rejected), Users with read-and-execute (accepted), and the default profile list (accepted); the test passes in the `windows-package` CI job, and the observed list is recorded below this group.
 - [x] 3.5 Implement reinstall and uninstall: running the installer again over the installation succeeds and the smoke test passes again; after a marker file is written into `%APPDATA%\Veydr`, a silent uninstall exits 0, the install directory is gone within 120 s (the uninstaller copies itself and returns), the Start menu entry and the uninstall entry are gone, and the marker file is still there. The suite removes the marker and, in an `afterAll`, uninstalls whatever a failed test left. Verify in the `windows-package` CI job.
-- [ ] 3.6 Hand off group 3 to `reviewer2`, fix the findings, have them re-reviewed, and record the outcome and the CI run below this group.
+- [x] 3.6 Hand off group 3 to `reviewer2`, fix the findings, have them re-reviewed, and record the outcome and the CI run below this group.
 
 Group 3 outcome (2026-11-12):
 - Verification on Linux: `npm run typecheck`, `npm run lint`, `npm test` (all pass), `npm run spec-coverage` (0 unmapped), `openspec validate add-windows-packaging --strict`, `vitest run --project packaging-windows` (skipped on Linux).
@@ -110,6 +110,8 @@ Group 3 outcome (2026-11-12):
   - low: an Entra ID or Microsoft account SID (`S-1-12-1-…`) throws. Fixed: the message names that case; such accounts stay unsupported.
   - low (optional), not changed: the configuration-directory check covers Veydr's own names (`config*`, `runtime`, `.smoke-test-*`), not an allowlist of Chromium's profile entries, which were never measured.
   - nits: the step-name pattern now rejects `a//b`, a leading or trailing `/` and `--`; the global setup names `npm run dist:windows` when the installer is missing; an unfinished uninstall now lists what is left.
+- CI after the fixes (run 43292657667 on 026c606): every `ci.yml` job, `ci-ok` and the Security workflow passed; `windows-package`: 26 passed, none skipped, 2 todo; `installer.test.ts` 10 of 10.
+- Re-review (reviewer2): findings 1–3 and 5–7 resolved, 4 closed as a deliberate non-change; no new findings.
 
 ## 4. Installation as a standard user
 
