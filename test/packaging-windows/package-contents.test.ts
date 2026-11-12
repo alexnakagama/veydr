@@ -10,6 +10,7 @@ import {
   distDir,
   installerName,
   powershellJson,
+  powershellPath,
   repoRoot,
   requirePackages,
   resourcesDir,
@@ -95,8 +96,9 @@ describe.skipIf(process.platform !== 'win32')('[windows-only: the Windows packag
     const status = (file: string): Promise<unknown> =>
       powershellJson('(Get-AuthenticodeSignature -LiteralPath $env:VEYDR_FILE).Status.ToString() | ConvertTo-Json -Compress', { VEYDR_FILE: file })
     for (const file of [unpackedBinary, unpackedHelper, join(distDir, installerName(version))]) expect(await status(file), file).toBe('NotSigned')
-    // Control: the stock Electron binary, which the Electron project signs, does not read as unsigned.
-    expect(await status(electronBinary)).not.toBe('NotSigned')
+    // Control: a Microsoft-signed system binary reads as validly signed, so the check can tell the
+    // two apart. (The stock electron.exe is itself unsigned: CI run 43276268013 read it as NotSigned.)
+    expect(await status(powershellPath)).toBe('Valid')
   })
 
   it('carries the version and the Veydr icon in Veydr.exe', async () => {
