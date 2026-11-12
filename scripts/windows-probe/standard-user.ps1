@@ -364,8 +364,8 @@ function Get-CopyProblem([string] $Path, [string] $Example, [scriptblock] $NameP
     $full = $null
   }
   if ($Path -notmatch '^[A-Za-z]:\\[^\\]' -or $null -eq $full -or $full -cne $Path) { return "must be a fully qualified path such as $Example" }
-  $nameProblem = & $NameProblem ([System.IO.Path]::GetFileName($Path))
-  if ($null -ne $nameProblem) { return $nameProblem }
+  $nameIssue = & $NameProblem ([System.IO.Path]::GetFileName($Path))
+  if ($null -ne $nameIssue) { return $nameIssue }
   if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return 'must name an existing file' }
   if (((Get-Item -LiteralPath $Path -Force).Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) { return 'must name a regular file, not a link' }
   for ($directory = [System.IO.Path]::GetDirectoryName($Path); -not [string]::IsNullOrEmpty($directory); $directory = [System.IO.Path]::GetDirectoryName($directory)) {

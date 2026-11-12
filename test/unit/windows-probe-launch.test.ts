@@ -668,7 +668,9 @@ describe('standard-user.ps1 -Helper', () => {
     expect(helperCheck).toContain("return Get-CopyProblem $Path 'C:\\out-helper\\veydr-helper.exe' {")
     expect(helperCheck).toContain('if ($Name -cne $HelperName) { return "must name a file called exactly $HelperName" }')
     const check = fn('Get-CopyProblem')
-    expect(check).toContain('$nameProblem = & $NameProblem ([System.IO.Path]::GetFileName($Path))')
+    expect(check).toContain('$nameIssue = & $NameProblem ([System.IO.Path]::GetFileName($Path))')
+    // PowerShell variable names ignore case: no variable may shadow the [scriptblock] parameter $NameProblem (CI run 43323706530).
+    expect(check.match(/\$nameproblem\b/gi)).toEqual(['$NameProblem', '$NameProblem'])
     // The name is judged after the path is known to be fully qualified, and before the file is looked at.
     expect(check.indexOf('$full -cne $Path')).toBeLessThan(check.indexOf('& $NameProblem'))
     expect(check.indexOf('& $NameProblem')).toBeLessThan(check.indexOf('Test-Path -LiteralPath $Path -PathType Leaf'))
