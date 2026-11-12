@@ -780,7 +780,7 @@ describe('ci.yml (design D4)', () => {
     expect(conditions('package')).toEqual([undefined, undefined, undefined, undefined])
     const afterHelper = "${{ !cancelled() && steps.setup.outcome == 'success' && steps.helper.outcome == 'success' }}"
     expect(conditions('windows')).toEqual([undefined, undefined, guard, guard, guard, guard, afterHelper, afterHelper, 'failure()'])
-    expect(conditions('windows-package')).toEqual([undefined, undefined, undefined, undefined, 'failure()'])
+    expect(conditions('windows-package')).toEqual([undefined, undefined, undefined, undefined, undefined, 'failure()'])
     // The guard refers to the setup step by its id, so the setup step must keep it.
     for (const name of ['static', 'windows']) {
       const setup = stepsOf(lines, job(name)).map((s) => stepField(lines, s))[1]
@@ -812,10 +812,16 @@ describe('ci.yml (design D4)', () => {
     expect(withValue(packages, 'if-no-files-found')).toBe('error')
   })
 
-  it('uploads the Windows installer for seven days, and the Windows packaging test results on failure (add-windows-packaging design D6)', () => {
+  it('uploads the Windows installer and its install record for seven days, and the Windows packaging test results on failure (add-windows-packaging design D3, D6)', () => {
     const uploads = stepsOf(lines, job('windows-package')).filter((s) => /^actions\/upload-artifact@[0-9a-f]{40}\s/.test(stepField(lines, s)('uses')?.value ?? ''))
-    expect(uploads).toHaveLength(2)
-    const [installer, results] = uploads as [Range, Range]
+    expect(uploads).toHaveLength(3)
+    const [installer, record, results] = uploads as [Range, Range, Range]
+    // The record is uploaded after every test passed, and a passed run must have one.
+    expect(stepField(lines, record)('if')).toBeUndefined()
+    expect(withValue(record, 'name')).toBe('windows-install')
+    expect(withValue(record, 'path')).toBe('test-results/windows-install/steps.jsonl')
+    expect(withValue(record, 'retention-days')).toBe('7')
+    expect(withValue(record, 'if-no-files-found')).toBe('error')
     expect(stepField(lines, installer)('if')).toBeUndefined()
     expect(withValue(installer, 'name')).toBe('windows-package')
     expect(withValue(installer, 'path')).toBe('dist/*-x64-setup.exe')

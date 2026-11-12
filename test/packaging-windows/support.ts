@@ -1,6 +1,9 @@
 import { spawn, spawnSync } from 'node:child_process'
-import { existsSync, readdirSync, readFileSync, rmSync } from 'node:fs'
-import { join, resolve } from 'node:path'
+import { createHash } from 'node:crypto'
+import { appendFileSync, createReadStream, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { basename, dirname, join, resolve } from 'node:path'
+import { pipeline } from 'node:stream/promises'
+import { READ_ACL_SCRIPT, type AclReport } from '../../scripts/windows-probe/install-acl.mjs'
 import { smokeReportOf, type RunResult } from '../packaging/support'
 
 // The Windows packaging tests (add-windows-packaging design D3) inspect and run what
@@ -161,4 +164,103 @@ export async function powershellJson(script: string, env: Readonly<Record<string
   const result = await run(powershellPath, ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', encoded], windowsPowerShellEnv(env), { timeoutMs: 60_000 })
   if (result.code !== 0) throw new Error(`PowerShell exited ${String(result.code)}: ${result.stderr.slice(-2000)}`)
   return JSON.parse(result.stdout) as unknown
+}
+
+// The Windows install record (add-windows-packaging design D3, task 3.1). The project's global setup
+// starts it with the installer's line as `SHA256SUMS` would write it; every installer step then
+// appends one line. The release attaches it as install-windows-steps.jsonl (design D6).
+
+export const installRecordPath = join(repoRoot, 'test-results', 'windows-install', 'steps.jsonl')
+
+/** One line of the install record. */
+export interface InstallRecordLine {
+  readonly at: string
+  readonly step: string
+  readonly ok: boolean
+  readonly detail: unknown
+}
+
+/** The SHA-256 of `file`, as lower-case hex, read as a stream (the installer is about 100 MB). */
+export async function sha256File(file: string): Promise<string> {
+  const hash = createHash('sha256')
+  await pipeline(createReadStream(file), hash)
+  return hash.digest('hex')
+}
+
+/**
+ * Creates the record at `record`, replacing any earlier one, with a first line whose
+ * `detail.installer` is `<sha256>  <file name>` of `installer`. `installer` must be a regular file
+ * named as `nsis.artifactName` names it. Returns that line's `installer` value.
+ */
+export async function startInstallRecord(installer: string, record: string = installRecordPath): Promise<string> {
+  const name = basename(installer)
+  const version = /^Veydr-(.+)-x64-setup\.exe$/.exec(name)?.[1]
+  // installerName throws for anything that is not a semantic version, so the name never carries a
+  // line break or a path into the record.
+  if (version === undefined || installerName(version) !== name) throw new Error(`not an installer name: ${JSON.stringify(name)}`)
+  if (!statSync(installer).isFile()) throw new Error(`${installer} is not a regular file`)
+  const line = `${await sha256File(installer)}  ${name}`
+  mkdirSync(dirname(record), { recursive: true })
+  const first: InstallRecordLine = { at: new Date().toISOString(), step: 'installer', ok: true, detail: { installer: line } }
+  writeFileSync(record, `${JSON.stringify(first)}\n`, { flag: 'w' })
+  return line
+}
+
+/**
+ * Appends `{ at, step, ok, detail }` to the record. Fails if the record was not started, so a step is
+ * never recorded without the installer it belongs to.
+ */
+export function recordStep(step: string, ok: boolean, detail: unknown = null, record: string = installRecordPath): void {
+  if (!/^[a-z0-9]+(?:-[a-z0-9]+)*(?:\/[a-z0-9]+(?:-[a-z0-9]+)*)*$/.test(step)) throw new Error(`not a step name: ${JSON.stringify(step)}`)
+  if (!existsSync(record)) throw new Error(`${record} does not exist: the packaging-windows global setup did not run`)
+  const line: InstallRecordLine = { at: new Date().toISOString(), step, ok, detail: detail ?? null }
+  appendFileSync(record, `${JSON.stringify(line)}\n`)
+}
+
+/** Runs `body` and records its outcome as `step`: `ok` with what it returned, or not `ok` with the error. Rethrows. */
+export async function recordedStep<T>(step: string, body: () => Promise<T> | T, record: string = installRecordPath): Promise<T> {
+  let result: T
+  try {
+    result = await body()
+  } catch (error) {
+    recordStep(step, false, { error: (error instanceof Error ? error.message : String(error)).slice(0, 4000) }, record)
+    throw error
+  }
+  recordStep(step, true, result ?? null, record)
+  return result
+}
+
+/** The access control lists of `paths` (full paths), each identity as a SID (scripts/windows-probe/install-acl.mjs). */
+export async function readAcls(paths: readonly string[]): Promise<AclReport> {
+  let user: string | null = null
+  const entries: AclReport['paths'][number][] = []
+  for (const chunk of aclChunks(paths)) {
+    const report = await powershellJson(READ_ACL_SCRIPT, { VEYDR_ACL_PATHS: JSON.stringify(chunk) })
+    if (report === null || typeof report !== 'object' || !Array.isArray((report as { paths?: unknown }).paths)) throw new Error(`unexpected ACL report: ${JSON.stringify(report).slice(0, 2000)}`)
+    const read = report as AclReport
+    if (user !== null && read.user !== user) throw new Error(`the ACL reads ran as different accounts: ${user}, ${read.user}`)
+    user = read.user
+    entries.push(...read.paths)
+  }
+  if (user === null) throw new Error('no path to read')
+  return { user, paths: entries }
+}
+
+/** The most JSON one environment variable carries per ACL read (a variable holds at most 32,767 characters). */
+export const ACL_CHUNK_CHARS = 16_000
+
+/** `paths` split so each chunk's JSON fits ACL_CHUNK_CHARS; a single path that does not fit is refused. */
+export function aclChunks(paths: readonly string[], limit = ACL_CHUNK_CHARS): string[][] {
+  const chunks: string[][] = []
+  let current: string[] = []
+  for (const path of paths) {
+    if (JSON.stringify([path]).length > limit) throw new Error(`path too long for an ACL read: ${path.slice(0, 200)}`)
+    if (current.length > 0 && JSON.stringify([...current, path]).length > limit) {
+      chunks.push(current)
+      current = []
+    }
+    current.push(path)
+  }
+  if (current.length > 0) chunks.push(current)
+  return chunks
 }

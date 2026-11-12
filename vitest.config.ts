@@ -40,6 +40,8 @@ export default defineConfig({
         test: {
           name: 'packaging-windows',
           include: ['test/packaging-windows/**/*.test.ts'],
+          // Starts the install record, test-results/windows-install/steps.jsonl (design D3).
+          globalSetup: ['test/packaging-windows/global-setup.ts'],
           environment: 'node',
           testTimeout: 600_000,
           hookTimeout: 600_000,
