@@ -92,10 +92,11 @@ describe.skipIf(process.platform !== 'win32')('[windows-only: the Windows packag
   it('signs nothing: Veydr.exe, the helper and the installer carry no Authenticode signature (design D8)', async () => {
     // electron-builder logs "signing with signtool.exe" for every executable, then skips signing when
     // it finds no certificate; this reads what the files actually carry.
-    for (const file of [unpackedBinary, unpackedHelper, join(distDir, installerName(version))]) {
-      const status = await powershellJson('(Get-AuthenticodeSignature -LiteralPath $env:VEYDR_FILE).Status.ToString() | ConvertTo-Json -Compress', { VEYDR_FILE: file })
-      expect(status, file).toBe('NotSigned')
-    }
+    const status = (file: string): Promise<unknown> =>
+      powershellJson('(Get-AuthenticodeSignature -LiteralPath $env:VEYDR_FILE).Status.ToString() | ConvertTo-Json -Compress', { VEYDR_FILE: file })
+    for (const file of [unpackedBinary, unpackedHelper, join(distDir, installerName(version))]) expect(await status(file), file).toBe('NotSigned')
+    // Control: the stock Electron binary, which the Electron project signs, does not read as unsigned.
+    expect(await status(electronBinary)).not.toBe('NotSigned')
   })
 
   it('carries the version and the Veydr icon in Veydr.exe', async () => {

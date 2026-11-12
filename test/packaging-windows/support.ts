@@ -129,12 +129,22 @@ export function killTree(pid: number | undefined): void {
 export const powershellPath = join(process.env['SystemRoot'] ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
 
 /**
+ * `cleanEnv(extra)` without `PSModulePath`. A step of the runner runs in PowerShell 7, whose module
+ * path every child inherits; Windows PowerShell 5.1 would then load PowerShell 7's copy of modules
+ * such as Microsoft.PowerShell.Security (`Get-AuthenticodeSignature`, `Get-Acl`) and fail. Without
+ * the variable, 5.1 builds its own default module path.
+ */
+export function windowsPowerShellEnv(extra: Readonly<Record<string, string>> = {}): Record<string, string> {
+  return Object.fromEntries(Object.entries(cleanEnv(extra)).filter(([key]) => key.toUpperCase() !== 'PSMODULEPATH'))
+}
+
+/**
  * Runs a PowerShell script and parses its stdout as JSON. Values reach the script only through
  * `env` (read there as `$env:NAME`), never by interpolation into the script text.
  */
 export async function powershellJson(script: string, env: Readonly<Record<string, string>> = {}): Promise<unknown> {
   const encoded = Buffer.from(`$ErrorActionPreference = 'Stop'\n${script}`, 'utf16le').toString('base64')
-  const result = await run(powershellPath, ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', encoded], cleanEnv(env), { timeoutMs: 60_000 })
+  const result = await run(powershellPath, ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', encoded], windowsPowerShellEnv(env), { timeoutMs: 60_000 })
   if (result.code !== 0) throw new Error(`PowerShell exited ${String(result.code)}: ${result.stderr.slice(-2000)}`)
   return JSON.parse(result.stdout) as unknown
 }

@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { integrityOf, overwriteInPlace, parseAsar, readAsar, replaceFile } from '../packaging-windows/asar'
-import { cleanEnv, installerName } from '../packaging-windows/support'
+import { cleanEnv, installerName, windowsPowerShellEnv } from '../packaging-windows/support'
 
 // The pure parts of the Windows packaging tests' support (add-windows-packaging design D3, tasks
 // 2.3 and 2.4), which run on every system: the installer's name and the ASAR rewriting the fuse
@@ -50,6 +50,23 @@ describe('cleanEnv (Windows)', () => {
       expect(Object.entries(env).filter(([k]) => k.toUpperCase() === 'VEYDR_TEST_CASE')).toEqual([['VEYDR_TEST_CASE', 'new']])
     } finally {
       for (const key of Object.keys(process.env)) if (!(key in saved)) Reflect.deleteProperty(process.env, key)
+    }
+  })
+})
+
+describe('windowsPowerShellEnv', () => {
+  it('drops PSModulePath in any case, so Windows PowerShell 5.1 does not load PowerShell 7 modules', () => {
+    const saved = { ...process.env }
+    try {
+      process.env['PSModulePath'] = 'C:\\Program Files\\PowerShell\\7\\Modules'
+      process.env['psmodulepath_other'] = 'kept'
+      const env = windowsPowerShellEnv({ VEYDR_FILE: 'x' })
+      expect(Object.keys(env).filter((k) => k.toUpperCase() === 'PSMODULEPATH')).toEqual([])
+      expect(env['psmodulepath_other']).toBe('kept')
+      expect(env['VEYDR_FILE']).toBe('x')
+    } finally {
+      for (const key of Object.keys(process.env)) if (!(key in saved)) Reflect.deleteProperty(process.env, key)
+      Object.assign(process.env, saved)
     }
   })
 })
