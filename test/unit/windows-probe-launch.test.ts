@@ -993,7 +993,7 @@ describe('standard-user.ps1 -Installer', () => {
         [['-Driver', 'installer-standard-user.mjs', '-Installer', join(good, 'Veydr-1.2.3+b.1-x64-setup.exe')], '-Installer must name a file called Veydr-<version>-x64-setup.exe'],
         [['-Driver', 'installer-standard-user.mjs', '-Installer', join(good, 'Veydr-1.2.3_rc-x64-setup.exe')], '-Installer must name a file called Veydr-<version>-x64-setup.exe'],
         [['-Driver', 'installer-standard-user.mjs'], '-Driver installer-standard-user.mjs needs -Installer'],
-        [['-Driver', 'installer-standard-user.mjs', '-Installer', join(good, 'Veydr-1.2.3-x64-setup.exe'), 'extra'], 'takes -Installer only'],
+        [['-Driver', 'installer-standard-user.mjs', '-Installer', join(good, 'Veydr-1.2.3-x64-setup.exe'), 'extra'], '-Driver installer-standard-user.mjs takes -Installer only, no -Helper and no driver arguments'],
         [['-Driver', 'ports-standard-user.mjs', '-Installer', join(good, 'Veydr-1.2.3-x64-setup.exe')], '-Installer is given only with -Driver installer-standard-user.mjs'],
       ]
       for (const [args, message] of refused) {
