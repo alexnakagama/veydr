@@ -6,7 +6,7 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { integrityOf, overwriteInPlace, parseAsar, readAsar, replaceFile } from '../packaging-windows/asar'
 import { startRecordFor } from '../packaging-windows/global-setup'
-import { cleanEnv, installerName, recordedStep, recordStep, startInstallRecord, windowsPowerShellEnv } from '../packaging-windows/support'
+import { aclChunks, cleanEnv, installerName, recordedStep, recordStep, startInstallRecord, windowsPowerShellEnv } from '../packaging-windows/support'
 
 // The pure parts of the Windows packaging tests' support (add-windows-packaging design D3, tasks
 // 2.3 and 2.4), which run on every system: the installer's name and the ASAR rewriting the fuse
@@ -166,7 +166,7 @@ describe('the Windows install record (design D3, task 3.1)', () => {
 
   it('fails without an installer of the package version, or for a name that is not an installer\'s', async () => {
     const { dist, record } = fakeDist('1.2.3')
-    await expect(startRecordFor({ dist, packageVersion: '1.2.4', record })).rejects.toThrow(/ENOENT/)
+    await expect(startRecordFor({ dist, packageVersion: '1.2.4', record })).rejects.toThrow(/Veydr-1\.2\.4-x64-setup\.exe is missing: run `npm run dist:windows`/)
     await expect(startRecordFor({ dist, packageVersion: '1.2.3+build', record })).rejects.toThrow(/not a semantic version/)
     writeFileSync(join(dist, 'Veydr-1.2.3-x64-setup.EXE'), 'x')
     await expect(startInstallRecord(join(dist, 'Veydr-1.2.3-x64-setup.EXE'), record)).rejects.toThrow(/not an installer name/)
@@ -181,7 +181,7 @@ describe('the Windows install record (design D3, task 3.1)', () => {
     await startRecordFor({ dist, packageVersion: '1.2.3-rc.1', record })
     recordStep('administrator/install', true, { code: 0 }, record)
     recordStep('administrator/smoke', false, undefined, record)
-    for (const bad of ['', 'Administrator/install', 'a b', 'x\n{"step":"forged"}']) expect(() => recordStep(bad, true, null, record), bad).toThrow(/not a step name/)
+    for (const bad of ['', 'Administrator/install', 'a b', 'x\n{"step":"forged"}', 'a//b', 'a/', '/a', 'a--b', '-a']) expect(() => recordStep(bad, true, null, record), bad).toThrow(/not a step name/)
     const [, install, smoke] = lines(record)
     expect(install).toMatchObject({ step: 'administrator/install', ok: true, detail: { code: 0 } })
     expect(smoke).toMatchObject({ step: 'administrator/smoke', ok: false, detail: null })
@@ -202,5 +202,18 @@ describe('recordedStep', () => {
     expect(ok).toMatchObject({ step: 'administrator/install', ok: true, detail: { code: 0 } })
     expect(failed).toMatchObject({ step: 'administrator/smoke', ok: false, detail: { error: 'x'.repeat(4000) } })
     expect(empty).toMatchObject({ step: 'administrator/no-process', ok: true, detail: null })
+  })
+})
+
+describe('aclChunks', () => {
+  it('splits paths so each chunk\'s JSON fits the limit, keeping their order', () => {
+    const paths = Array.from({ length: 500 }, (_, i) => `C:\\Users\\runneradmin\\AppData\\Local\\Programs\\veydr\\locales\\file-${i}.pak`)
+    const chunks = aclChunks(paths, 2_000)
+    expect(chunks.length).toBeGreaterThan(1)
+    expect(chunks.flat()).toEqual(paths)
+    for (const chunk of chunks) expect(JSON.stringify(chunk).length).toBeLessThanOrEqual(2_000)
+    expect(aclChunks(['a'])).toEqual([['a']])
+    expect(aclChunks([])).toEqual([])
+    expect(() => aclChunks(['x'.repeat(100)], 50)).toThrow(/path too long/)
   })
 })

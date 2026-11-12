@@ -13,7 +13,9 @@ import { distDir, installerName, installRecordPath, startInstallRecord, unpacked
 
 /** Starts the record for the installer of `packageVersion` in `dist`; returns the first line's `installer` value. */
 export async function startRecordFor({ dist = distDir, packageVersion = version, record = installRecordPath }: { dist?: string; packageVersion?: string; record?: string } = {}): Promise<string> {
-  return await startInstallRecord(join(dist, installerName(packageVersion)), record)
+  const installer = join(dist, installerName(packageVersion))
+  if (!existsSync(installer)) throw new Error(`${installer} is missing: run \`npm run dist:windows\` (or \`npm run test:packaging:windows\`) first`)
+  return await startInstallRecord(installer, record)
 }
 
 export default async function setup(): Promise<void> {

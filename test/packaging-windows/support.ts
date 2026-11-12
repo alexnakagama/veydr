@@ -211,7 +211,7 @@ export async function startInstallRecord(installer: string, record: string = ins
  * never recorded without the installer it belongs to.
  */
 export function recordStep(step: string, ok: boolean, detail: unknown = null, record: string = installRecordPath): void {
-  if (!/^[a-z0-9][a-z0-9/-]*$/.test(step)) throw new Error(`not a step name: ${JSON.stringify(step)}`)
+  if (!/^[a-z0-9]+(?:-[a-z0-9]+)*(?:\/[a-z0-9]+(?:-[a-z0-9]+)*)*$/.test(step)) throw new Error(`not a step name: ${JSON.stringify(step)}`)
   if (!existsSync(record)) throw new Error(`${record} does not exist: the packaging-windows global setup did not run`)
   const line: InstallRecordLine = { at: new Date().toISOString(), step, ok, detail: detail ?? null }
   appendFileSync(record, `${JSON.stringify(line)}\n`)
@@ -232,10 +232,35 @@ export async function recordedStep<T>(step: string, body: () => Promise<T> | T, 
 
 /** The access control lists of `paths` (full paths), each identity as a SID (scripts/windows-probe/install-acl.mjs). */
 export async function readAcls(paths: readonly string[]): Promise<AclReport> {
-  const list = JSON.stringify(paths)
-  // An environment block holds at most 32,767 characters per variable.
-  if (list.length > 30_000) throw new Error(`too many paths for one ACL read (${paths.length})`)
-  const report = await powershellJson(READ_ACL_SCRIPT, { VEYDR_ACL_PATHS: list })
-  if (report === null || typeof report !== 'object' || !Array.isArray((report as { paths?: unknown }).paths)) throw new Error(`unexpected ACL report: ${JSON.stringify(report).slice(0, 2000)}`)
-  return report as AclReport
+  let user: string | null = null
+  const entries: AclReport['paths'][number][] = []
+  for (const chunk of aclChunks(paths)) {
+    const report = await powershellJson(READ_ACL_SCRIPT, { VEYDR_ACL_PATHS: JSON.stringify(chunk) })
+    if (report === null || typeof report !== 'object' || !Array.isArray((report as { paths?: unknown }).paths)) throw new Error(`unexpected ACL report: ${JSON.stringify(report).slice(0, 2000)}`)
+    const read = report as AclReport
+    if (user !== null && read.user !== user) throw new Error(`the ACL reads ran as different accounts: ${user}, ${read.user}`)
+    user = read.user
+    entries.push(...read.paths)
+  }
+  if (user === null) throw new Error('no path to read')
+  return { user, paths: entries }
+}
+
+/** The most JSON one environment variable carries per ACL read (a variable holds at most 32,767 characters). */
+export const ACL_CHUNK_CHARS = 16_000
+
+/** `paths` split so each chunk's JSON fits ACL_CHUNK_CHARS; a single path that does not fit is refused. */
+export function aclChunks(paths: readonly string[], limit = ACL_CHUNK_CHARS): string[][] {
+  const chunks: string[][] = []
+  let current: string[] = []
+  for (const path of paths) {
+    if (JSON.stringify([path]).length > limit) throw new Error(`path too long for an ACL read: ${path.slice(0, 200)}`)
+    if (current.length > 0 && JSON.stringify([...current, path]).length > limit) {
+      chunks.push(current)
+      current = []
+    }
+    current.push(path)
+  }
+  if (current.length > 0) chunks.push(current)
+  return chunks
 }

@@ -71,7 +71,11 @@ const isMask = (value) => Number.isInteger(value) && value >= 0 && value <= 0xff
  * that is not a SID, or a rights value that is not a 32-bit mask, is a violation in itself.
  */
 export function aclViolations(report, { userSid = report?.user } = {}) {
-  if (!isAccountSid(userSid)) throw new TypeError(`the installing user's SID is not an account SID: ${JSON.stringify(userSid)}`)
+  // A local or domain account (S-1-5-21-…). An Entra ID or Microsoft account (S-1-12-1-…) is not
+  // accepted yet: the check has only been measured for local accounts.
+  if (!isAccountSid(userSid)) {
+    throw new TypeError(`the installing user's SID is not an account SID (S-1-5-21-…; an Entra ID or Microsoft account, S-1-12-1-…, is not supported): ${JSON.stringify(userSid)}`)
+  }
   if (report === null || typeof report !== 'object' || !Array.isArray(report.paths)) throw new TypeError('the ACL report has no list of paths')
   const allowed = new Set([userSid, ...FIXED_ALLOWED_SIDS])
   const owners = new Set([userSid, ...FIXED_ALLOWED_OWNERS])

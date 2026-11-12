@@ -135,7 +135,7 @@ describe('aclViolations (design D4)', () => {
     expect(aclViolations(other).map((v) => v.sid)).toEqual([USER])
     expect(aclViolations(other, { userSid: USER }).map((v) => v.sid)).toEqual([OTHER_USER, OTHER_USER])
     for (const user of [EVERYONE, USERS, SID_SYSTEM, AUTHENTICATED_USERS, 'BUILTIN\\Administrators', '', undefined]) {
-      expect(() => aclViolations({ user, paths: [] } as unknown as AclReport), String(user)).toThrow(/not an account SID/)
+      expect(() => aclViolations({ user, paths: [] } as unknown as AclReport), String(user)).toThrow(/not an account SID \(S-1-5-21-…; an Entra ID/)
     }
     expect(() => aclViolations({ user: USER } as unknown as AclReport)).toThrow(/no list of paths/)
   })

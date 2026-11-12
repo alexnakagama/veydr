@@ -19,6 +19,7 @@ import {
   powershellJson,
   readAcls,
   recordedStep,
+  recordStep,
   requirePackages,
   resourcesDir,
   run,
@@ -166,12 +167,19 @@ describe.skipIf(process.platform !== 'win32')('[windows-only: the Windows instal
 
   const veydrOwned = (): string[] => (existsSync(configDir) ? readdirSync(configDir).filter((name) => VEYDR_OWNED.test(name)).sort() : [])
 
-  async function waitUntilUninstalled(): Promise<InstallState> {
+  /** What is left of the installation: the directory, the Start menu entry, the uninstall entry. */
+  const leftovers = (state: InstallState): string[] => [
+    ...(existsSync(installDir) ? [`the directory ${installDir}`] : []),
+    ...(state.startMenu === null ? [] : [`the Start menu entry ${state.startMenu.path}`]),
+    ...veydrEntries(state.uninstallUser, installDir).map((e) => `the uninstall entry ${e.key}`),
+  ]
+
+  /** Waits up to UNINSTALL_GONE_MS for nothing to be left; returns what is still there. */
+  async function waitUntilUninstalled(): Promise<string[]> {
     const deadline = Date.now() + UNINSTALL_GONE_MS
     for (;;) {
-      const state = await inspect()
-      const gone = !existsSync(installDir) && state.startMenu === null && veydrEntries(state.uninstallUser, installDir).length === 0
-      if (gone || Date.now() > deadline) return state
+      const left = leftovers(await inspect())
+      if (left.length === 0 || Date.now() > deadline) return left
       await sleep(1_000)
     }
   }
@@ -212,13 +220,24 @@ describe.skipIf(process.platform !== 'win32')('[windows-only: the Windows instal
     for (const s of scenarios.splice(0)) s.cleanup()
     if (marker !== null) rmSync(marker, { force: true })
     if (!installerRan || !existsSync(installDir)) return
-    // A test failed before the uninstall test removed the installation: remove it here.
+    // A test failed before the uninstall test removed the installation: remove it here, and record
+    // whether the machine was restored. Only warns: the failed test already fails the run.
+    let ok = false
+    let detail: unknown
     try {
       if (existsSync(uninstaller)) await run(uninstaller, ['/S'], cleanEnv(), { timeoutMs: INSTALL_MS })
-      await waitUntilUninstalled()
-      if (existsSync(installDir)) console.warn(`afterAll: ${installDir} is still there after the uninstall`)
+      const left = await waitUntilUninstalled()
+      ok = left.length === 0
+      detail = { left }
+      if (!ok) console.warn(`afterAll: still there after the uninstall: ${left.join('; ')}`)
     } catch (error) {
-      console.warn(`afterAll: the uninstall failed: ${error instanceof Error ? error.message : String(error)}`)
+      detail = { error: error instanceof Error ? error.message : String(error) }
+      console.warn(`afterAll: the uninstall failed: ${String((detail as { error: string }).error)}`)
+    }
+    try {
+      recordStep('administrator/cleanup', ok, detail)
+    } catch (error) {
+      console.warn(`afterAll: could not record the cleanup: ${error instanceof Error ? error.message : String(error)}`)
     }
   })
 
@@ -383,11 +402,9 @@ describe.skipIf(process.platform !== 'win32')('[windows-only: the Windows instal
       const started = Date.now()
       const result = await run(uninstaller, ['/S'], cleanEnv(), { timeoutMs: INSTALL_MS })
       expect(result.code, result.stderr).toBe(0)
-      const state = await waitUntilUninstalled()
+      const left = await waitUntilUninstalled()
       const ms = Date.now() - started
-      expect(existsSync(installDir), `${installDir} ${UNINSTALL_GONE_MS / 1000} s after the uninstall`).toBe(false)
-      expect(state.startMenu).toBeNull()
-      expect(veydrEntries(state.uninstallUser, installDir)).toEqual([])
+      expect(left, `still there ${UNINSTALL_GONE_MS / 1000} s after the uninstall`).toEqual([])
       expect(existsSync(marker), marker).toBe(true)
       rmSync(marker)
       marker = null
