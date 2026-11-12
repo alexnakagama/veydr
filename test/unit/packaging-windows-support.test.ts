@@ -1,10 +1,12 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { createHash } from 'node:crypto'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { integrityOf, overwriteInPlace, parseAsar, readAsar, replaceFile } from '../packaging-windows/asar'
-import { cleanEnv, installerName, windowsPowerShellEnv } from '../packaging-windows/support'
+import { startRecordFor } from '../packaging-windows/global-setup'
+import { cleanEnv, installerName, recordedStep, recordStep, startInstallRecord, windowsPowerShellEnv } from '../packaging-windows/support'
 
 // The pure parts of the Windows packaging tests' support (add-windows-packaging design D3, tasks
 // 2.3 and 2.4), which run on every system: the installer's name and the ASAR rewriting the fuse
@@ -128,5 +130,77 @@ describe('ASAR rewriting', () => {
 
   it('rejects data that is not an archive', () => {
     expect(() => parseAsar(Buffer.from('not an archive at all'))).toThrow(/not an ASAR/)
+  })
+})
+
+describe('the Windows install record (design D3, task 3.1)', () => {
+  /** A dist\ directory holding a fake installer of `version`, and where the record goes. */
+  function fakeDist(version = '1.2.3-rc.1', content = 'not really an installer\n'): { dist: string; record: string; digest: string } {
+    const dir = mkdtempSync(join(tmpdir(), 'veydr-install-record-'))
+    dirs.push(dir)
+    const dist = join(dir, 'dist')
+    mkdirSync(dist)
+    writeFileSync(join(dist, installerName(version)), content)
+    return { dist, record: join(dir, 'test-results', 'windows-install', 'steps.jsonl'), digest: createHash('sha256').update(content).digest('hex') }
+  }
+  const lines = (record: string): Record<string, unknown>[] => readFileSync(record, 'utf8').split('\n').filter((l) => l !== '').map((l) => JSON.parse(l) as Record<string, unknown>)
+
+  it('starts the record with the installer\'s line as SHA256SUMS writes it', async () => {
+    const { dist, record, digest } = fakeDist()
+    expect(await startRecordFor({ dist, packageVersion: '1.2.3-rc.1', record })).toBe(`${digest}  Veydr-1.2.3-rc.1-x64-setup.exe`)
+    const [first, ...rest] = lines(record)
+    expect(rest).toEqual([])
+    expect(first).toMatchObject({ step: 'installer', ok: true, detail: { installer: `${digest}  Veydr-1.2.3-rc.1-x64-setup.exe` } })
+    expect(Object.keys(first ?? {}).sort()).toEqual(['at', 'detail', 'ok', 'step'])
+    expect(readFileSync(record, 'utf8')).toMatch(/^[^\r]*\n$/)
+  })
+
+  it('replaces the record of an earlier run instead of appending to it', async () => {
+    const { dist, record, digest } = fakeDist('1.2.3')
+    await startRecordFor({ dist, packageVersion: '1.2.3', record })
+    recordStep('administrator/install', true, { code: 0 }, record)
+    expect(lines(record)).toHaveLength(2)
+    await startRecordFor({ dist, packageVersion: '1.2.3', record })
+    expect(lines(record)).toEqual([expect.objectContaining({ step: 'installer', detail: { installer: `${digest}  Veydr-1.2.3-x64-setup.exe` } })])
+  })
+
+  it('fails without an installer of the package version, or for a name that is not an installer\'s', async () => {
+    const { dist, record } = fakeDist('1.2.3')
+    await expect(startRecordFor({ dist, packageVersion: '1.2.4', record })).rejects.toThrow(/ENOENT/)
+    await expect(startRecordFor({ dist, packageVersion: '1.2.3+build', record })).rejects.toThrow(/not a semantic version/)
+    writeFileSync(join(dist, 'Veydr-1.2.3-x64-setup.EXE'), 'x')
+    await expect(startInstallRecord(join(dist, 'Veydr-1.2.3-x64-setup.EXE'), record)).rejects.toThrow(/not an installer name/)
+    mkdirSync(join(dist, 'Veydr-9.9.9-x64-setup.exe'))
+    await expect(startInstallRecord(join(dist, 'Veydr-9.9.9-x64-setup.exe'), record)).rejects.toThrow(/not a regular file/)
+    expect(existsSync(record)).toBe(false)
+  })
+
+  it('appends one { at, step, ok, detail } line per step, and records a failed step before rethrowing', async () => {
+    const { dist, record } = fakeDist()
+    expect(() => recordStep('administrator/install', true, null, record)).toThrow(/global setup did not run/)
+    await startRecordFor({ dist, packageVersion: '1.2.3-rc.1', record })
+    recordStep('administrator/install', true, { code: 0 }, record)
+    recordStep('administrator/smoke', false, undefined, record)
+    for (const bad of ['', 'Administrator/install', 'a b', 'x\n{"step":"forged"}']) expect(() => recordStep(bad, true, null, record), bad).toThrow(/not a step name/)
+    const [, install, smoke] = lines(record)
+    expect(install).toMatchObject({ step: 'administrator/install', ok: true, detail: { code: 0 } })
+    expect(smoke).toMatchObject({ step: 'administrator/smoke', ok: false, detail: null })
+    expect(lines(record)).toHaveLength(3)
+  })
+})
+
+describe('recordedStep', () => {
+  it('records a step\'s result, or its error before rethrowing it', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'veydr-install-record-'))
+    dirs.push(dir)
+    const record = join(dir, 'steps.jsonl')
+    writeFileSync(record, '{"step":"installer"}\n')
+    expect(await recordedStep('administrator/install', () => ({ code: 0 }), record)).toEqual({ code: 0 })
+    await expect(recordedStep('administrator/smoke', () => Promise.reject(new Error('x'.repeat(5000))), record)).rejects.toThrow('xxx')
+    await recordedStep('administrator/no-process', () => undefined, record)
+    const [, ok, failed, empty] = readFileSync(record, 'utf8').split('\n').filter((l) => l !== '').map((l) => JSON.parse(l) as Record<string, unknown>)
+    expect(ok).toMatchObject({ step: 'administrator/install', ok: true, detail: { code: 0 } })
+    expect(failed).toMatchObject({ step: 'administrator/smoke', ok: false, detail: { error: 'x'.repeat(4000) } })
+    expect(empty).toMatchObject({ step: 'administrator/no-process', ok: true, detail: null })
   })
 })

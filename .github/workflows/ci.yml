@@ -222,6 +222,15 @@ jobs:
           path: dist/*-x64-setup.exe
           retention-days: 7
           if-no-files-found: error
+      # The install record: the installer's SHA-256 and every installer step (add-windows-packaging
+      # design D3). A run that passed always has one.
+      - name: Upload install record
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: windows-install
+          path: test-results/windows-install/steps.jsonl
+          retention-days: 7
+          if-no-files-found: error
       - name: Upload test results
         if: failure()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
