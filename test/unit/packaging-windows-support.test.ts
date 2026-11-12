@@ -83,8 +83,9 @@ describe('ASAR rewriting', () => {
     const data = Buffer.from('require("fs").writeFileSync("marker","x")\n')
     const rewritten = replaceFile(original, '/out/main/index.js', data)
     writeFileSync(join(dir, 'rewritten.asar'), rewritten)
-    expect(electronAsar.extractFile(join(dir, 'rewritten.asar'), 'out/main/index.js').equals(data)).toBe(true)
-    expect(electronAsar.extractFile(join(dir, 'rewritten.asar'), 'out/z-after.js').toString()).toBe('after\n')
+    // @electron/asar looks files up by native path (backslashes on Windows).
+    expect(electronAsar.extractFile(join(dir, 'rewritten.asar'), join('out', 'main', 'index.js')).equals(data)).toBe(true)
+    expect(electronAsar.extractFile(join(dir, 'rewritten.asar'), join('out', 'z-after.js')).toString()).toBe('after\n')
     expect(electronAsar.extractFile(join(dir, 'rewritten.asar'), 'package.json').toString()).toBe('{"main":"out/main/index.js"}')
     const parsed = parseAsar(rewritten)
     expect(parsed.files).toEqual(original.files)

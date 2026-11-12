@@ -1,6 +1,6 @@
 import { readdirSync, readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
 import { beforeAll, describe, expect, it } from 'vitest'
 import { PROTOCOL_VERSION } from '../../src/main/platform/windows/protocol'
 import { readAsar } from './asar'
@@ -84,9 +84,18 @@ describe.skipIf(process.platform !== 'win32')('[windows-only: the Windows packag
     // dist\ holds exactly one installer, named from package.json's version (a prerelease in CI).
     const topLevel = readdirSync(distDir, { withFileTypes: true }).filter((e) => e.isFile()).map((e) => e.name)
     expect(topLevel.filter((name) => /\.exe$/i.test(name))).toEqual([installerName(version)])
-    expect(filesBelow(distDir).filter((path) => UPDATE_METADATA.test(path.slice(path.lastIndexOf('\\') + 1)))).toEqual([])
+    expect(filesBelow(distDir).filter((path) => UPDATE_METADATA.test(basename(path)))).toEqual([])
     // What the installer installs is the unpacked build.
     expect(filesBelow(unpackedDir).filter((path) => /\.yml$|\.blockmap$/i.test(path))).toEqual([])
+  })
+
+  it('signs nothing: Veydr.exe, the helper and the installer carry no Authenticode signature (design D8)', async () => {
+    // electron-builder logs "signing with signtool.exe" for every executable, then skips signing when
+    // it finds no certificate; this reads what the files actually carry.
+    for (const file of [unpackedBinary, unpackedHelper, join(distDir, installerName(version))]) {
+      const status = await powershellJson('(Get-AuthenticodeSignature -LiteralPath $env:VEYDR_FILE).Status.ToString() | ConvertTo-Json -Compress', { VEYDR_FILE: file })
+      expect(status, file).toBe('NotSigned')
+    }
   })
 
   it('carries the version and the Veydr icon in Veydr.exe', async () => {

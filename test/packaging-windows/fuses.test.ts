@@ -201,18 +201,19 @@ describe.skipIf(process.platform !== 'win32')('[windows-only: the packaged Windo
     expect(result.timedOut || result.code !== 0).toBe(true)
   })
 
-  it('known limitation: an archive whose file bytes alone changed, with its index untouched, still runs the changed code', async () => {
+  it('refuses to start with an archive whose file bytes alone changed, its index untouched, and the changed code does not run', async () => {
     const marker = join(work, 'bytes-changed')
     const archive = archiveWithBytesChanged(marker)
     // Control: without integrity validation the overwritten main bundle runs.
     expect(await stockRunsArchive(archive, marker)).toBe(true)
     const result = await packagedRun(archive)
-    const ran = existsSync(marker)
-    console.log(`archive with changed bytes and the same index: exit ${String(result.code)}, timed out ${String(result.timedOut)}, marker ${String(ran)}; stderr: ${result.stderr.slice(-500)}`)
-    // Electron compares the hash of the archive's header with the one embedded in Veydr.exe; nothing
-    // in Electron or electron-builder says it checks each file's bytes on Windows (design D3). If this
-    // starts failing, the bytes are validated too: update docs/security-baseline.md,
-    // docs/install-windows.md, and this test.
-    expect(ran).toBe(true)
+    console.log(`archive with changed bytes and the same index: exit ${String(result.code)}, timed out ${String(result.timedOut)}, marker ${String(existsSync(marker))}; stderr: ${result.stderr.slice(-500)}`)
+    // Measured in CI (task 2.4): besides the header hash embedded in Veydr.exe, Electron checks each
+    // file it reads from the archive against the per-file hashes in the header, and exits with
+    // "ASAR Integrity Violation: got a hash mismatch". Design D3 predicted the opposite; the docs
+    // (tasks 6.1, 6.3) state the refusal, and the bytes-only limit is dropped.
+    expect(existsSync(marker)).toBe(false)
+    expect(started(result)).toBe(false)
+    expect(result.timedOut || result.code !== 0).toBe(true)
   })
 })
