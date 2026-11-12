@@ -92,8 +92,11 @@ deb:
   # profile grants them to /opt/Veydr/veydr only (see docs/install-linux.md). electron-builder's
   # post-install script installs it where AppArmor supports it and sets chrome-sandbox's mode.
   appArmorProfile: build/linux/apparmor-profile
-# Windows (add-windows-packaging design D1). Unsigned (design D8, gate G-6): the packaging steps set
-# CSC_IDENTITY_AUTO_DISCOVERY=false and no certificate variable; the workflow policy test asserts it.
+# Windows (add-windows-packaging design D1). Unsigned (design D8, gate G-6): electron-builder signs on
+# Windows only with a certificate from cscLink, signtoolOptions or azureSignOptions here, or from the
+# CSC_LINK / WIN_CSC_LINK environment variables. None is set (windows-builder-config.test.ts and
+# workflow-policy.test.ts), and test/packaging-windows/package-contents.test.ts requires every built
+# executable to read NotSigned.
 # `test/unit/windows-builder-config.test.ts` pins every option below.
 win:
   target:
@@ -127,5 +130,6 @@ nsis:
   deleteAppDataOnUninstall: false
   # `x64` is written literally, so the name does not depend on how electron-builder expands ${arch}
   # for a single-architecture target, and the release can check it: Veydr-X.Y.Z-x64-setup.exe.
-  # `runAfterFinish` keeps its default: a silent install never starts the app.
+  # `runAfterFinish` keeps its default; a silent install is expected not to start the app
+  # (electron-builder's installSection.nsh), which test/packaging-windows/installer.test.ts checks.
   artifactName: ${productName}-${version}-x64-setup.${ext}

@@ -84,7 +84,7 @@ describe.skipIf(process.platform !== 'win32')('[windows-only: the Windows packag
   it('[spec:desktop-shell/no-update-metadata] builds no .blockmap, latest.yml or app-update.yml, and the application holds none', () => {
     // dist\ holds exactly one installer, named from package.json's version (a prerelease in CI).
     const topLevel = readdirSync(distDir, { withFileTypes: true }).filter((e) => e.isFile()).map((e) => e.name)
-    expect(topLevel.filter((name) => /\.exe$/i.test(name))).toEqual([installerName(version)])
+    expect(topLevel.filter((name) => /\.exe$/i.test(name)), 'dist\\ holds another installer: remove dist\\ and run `npm run dist:windows` again').toEqual([installerName(version)])
     expect(filesBelow(distDir).filter((path) => UPDATE_METADATA.test(basename(path)))).toEqual([])
     // What the installer installs is the unpacked build.
     expect(filesBelow(unpackedDir).filter((path) => /\.yml$|\.blockmap$/i.test(path))).toEqual([])
@@ -116,6 +116,15 @@ describe.skipIf(process.platform !== 'win32')('[windows-only: the Windows packag
       expect(exe.includes(png), `${size} px`).toBe(true)
       // Control: the stock binary does not carry it, so the check is not trivially satisfied.
       expect(stock.includes(png), `${size} px in the stock binary`).toBe(false)
+    }
+  })
+
+  it('carries the Veydr icon in the installer', () => {
+    // makensis puts win.icon into the installer's own icon resources. The uninstaller is generated
+    // inside the installer's compressed payload; its icon is checked on the installed copy (group 3).
+    const installer = readFileSync(join(distDir, installerName(version)))
+    for (const size of ICON_SIZES) {
+      expect(installer.includes(readFileSync(join(repoRoot, 'build/icons', `${size}x${size}.png`))), `${size} px`).toBe(true)
     }
   })
 })

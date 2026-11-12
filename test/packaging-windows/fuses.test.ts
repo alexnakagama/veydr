@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { overwriteInPlace, readAsar, replaceFile } from './asar'
-import { cleanEnv, distDir, requirePackages, resourcesDir, run, smokeReportOf, unpackedBinary, unpackedDir, type WindowsRunResult } from './support'
+import { cleanEnv, distDir, PROBE_COPY_PREFIX, requirePackages, resourcesDir, run, smokeReportOf, unpackedBinary, unpackedDir, type WindowsRunResult } from './support'
 
 // The fuses and the archive validation of the packaged Windows binary, `dist\win-unpacked\Veydr.exe`
 // (add-windows-packaging design D3, task 2.4). Every refusal has a control with the stock Electron
@@ -63,7 +63,7 @@ const copies: string[] = []
  * holds what `resources` writes into it. Returns the copy's directory.
  */
 function copyOf(from: string, resources: (dir: string) => void): string {
-  const copy = mkdtempSync(join(distDir, '.fuse-probe-'))
+  const copy = mkdtempSync(join(distDir, PROBE_COPY_PREFIX))
   copies.push(copy)
   linkTree(from, copy, (name) => name !== 'resources')
   mkdirSync(join(copy, 'resources'))
@@ -117,8 +117,16 @@ describe.skipIf(process.platform !== 'win32')('[windows-only: the packaged Windo
     requirePackages()
     work = mkdtempSync(join(tmpdir(), 'veydr-fuses-'))
   })
+  // A leftover descendant (a crash handler) may still hold a copy's files; that must not fail the
+  // tests that ran. requirePackages() removes any copy left behind before the next file runs.
   afterAll(() => {
-    for (const dir of [...copies.splice(0), work]) rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 500 })
+    for (const dir of [...copies.splice(0), work]) {
+      try {
+        rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 500 })
+      } catch (error) {
+        console.warn(`could not remove ${dir}: ${error instanceof Error ? error.message : String(error)}`)
+      }
+    }
   })
 
   it('has the six fuses of design D2 set in dist\\win-unpacked\\Veydr.exe', () => {
@@ -198,7 +206,10 @@ describe.skipIf(process.platform !== 'win32')('[windows-only: the packaged Windo
     console.log(`archive with a changed index: exit ${String(result.code)}, timed out ${String(result.timedOut)}, marker ${String(existsSync(marker))}; stderr: ${result.stderr.slice(-500)}`)
     expect(existsSync(marker)).toBe(false)
     expect(started(result)).toBe(false)
-    expect(result.timedOut || result.code !== 0).toBe(true)
+    // Refused for the header hash, not for some other startup failure (CI run 43278811083).
+    expect(result.timedOut).toBe(false)
+    expect(result.code).not.toBe(0)
+    expect(result.stderr).toMatch(/Integrity check failed for asar archive entry '<header>'/)
   })
 
   it('refuses to start with an archive whose file bytes alone changed, its index untouched, and the changed code does not run', async () => {
@@ -214,6 +225,9 @@ describe.skipIf(process.platform !== 'win32')('[windows-only: the packaged Windo
     // (tasks 6.1, 6.3) state the refusal, and the bytes-only limit is dropped.
     expect(existsSync(marker)).toBe(false)
     expect(started(result)).toBe(false)
-    expect(result.timedOut || result.code !== 0).toBe(true)
+    // Refused for the file's hash, not for some other startup failure (CI run 43278811083).
+    expect(result.timedOut).toBe(false)
+    expect(result.code).not.toBe(0)
+    expect(result.stderr).toMatch(/ASAR Integrity Violation: got a hash mismatch/)
   })
 })

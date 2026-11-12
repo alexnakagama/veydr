@@ -44,7 +44,9 @@ describe('electron-builder.yml: Windows (design D1)', () => {
     for (const key of ['extraResources', 'extraFiles']) expect(linux[key], `linux.${key}`).toBeUndefined()
     for (const key of ['portable', 'appx', 'msi', 'msiWrapper', 'squirrelWindows', 'nsisWeb']) expect(config[key], key).toBeUndefined()
     const text = readFileSync(resolve(root, 'electron-builder.yml'), 'utf8')
-    expect(text).not.toMatch(/^\s*(?:certificateFile|certificateSubjectName|certificateSha1|signtoolOptions|azureSignOptions|sign|signDlls|publisherName|requestedExecutionLevel|include|script):/m)
+    // Every source electron-builder takes a Windows certificate or signing hook from in the
+    // configuration (windowsSignToolManager.js: cscLink, signtoolOptions.*, azureSignOptions).
+    expect(text).not.toMatch(/^\s*(?:cscLink|cscKeyPassword|certificateFile|certificatePassword|certificateSubjectName|certificateSha1|signtoolOptions|azureSignOptions|sign|signDlls|signExts|forceCodeSigning|publisherName|requestedExecutionLevel|include|script):/m)
   })
 
   it('keeps publish: null, the shared files list and the six fuses unchanged', () => {

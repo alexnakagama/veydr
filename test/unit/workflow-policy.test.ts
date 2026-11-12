@@ -972,7 +972,11 @@ describe('ci.yml (design D4)', () => {
     expect(childNames(lines, childAt(lines, job('ci-ok').start, 'needs'))).toContain('windows-package')
   })
 
-  it('never looks for a signing certificate: only CSC_IDENTITY_AUTO_DISCOVERY "false", on the Windows packaging step (add-windows-packaging design D8)', () => {
+  // On Windows electron-builder takes a certificate only from CSC_LINK / WIN_CSC_LINK (or the
+  // configuration, see windows-builder-config.test.ts); CSC_IDENTITY_AUTO_DISCOVERY affects macOS only.
+  // Repository or organization variables and secrets reach a step only through a reference, which this
+  // also rejects. The decision itself is enforced by the NotSigned test of the Windows package.
+  it('defines and references no signing certificate variable: only CSC_IDENTITY_AUTO_DISCOVERY "false", on the Windows packaging step (add-windows-packaging design D8)', () => {
     const signing = /^(?:WIN_)?CSC_/i
     const found = githubFiles()
       .filter((f) => isYaml(f.path))

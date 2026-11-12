@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from 'node:child_process'
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync, rmSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { smokeReportOf, type RunResult } from '../packaging/support'
 
@@ -38,10 +38,19 @@ const pkg = JSON.parse(readFileSync(join(repoRoot, 'package.json'), 'utf8')) as 
 export const version = pkg.version
 export const installerPath = join(distDir, installerName(pkg.version, pkg.productName))
 
-/** Fails with a hint instead of a confusing error when the package was not built. */
+/** The prefix of the build copies fuses.test.ts makes below dist\ (same volume, for hard links). */
+export const PROBE_COPY_PREFIX = '.fuse-probe-'
+
+/**
+ * Fails with a hint instead of a confusing error when the package was not built, and removes build
+ * copies an aborted fuses run left in dist\, so they are never mistaken for package output.
+ */
 export function requirePackages(): void {
   for (const path of [unpackedBinary, unpackedHelper, installerPath]) {
     if (!existsSync(path)) throw new Error(`${path} is missing: run \`npm run dist:windows\` (or \`npm run test:packaging:windows\`) first`)
+  }
+  for (const name of readdirSync(distDir)) {
+    if (name.startsWith(PROBE_COPY_PREFIX)) rmSync(join(distDir, name), { recursive: true, force: true, maxRetries: 10, retryDelay: 500 })
   }
 }
 
@@ -88,6 +97,8 @@ export function run(
     const timer = setTimeout(() => {
       timedOut = true
       killTree(child.pid)
+      // If taskkill failed or timed out, end at least the process itself, so the promise settles.
+      child.kill('SIGKILL')
     }, timeoutMs)
     child.once('error', (error) => {
       clearTimeout(timer)
@@ -106,6 +117,8 @@ export function run(
     }
     child.once('close', finish)
     child.once('exit', (code, signal) => {
+      // Descendants are not killed here: after the parent exited, `taskkill /T` can no longer find
+      // them by its PID. A copy they still hold is removed later (fuses.test.ts afterAll, requirePackages).
       setTimeout(() => {
         child.stdout.destroy()
         child.stderr.destroy()
@@ -143,7 +156,8 @@ export function windowsPowerShellEnv(extra: Readonly<Record<string, string>> = {
  * `env` (read there as `$env:NAME`), never by interpolation into the script text.
  */
 export async function powershellJson(script: string, env: Readonly<Record<string, string>> = {}): Promise<unknown> {
-  const encoded = Buffer.from(`$ErrorActionPreference = 'Stop'\n${script}`, 'utf16le').toString('base64')
+  // Windows PowerShell 5.1 writes the OEM code page by default; stdout is read as UTF-8.
+  const encoded = Buffer.from(`$ErrorActionPreference = 'Stop'\n[Console]::OutputEncoding = [Text.Encoding]::UTF8\n${script}`, 'utf16le').toString('base64')
   const result = await run(powershellPath, ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', encoded], windowsPowerShellEnv(env), { timeoutMs: 60_000 })
   if (result.code !== 0) throw new Error(`PowerShell exited ${String(result.code)}: ${result.stderr.slice(-2000)}`)
   return JSON.parse(result.stdout) as unknown
