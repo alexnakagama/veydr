@@ -48,6 +48,8 @@ export default defineConfig({
           environment: 'node',
           testTimeout: 600_000,
           hookTimeout: 600_000,
+          // Also what makes test/support/sequencer.ts's order mean "after": standard-user-install.test.ts
+          // starts only once installer.test.ts has finished and recorded its steps.
           fileParallelism: false,
         },
       },

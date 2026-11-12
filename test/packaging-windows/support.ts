@@ -252,12 +252,15 @@ export async function readAcls(paths: readonly string[]): Promise<AclReport> {
  * Whether a step line of installer-standard-user.mjs passed (add-windows-packaging design D5). The
  * smoke step passes as `passed`, or as `not-testable` when the driver found the stock Electron
  * binary unable to open a window for the account while the same installer's smoke test passed for
- * the administrator in the same run (`administrator/smoke` in `record`, which installer.test.ts
+ * the administrator in the same run, and the same control opened its window for the administrator
+ * (`administrator/smoke` and `administrator/stock-window` in `record`, which installer.test.ts
  * writes). Every other step passes only with `yes`.
  */
 export function standardUserStepPassed(line: ResultLine, record: readonly InstallRecordLine[]): boolean {
   if (line.id !== SMOKE_ID) return line.answer === 'yes'
   if (line.answer === 'yes') return line.data['smokeCase'] === 'passed'
   if (line.answer !== null || line.data['smokeCase'] !== 'not-testable') return false
-  return record.some((r) => r.step === 'administrator/smoke' && r.ok)
+  // Both administrator steps of the same run: the installed app's smoke test, and the stock-Electron
+  // control opening its window, so the control is known to work where windows do.
+  return ['administrator/smoke', 'administrator/stock-window'].every((step) => record.some((r) => r.step === step && r.ok))
 }

@@ -84,9 +84,10 @@ export function permissionsAnswer(input: { report: AclReport; installDir: string
 export function helperAnswer(outcome: HelperOutcome): ProbeAnswer
 export function smokeProblem(smoke: SmokeRun, installDir: string): string | undefined
 export function controlOutcome(control: ControlRun): ControlOutcome
-export function smokeAnswer(input: { smoke: SmokeRun; control: ControlRun; installDir: string }): ProbeAnswer
+export function smokeAnswer(input: { smoke: SmokeRun; control: ControlRun | undefined; installDir: string }): ProbeAnswer
 export function uninstallAnswer(input: { run: TimedRun; left: boolean; state: InstallState; installDir: string }): ProbeAnswer
 
+export function requireEveryPath(paths: readonly string[], entries: readonly { readonly path: string }[]): void
 export function powershellJson(script: string, env?: Readonly<Record<string, string>>): Promise<unknown>
 
 /** The steps installAsStandardUser runs; the unit tests replace them. */

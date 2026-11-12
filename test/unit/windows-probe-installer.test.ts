@@ -22,6 +22,7 @@ import {
   STEP_IDS,
   UNINSTALL_ID,
   parseInstallerArgs,
+  requireEveryPath,
   runInstallerStandardUser,
 } from '../../scripts/windows-probe/installer-standard-user.mjs'
 import type { SmokeRun } from '../../scripts/windows-probe/smoke-run.mjs'
@@ -169,10 +170,12 @@ describe('installer-standard-user.mjs', () => {
     expect(byId.get(INSTALL_ID)?.data).toMatchObject({ installDir: INSTALL_DIR, code: 0 })
     expect(byId.get(PERMISSIONS_ID)?.data).toMatchObject({ user: USER_SID, checked: 4 })
     expect(byId.get(HELPER_ID)?.data).toMatchObject({ ownerState: 'known', listener: LISTENER })
-    expect(byId.get(SMOKE_ID)?.data).toMatchObject({ smokeCase: 'passed', control: { outcome: 'opened' } })
+    // A passed smoke test needs no control, which is then not run.
+    expect(byId.get(SMOKE_ID)?.data).toMatchObject({ smokeCase: 'passed' })
+    expect(byId.get(SMOKE_ID)?.data['control']).toBeUndefined()
     expect(byId.get(UNINSTALL_ID)?.data).toMatchObject({ code: 0 })
     // The order of the steps, the control always run, and the uninstall last.
-    expect(calls).toEqual(['hash', 'install', 'inspect', 'watchProcesses', 'permissions', 'helper', 'tempDir', 'smoke', 'control', 'removeDir', 'uninstall', 'waitUntilGone', 'inspect'])
+    expect(calls).toEqual(['hash', 'install', 'inspect', 'watchProcesses', 'permissions', 'helper', 'tempDir', 'smoke', 'removeDir', 'uninstall', 'waitUntilGone', 'inspect'])
   })
 
   it('accepts only `<installer name> <sha256> <electron.exe> --user standard [--unavailable <reason>]`, refusing anything else before running anything', async () => {
@@ -382,6 +385,23 @@ describe('installer-standard-user.mjs', () => {
       expect((await drive(viaFile.steps)).byId.get(SMOKE_ID)).toMatchObject({ answer: 'yes', data: { reportVia: 'file' } })
       expect(SMOKE_CASES).toEqual(['passed', 'not-testable', 'failed'])
     })
+  })
+
+  it('runs the control only for a failed smoke test, and a control that throws leaves the step unanswered, never passed', async () => {
+    const failing: SmokeRun = { ...smokePassed, run: program({ code: 1 }), report: smokeReport({ result: 'fail' }) }
+    const ran = fakeSteps({ smoke: () => Promise.resolve(failing) })
+    await drive(ran.steps)
+    expect(ran.calls).toContain('control')
+    const throwing = fakeSteps({ smoke: () => Promise.resolve(smokeNoDesktop), control: () => Promise.reject(new Error('spawn electron.exe EPERM')) })
+    expect((await drive(throwing.steps)).byId.get(SMOKE_ID)).toMatchObject({ answer: null, detail: 'the step failed: spawn electron.exe EPERM', data: {} })
+  })
+
+  it('reads the ACLs of exactly the paths asked for', () => {
+    const paths = ['C:\\a', 'C:\\a\\b.exe']
+    expect(() => requireEveryPath(paths, paths.map((path) => ({ path })))).not.toThrow()
+    for (const entries of [[{ path: 'C:\\a' }], [{ path: 'C:\\a' }, { path: 'C:\\a\\c.exe' }], [{ path: 'C:\\a\\b.exe' }, { path: 'C:\\a' }], [...paths, 'C:\\a\\d'].map((path) => ({ path }))]) {
+      expect(() => requireEveryPath(paths, entries), JSON.stringify(entries)).toThrow(/the ACL reads returned/)
+    }
   })
 
   it('a step that throws answers null with the error, and the uninstall still runs', async () => {

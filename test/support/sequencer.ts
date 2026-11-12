@@ -5,6 +5,9 @@ import { BaseSequencer, type TestSpecification } from 'vitest/node'
 // project runs after every other file of the run. Its smoke step may be "not testable" only if the same
 // installer's smoke test passed for the administrator in the same run (add-windows-packaging design
 // D5), which installer.test.ts records; vitest otherwise orders files by earlier durations or size.
+// Order alone is not enough: the project also sets `fileParallelism: false` (vitest.config.ts), so
+// installer.test.ts has finished before this file starts. The two rely on each other, and a unit
+// test (packaging-windows-support.test.ts) pins both.
 
 /** Files that run last within their project, by project name. */
 export const RUN_LAST: Readonly<Record<string, readonly string[]>> = Object.freeze({

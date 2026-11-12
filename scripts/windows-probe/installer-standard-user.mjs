@@ -29,15 +29,17 @@
 // - install-std-uninstall: a silent uninstall, after which the directory, the Start menu entry and
 //   the uninstall entry are gone within UNINSTALL_GONE_MS.
 //
-// The smoke step follows the rule design D5 fixed before anything was measured. The stock
-// electron.exe is also started as the account, with `--version` and with stock-window.cjs, which
-// opens a hidden window. `data.smokeCase` records the case:
+// The smoke step follows the rule design D5 fixed before anything was measured. When the smoke test
+// fails, the stock electron.exe is also started as the account, with `--version` and with
+// stock-window.cjs, which opens a hidden window; the administrator's test runs the same control
+// where windows are known to work (administrator/stock-window), so a broken control can never
+// excuse a failure. `data.smokeCase` records the case:
 // - `passed`: the smoke test passed (`yes`);
 // - `not-testable`: it failed, and the stock binary could not open a window either (null, with the
 //   reason): a limit of the runner's secondary logon, which the test accepts only if the same
 //   installer's smoke test passed for the administrator in the same run;
-// - `failed`: it failed, while the stock binary opened its window, or the control did not start, so
-//   nothing shows the runner is the cause (`no`): a defect.
+// - `failed`: it failed, while the stock binary opened its window, or Windows refused to create the
+//   control's process at all, so nothing shows the runner is the cause (`no`): a defect.
 //
 // The uninstall runs whenever the install left an uninstaller, whatever the steps between found.
 // Exit codes: 0 written, 1 failure, 2 usage error.
@@ -273,8 +275,11 @@ export function smokeProblem(smoke, installDir) {
 
 /**
  * How the stock-Electron control went: `opened` (stock-window.cjs loaded its window), `failed` (it
- * started but loaded none), or `not-started` (electron.exe could not be started at all, which says
- * nothing about windows: the launcher checked that it is readable to the account).
+ * started but loaded none, including a start that failed inside the process, such as
+ * STATUS_DLL_INIT_FAILED without a desktop), or `not-started` (Windows refused to create the process
+ * at all: spawn failed). `not-started` counts as a defect, not as the runner's limit: it says nothing
+ * about windows, and the launcher checked that electron.exe is readable to the account, so the
+ * fallback is never granted on evidence that does not concern a window.
  */
 export function controlOutcome({ window, loaded }) {
   if (window.error !== undefined) return 'not-started'
@@ -284,14 +289,18 @@ export function controlOutcome({ window, loaded }) {
 /** install-std-smoke, by the rule of design D5. */
 export function smokeAnswer({ smoke, control, installDir }) {
   const problem = smokeProblem(smoke, installDir)
-  const outcome = controlOutcome(control)
   const smokeRun = smoke.reportVia === 'file' ? smoke.fileRun : smoke.run
-  const data = {
-    smokeCase: 'passed',
+  const base = {
     reportVia: smoke.reportVia,
     code: smokeRun?.code ?? null,
     ...(smoke.report === undefined ? {} : { result: smoke.report.result, appPath: smoke.report.appPath ?? null, platform: smoke.report.checks.find((c) => c.name === 'platform')?.detail ?? null }),
     stderr: outputTail(smoke.run.stderr),
+  }
+  if (problem === undefined) return { answer: 'yes', detail: '', data: { smokeCase: 'passed', ...base } }
+  if (control === undefined) throw new Error('a failed smoke test needs the stock-Electron control to be judged')
+  const outcome = controlOutcome(control)
+  const data = {
+    ...base,
     control: {
       outcome,
       version: oneLine(control.version.stdout).slice(0, 100),
@@ -302,7 +311,6 @@ export function smokeAnswer({ smoke, control, installDir }) {
       windowStderr: outputTail(control.window.stderr),
     },
   }
-  if (problem === undefined) return { answer: 'yes', detail: '', data }
   if (outcome === 'failed') {
     return {
       answer: null,
@@ -395,6 +403,14 @@ async function sha256File(file) {
   return hash.digest('hex')
 }
 
+/** Throws unless `entries` (an ACL report's paths) are exactly `paths`, in order: a path left out would go unjudged. */
+export function requireEveryPath(paths, entries) {
+  const returned = entries.map((entry) => entry?.path)
+  if (returned.length !== paths.length || returned.some((path, i) => path !== paths[i])) {
+    throw new Error(`the ACL reads returned ${returned.length} paths for the ${paths.length} asked for, or not the same ones`)
+  }
+}
+
 /** The access control lists of every path below `installDir` and the directory itself, read as this account. */
 async function readPermissions(installDir) {
   const paths = [installDir, ...readdirSync(installDir, { recursive: true, encoding: 'utf8' }).map((path) => winJoin(installDir, path))]
@@ -407,6 +423,7 @@ async function readPermissions(installDir) {
     user = report.user
     entries.push(...report.paths)
   }
+  requireEveryPath(paths, entries)
   return { user, paths: entries }
 }
 
@@ -534,7 +551,10 @@ export async function installAsStandardUser(report, { installerName, sha256, ele
       // For the smoke report written to a file, and the control's result file.
       const dir = steps.tempDir()
       try {
-        return smokeAnswer({ smoke: await steps.smoke(app, dir), control: await steps.control(electron, dir), installDir })
+        const smoke = await steps.smoke(app, dir)
+        // The control is only needed to judge a failure (design D5), and costs up to 150 s.
+        const control = smokeProblem(smoke, installDir) === undefined ? undefined : await steps.control(electron, dir)
+        return smokeAnswer({ smoke, control, installDir })
       } finally {
         try {
           steps.removeDir(dir)

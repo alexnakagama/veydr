@@ -234,7 +234,7 @@ describe('standardUserStepPassed', () => {
       expect(standardUserStepPassed(line(id, 'yes'), [first]), id).toBe(true)
       expect(standardUserStepPassed(line(id, 'no'), [first]), id).toBe(false)
       // A step answered null is never a pass, even marked not testable.
-      expect(standardUserStepPassed(line(id, null, { smokeCase: 'not-testable' }), [first, adminSmoke(true)]), id).toBe(false)
+      expect(standardUserStepPassed(line(id, null, { smokeCase: 'not-testable' }), [first, adminSmoke(true), { at, step: 'administrator/stock-window', ok: true, detail: null }]), id).toBe(false)
     }
   })
 
@@ -243,8 +243,12 @@ describe('standardUserStepPassed', () => {
     // A yes that does not say it passed is malformed.
     expect(standardUserStepPassed(line('install-std-smoke', 'yes', {}), [first])).toBe(false)
     const notTestable = line('install-std-smoke', null, { smokeCase: 'not-testable' })
-    expect(standardUserStepPassed(notTestable, [first, adminSmoke(true)])).toBe(true)
-    expect(standardUserStepPassed(notTestable, [first, adminSmoke(false)])).toBe(false)
+    const stockWindow = (ok: boolean): InstallRecordLine => ({ at, step: 'administrator/stock-window', ok, detail: null })
+    expect(standardUserStepPassed(notTestable, [first, adminSmoke(true), stockWindow(true)])).toBe(true)
+    expect(standardUserStepPassed(notTestable, [first, adminSmoke(false), stockWindow(true)])).toBe(false)
+    // The control itself must be known to work where windows do: without that, a broken control would excuse any failure.
+    expect(standardUserStepPassed(notTestable, [first, adminSmoke(true)])).toBe(false)
+    expect(standardUserStepPassed(notTestable, [first, adminSmoke(true), stockWindow(false)])).toBe(false)
     // The administrator's smoke test did not run (yet): no evidence, no pass.
     expect(standardUserStepPassed(notTestable, [first])).toBe(false)
     expect(standardUserStepPassed(notTestable, [first, { at, step: 'administrator/reinstall', ok: true, detail: null }])).toBe(false)
@@ -269,6 +273,16 @@ describe('the test file order (test/support/sequencer.ts)', () => {
     const otherProject = spec('unit', '/repo/test/unit/standard-user-install.test.ts')
     const similar = spec('packaging-windows', '/repo/test/packaging-windows/not-standard-user-install.test.ts')
     expect(runLastOrder([otherProject, similar, fuses])).toEqual([otherProject, similar, fuses])
+  })
+})
+
+describe('the packaging-windows project', () => {
+  it('runs one file at a time, which the sequencer\'s "standard user last" relies on', async () => {
+    const config = (await import('../../vitest.config')).default as { test?: { sequence?: { sequencer?: unknown }; projects?: { test?: { name?: string; fileParallelism?: boolean } }[] } }
+    const sequencer = (await import('../support/sequencer')).default
+    expect(config.test?.sequence?.sequencer).toBe(sequencer)
+    const project = config.test?.projects?.find((p) => p.test?.name === 'packaging-windows')
+    expect(project?.test?.fileParallelism).toBe(false)
   })
 })
 
