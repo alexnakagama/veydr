@@ -1,8 +1,11 @@
 import { defineConfig } from 'vitest/config'
+import Sequencer from './test/support/sequencer'
 
 export default defineConfig({
   oxc: { jsx: { runtime: 'automatic' } },
   test: {
+    // vitest's order, but the standard user's Windows installation last (test/support/sequencer.ts).
+    sequence: { sequencer: Sequencer },
     projects: [
       {
         test: {

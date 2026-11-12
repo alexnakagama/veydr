@@ -3,14 +3,16 @@ import { createHash } from 'node:crypto'
 import { appendFileSync, createReadStream, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { basename, dirname, join, resolve } from 'node:path'
 import { pipeline } from 'node:stream/promises'
-import { READ_ACL_SCRIPT, type AclReport } from '../../scripts/windows-probe/install-acl.mjs'
+import { ACL_CHUNK_CHARS, aclChunks, READ_ACL_SCRIPT, type AclReport } from '../../scripts/windows-probe/install-acl.mjs'
+import { SMOKE_ID } from '../../scripts/windows-probe/installer-standard-user.mjs'
 import { smokeReportOf, type RunResult } from '../packaging/support'
+import type { ResultLine } from '../support/standard-user'
 
 // The Windows packaging tests (add-windows-packaging design D3) inspect and run what
 // `npm run dist:windows` produced in `dist\`. The smoke report reader is shared with the Linux
 // packaging tests; everything that differs on Windows is here.
 
-export { smokeReportOf, type RunResult }
+export { ACL_CHUNK_CHARS, aclChunks, smokeReportOf, type RunResult }
 
 export const repoRoot = resolve(__dirname, '../..')
 export const distDir = join(repoRoot, 'dist')
@@ -246,21 +248,16 @@ export async function readAcls(paths: readonly string[]): Promise<AclReport> {
   return { user, paths: entries }
 }
 
-/** The most JSON one environment variable carries per ACL read (a variable holds at most 32,767 characters). */
-export const ACL_CHUNK_CHARS = 16_000
-
-/** `paths` split so each chunk's JSON fits ACL_CHUNK_CHARS; a single path that does not fit is refused. */
-export function aclChunks(paths: readonly string[], limit = ACL_CHUNK_CHARS): string[][] {
-  const chunks: string[][] = []
-  let current: string[] = []
-  for (const path of paths) {
-    if (JSON.stringify([path]).length > limit) throw new Error(`path too long for an ACL read: ${path.slice(0, 200)}`)
-    if (current.length > 0 && JSON.stringify([...current, path]).length > limit) {
-      chunks.push(current)
-      current = []
-    }
-    current.push(path)
-  }
-  if (current.length > 0) chunks.push(current)
-  return chunks
+/**
+ * Whether a step line of installer-standard-user.mjs passed (add-windows-packaging design D5). The
+ * smoke step passes as `passed`, or as `not-testable` when the driver found the stock Electron
+ * binary unable to open a window for the account while the same installer's smoke test passed for
+ * the administrator in the same run (`administrator/smoke` in `record`, which installer.test.ts
+ * writes). Every other step passes only with `yes`.
+ */
+export function standardUserStepPassed(line: ResultLine, record: readonly InstallRecordLine[]): boolean {
+  if (line.id !== SMOKE_ID) return line.answer === 'yes'
+  if (line.answer === 'yes') return line.data['smokeCase'] === 'passed'
+  if (line.answer !== null || line.data['smokeCase'] !== 'not-testable') return false
+  return record.some((r) => r.step === 'administrator/smoke' && r.ok)
 }

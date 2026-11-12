@@ -2,6 +2,7 @@
 # an administrator. Runs under Windows PowerShell 5.1 (design D2), as administrator:
 #
 #   powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/windows-probe/standard-user.ps1 -Results <results-file> -Timeout <seconds> -Driver <driver.mjs> [-Helper <path>] [<driver args>...]
+#   powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/windows-probe/standard-user.ps1 -Results <results-file> -Timeout <seconds> -Driver installer-standard-user.mjs -Installer <path>
 #   powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/windows-probe/standard-user.ps1 -Cleanup
 #   powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/windows-probe/standard-user.ps1 -CheckPasswords <count>
 #
@@ -14,7 +15,8 @@
 # 2. copies scripts/windows-probe to C:\veydr-probe-std, which only that account, Administrators and
 #    SYSTEM can access (the job collects the results as administrator), and checks, as the account,
 #    that the Node runtime's directory is readable to it. With -Helper, it also copies that file next
-#    to the drivers, as veydr-helper.exe;
+#    to the drivers, as veydr-helper.exe; with -Installer, it copies the installer next to them under
+#    its own name, and checks that the stock Electron directory is readable to the account too;
 # 3. starts the Secondary Logon service and, through CreateProcessWithLogonW (LOGON_WITH_PROFILE,
 #    CREATE_NO_WINDOW, no environment block, no desktop), starts launch-detached.mjs as the account
 #    with the absolute node.exe path. The account's registry hive is loaded and its environment is
@@ -44,6 +46,18 @@
 # checked with the other arguments, before the account exists, so a wrong one changes nothing. No
 # other program is copied, and nothing else is run as the account but the driver.
 #
+# -Installer (add-windows-packaging design D5) gives the Windows installer that
+# installer-standard-user.mjs installs as the account, and is given with that driver only, which
+# needs it and takes no -Helper or other driver arguments. It is checked like -Helper, but its name
+# must match Veydr-<version>-x64-setup.exe case-sensitively, <version> being a semantic version,
+# prerelease allowed, without build metadata. It is hashed (SHA-256) when checked, copied next to the
+# drivers under its own name, and refused if the copy's hash differs. The launcher also checks, as
+# the account, that the stock Electron directory node_modules\electron\dist is readable to it, since
+# the driver starts electron.exe from there for its smoke control (design D5). The driver's command
+# line is then `<installer name> <sha256> <electron.exe path> --user standard`: the launcher hands it
+# the name, the checked digest (lower-case hex) and the full path of the stock electron.exe, which
+# is all it may run besides the installer and what the installer installs.
+#
 # Exit codes: 0 the driver ran as the standard user and the launcher succeeded (or the check
 # passed); 1 anything else.
 [CmdletBinding(DefaultParameterSetName = 'Run', PositionalBinding = $false)]
@@ -52,6 +66,7 @@ param(
   [Parameter(Mandatory = $true, ParameterSetName = 'Run')] [ValidateRange(1, 3600)] [int] $Timeout,
   [Parameter(Mandatory = $true, ParameterSetName = 'Run')] [string] $Driver,
   [Parameter(ParameterSetName = 'Run')] [string] $Helper,
+  [Parameter(ParameterSetName = 'Run')] [string] $Installer,
   [Parameter(ParameterSetName = 'Run', ValueFromRemainingArguments = $true)] [string[]] $DriverArgs = @(),
   [Parameter(Mandatory = $true, ParameterSetName = 'Cleanup')] [switch] $Cleanup,
   [Parameter(Mandatory = $true, ParameterSetName = 'CheckPasswords')] [ValidateRange(1, 100000)] [int] $CheckPasswords
@@ -79,6 +94,13 @@ $AccountName = 'veydr-probe'
 $ProbeRoot = 'C:\veydr-probe-std'
 # The only file name -Helper may have, compared case-sensitively.
 $HelperName = 'veydr-helper.exe'
+# The only driver -Installer is given to, and that driver only with it.
+$InstallerDriver = 'installer-standard-user.mjs'
+# The name -Installer must have, compared case-sensitively (-cmatch): nsis.artifactName of
+# electron-builder.yml for a semantic version without build metadata, as package.json and the release
+# use it. [0-9], not \d, which .NET matches to every Unicode digit; \z, not $, which .NET also
+# matches before a final line feed.
+$InstallerPattern = '^Veydr-(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(\.(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*)?-x64-setup\.exe\z'
 $PasswordLength = 32
 $Upper = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'
 $Lower = 'abcdefghijklmnopqrstuvwxyz'
@@ -328,25 +350,46 @@ function Format-ExitCode([int] $Code) {
   return [string]$Code
 }
 
-# Why -Helper cannot be copied for the account, or $null if it can: a fully qualified, normalized
-# path (a drive, no '.' or '..' segment, no '/' or doubled '\'), of an existing regular file named
-# exactly veydr-helper.exe, with no link (symbolic link, junction or other reparse point) on the way:
-# neither the file nor any directory above it, so the path names the file that is copied.
-function Get-HelperProblem([string] $Path) {
+# Why a file given to be copied for the account (-Helper, -Installer) cannot be, or $null if it can:
+# a fully qualified, normalized path (a drive, no '.' or '..' segment, no '/' or doubled '\'), whose
+# file name passes $NameProblem (a script block returning the problem or $null), of an existing
+# regular file with no link (symbolic link, junction or other reparse point) on the way: neither the
+# file nor any directory above it, so the path names the file that is copied. $Example is a path
+# that would pass, for the message.
+function Get-CopyProblem([string] $Path, [string] $Example, [scriptblock] $NameProblem) {
   $full = $null
   try {
     $full = [System.IO.Path]::GetFullPath($Path)
   } catch {
     $full = $null
   }
-  if ($Path -notmatch '^[A-Za-z]:\\[^\\]' -or $null -eq $full -or $full -cne $Path) { return 'must be a fully qualified path such as C:\out-helper\veydr-helper.exe' }
-  if ([System.IO.Path]::GetFileName($Path) -cne $HelperName) { return "must name a file called exactly $HelperName" }
+  if ($Path -notmatch '^[A-Za-z]:\\[^\\]' -or $null -eq $full -or $full -cne $Path) { return "must be a fully qualified path such as $Example" }
+  $nameProblem = & $NameProblem ([System.IO.Path]::GetFileName($Path))
+  if ($null -ne $nameProblem) { return $nameProblem }
   if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return 'must name an existing file' }
   if (((Get-Item -LiteralPath $Path -Force).Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) { return 'must name a regular file, not a link' }
   for ($directory = [System.IO.Path]::GetDirectoryName($Path); -not [string]::IsNullOrEmpty($directory); $directory = [System.IO.Path]::GetDirectoryName($directory)) {
     if (((Get-Item -LiteralPath $directory -Force).Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) { return "must not lead through a link, but $directory is one" }
   }
   return $null
+}
+
+# -Helper: a file named exactly veydr-helper.exe.
+function Get-HelperProblem([string] $Path) {
+  return Get-CopyProblem $Path 'C:\out-helper\veydr-helper.exe' {
+    param([string] $Name)
+    if ($Name -cne $HelperName) { return "must name a file called exactly $HelperName" }
+    return $null
+  }
+}
+
+# -Installer: a file named Veydr-<version>-x64-setup.exe, compared case-sensitively.
+function Get-InstallerProblem([string] $Path) {
+  return Get-CopyProblem $Path 'C:\dist\Veydr-1.2.3-x64-setup.exe' {
+    param([string] $Name)
+    if ($Name -cnotmatch $InstallerPattern) { return 'must name a file called Veydr-<version>-x64-setup.exe, with <version> a semantic version without build metadata' }
+    return $null
+  }
 }
 
 # The SHA-256 of a file, as upper-case hex, through .NET rather than Get-FileHash, a script function
@@ -393,6 +436,51 @@ if ($PSBoundParameters.ContainsKey('Helper')) {
     [Console]::Error.WriteLine("standard-user.ps1: -Helper cannot be read: $(Get-ErrorText $_)")
     exit 1
   }
+}
+# -Installer belongs to the installer driver, which needs it and takes nothing else: the installed
+# helper is what it runs, so -Helper and driver arguments are refused with it.
+$installerSource = $null
+$installerHash = $null
+$installerName = $null
+$electronDirectory = $null
+$electronExe = $null
+$driverExtra = @()
+if ($Driver -ceq $InstallerDriver) {
+  if (-not $PSBoundParameters.ContainsKey('Installer')) {
+    [Console]::Error.WriteLine("standard-user.ps1: -Driver $InstallerDriver needs -Installer")
+    exit 1
+  }
+  if ($PSBoundParameters.ContainsKey('Helper') -or $DriverArgs.Count -gt 0) {
+    [Console]::Error.WriteLine("standard-user.ps1: -Driver $InstallerDriver takes -Installer only, no -Helper and no driver arguments")
+    exit 1
+  }
+} elseif ($PSBoundParameters.ContainsKey('Installer')) {
+  [Console]::Error.WriteLine("standard-user.ps1: -Installer is given only with -Driver $InstallerDriver, not $Driver")
+  exit 1
+}
+if ($PSBoundParameters.ContainsKey('Installer')) {
+  $problem = Get-InstallerProblem $Installer
+  if ($null -ne $problem) {
+    [Console]::Error.WriteLine("standard-user.ps1: -Installer $problem, not '$Installer'")
+    exit 1
+  }
+  $installerSource = $Installer
+  $installerName = [System.IO.Path]::GetFileName($Installer)
+  # As for -Helper: the copy must be the file checked here.
+  try {
+    $installerHash = Get-Sha256 $Installer
+  } catch {
+    [Console]::Error.WriteLine("standard-user.ps1: -Installer cannot be read: $(Get-ErrorText $_)")
+    exit 1
+  }
+  # The stock Electron the driver's smoke control starts (design D5), from this checkout.
+  $electronDirectory = [System.IO.Path]::GetFullPath([System.IO.Path]::Combine($PSScriptRoot, '..', '..', 'node_modules', 'electron', 'dist'))
+  $electronExe = [System.IO.Path]::Combine($electronDirectory, 'electron.exe')
+  if (-not (Test-Path -LiteralPath $electronExe -PathType Leaf)) {
+    [Console]::Error.WriteLine("standard-user.ps1: $electronExe does not exist; run node scripts/ensure-electron.cjs first")
+    exit 1
+  }
+  $driverExtra = @($installerName, $installerHash.ToLowerInvariant(), $electronExe)
 }
 $resultsPath = [System.IO.Path]::GetFullPath([System.IO.Path]::Combine((Get-Location).ProviderPath, $Results))
 if (-not (Test-Path -LiteralPath $resultsPath -PathType Leaf)) {
@@ -463,6 +551,11 @@ try {
         Copy-Item -LiteralPath $helperSource -Destination $helperCopy -Force
         if ((Get-Sha256 $helperCopy) -cne $helperHash) { throw "$helperSource changed after it was checked" }
       }
+      if ($null -ne $installerSource) {
+        $installerCopy = Join-Path $stdScripts $installerName
+        Copy-Item -LiteralPath $installerSource -Destination $installerCopy -Force
+        if ((Get-Sha256 $installerCopy) -cne $installerHash) { throw "$installerSource changed after it was checked" }
+      }
     } catch {
       throw "cannot prepare ${ProbeRoot}: $(Get-ErrorText $_)"
     }
@@ -482,13 +575,27 @@ try {
     }
     if ($null -eq $code) { throw "node.exe, started as $AccountName to read the Node runtime's directory, did not finish within 60 s" }
     if ($code -ne 0) { throw "the Node runtime's directory $nodeDirectory is not readable to $AccountName (node.exe exited with $(Format-ExitCode $code))" }
+
+    # The stock Electron directory, which the installer driver's smoke control starts electron.exe
+    # from: its listing, and electron.exe opened for reading. The path is an argument, not code.
+    if ($null -ne $electronExe) {
+      try {
+        $code = [VeydrProbeLogon]::Run($AccountName, $securePassword, $node,
+          (Join-CommandLine @($node, '-e', "const fs=require('fs');fs.readdirSync(process.argv[1]);fs.closeSync(fs.openSync(require('path').join(process.argv[1],'electron.exe'),'r'))", $electronDirectory)),
+          $ProbeRoot, 60000)
+      } catch {
+        throw "cannot start node.exe as $AccountName through CreateProcessWithLogonW: $(Get-ErrorText $_)"
+      }
+      if ($null -eq $code) { throw "node.exe, started as $AccountName to read the stock Electron directory, did not finish within 60 s" }
+      if ($code -ne 0) { throw "the stock Electron directory $electronDirectory is not readable to $AccountName (node.exe exited with $(Format-ExitCode $code))" }
+    }
   } catch {
     $unavailable = Get-ErrorText $_
     throw
   }
 
   $commandLine = Join-CommandLine (@($node, (Join-Path $stdScripts 'launch-detached.mjs'), '--timeout', [string]$Timeout, '--out', $stdResults, '--log', $stdLog, '--',
-      (Join-Path $stdScripts $Driver)) + $DriverArgs + @('--user', 'standard'))
+      (Join-Path $stdScripts $Driver)) + $DriverArgs + $driverExtra + @('--user', 'standard'))
   Write-Host "standard-user.ps1: running $Driver $($DriverArgs -join ' ') as $AccountName"
   try {
     # The launcher stops its driver at -Timeout; a minute more lets it do so and report.
@@ -536,7 +643,7 @@ try {
 # with the error, by the same driver started as administrator, through the same launcher. It
 # measures nothing, so a minute is ample.
 if ($null -ne $unavailable) {
-  $arguments = @($launcher, '--timeout', '60', '--out', $resultsPath, '--', (Join-Path $PSScriptRoot $Driver)) + $DriverArgs + @('--user', 'standard', '--unavailable', $unavailable)
+  $arguments = @($launcher, '--timeout', '60', '--out', $resultsPath, '--', (Join-Path $PSScriptRoot $Driver)) + $DriverArgs + $driverExtra + @('--user', 'standard', '--unavailable', $unavailable)
   $info = New-Object System.Diagnostics.ProcessStartInfo
   $info.FileName = $node
   $info.Arguments = Join-CommandLine $arguments

@@ -1,6 +1,6 @@
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process'
 import { once } from 'node:events'
-import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, join } from 'node:path'
 import { performance } from 'node:perf_hooks'
@@ -23,7 +23,8 @@ import type { CommandConfig } from '../../src/shared/config'
 import { command, project, quietLog } from '../unit/support/config'
 import { fixture, readLedger, scenario, sleep, TAG_VARIABLE, waitUntil, type LedgerEntry, type Scenario } from '../support/proc'
 import { taggedProcesses } from '../support/processes'
-import { creationTimes, denyOtherAccounts, powershell } from './support/windows'
+import { loggable, readResultLines, removeLeftoverAccount, runLauncher } from '../support/standard-user'
+import { creationTimes, denyOtherAccounts } from './support/windows'
 
 // Windows port inspection through the real helper's `ports`, the supervisor and
 // `createHelperPortsReader` (add-windows-port-inspection design D7): the raw helper (task 2.4), a
@@ -273,68 +274,10 @@ describe.runIf(process.platform === 'win32')('[windows-only: Job Objects and the
 // removes the account whatever happens. It changes the machine's accounts, so it runs only in CI,
 // where every failure of the launcher throws: the check fails rather than skips there.
 
-const STANDARD_USER_ACCOUNT = 'veydr-probe'
 /** The driver's own limit (-Timeout); the launcher's waits around it add at most a few minutes. */
 const DRIVER_TIMEOUT_S = 180
 /** Beyond every wait of the launcher, so it can always remove the account before this ends it. */
 const LAUNCHER_TIMEOUT_MS = 540_000
-
-interface ResultLine {
-  readonly id: string
-  readonly answer: 'yes' | 'no' | null
-  readonly detail: string
-  readonly data: Record<string, unknown>
-}
-
-/** Runs standard-user.ps1 with `args` and resolves with its exit code and output; ends it after LAUNCHER_TIMEOUT_MS. */
-function runLauncher(args: readonly string[]): Promise<{ code: number | null; stdout: string; stderr: string }> {
-  const powershellExe = join(process.env['SystemRoot'] ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
-  const script = join(__dirname, '../../scripts/windows-probe/standard-user.ps1')
-  return new Promise((resolve, reject) => {
-    const child = spawn(powershellExe, ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', script, ...args], { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true })
-    const out: Buffer[] = []
-    const err: Buffer[] = []
-    child.stdout.on('data', (chunk: Buffer) => out.push(chunk))
-    child.stderr.on('data', (chunk: Buffer) => err.push(chunk))
-    const timer = setTimeout(() => {
-      spawnSync(join(process.env['SystemRoot'] ?? 'C:\\Windows', 'System32', 'taskkill.exe'), ['/PID', String(child.pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true })
-    }, LAUNCHER_TIMEOUT_MS)
-    child.once('error', (error) => {
-      clearTimeout(timer)
-      reject(new Error(`standard-user.ps1 could not start: ${error.message}`))
-    })
-    child.once('close', (code) => {
-      clearTimeout(timer)
-      resolve({ code, stdout: Buffer.concat(out).toString('utf8'), stderr: Buffer.concat(err).toString('utf8') })
-    })
-  })
-}
-
-/**
- * Runs standard-user.ps1 -Cleanup if the account still exists, and throws, naming `earlier` (the
- * launch's own error, if any) too: the launcher must remove
- * the account whatever happens (-Cleanup also removes C:\\veydr-probe-std and stops the account's processes).
- */
-function removeLeftoverAccount(earlier: unknown): void {
-  if (powershell(`[bool](Get-LocalUser -Name '${STANDARD_USER_ACCOUNT}' -ErrorAction SilentlyContinue)`).trim() !== 'True') return
-  const powershellExe = join(process.env['SystemRoot'] ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
-  const script = join(__dirname, '../../scripts/windows-probe/standard-user.ps1')
-  const cleanup = spawnSync(powershellExe, ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', script, '-Cleanup'], { encoding: 'utf8', windowsHide: true, timeout: 120_000 })
-  const before = earlier === undefined ? '' : `; before that, ${loggable(earlier instanceof Error ? earlier.message : JSON.stringify(earlier) ?? 'an unknown error')}`
-  throw new Error(`standard-user.ps1 left the account ${STANDARD_USER_ACCOUNT} behind; -Cleanup exited with ${String(cleanup.status)}: ${loggable(`${cleanup.stdout}\n${cleanup.stderr}`)}${before}`)
-}
-
-/**
- * The launcher's output for the job log, without workflow commands: its first line masks the
- * account's password with `::add-mask::`, which must reach the runner itself, not this log, or the
- * password would be printed in clear.
- */
-const loggable = (text: string): string =>
-  text
-    .split(/\r?\n/)
-    .filter((line) => !line.trimStart().startsWith('::'))
-    .join('\n')
-    .trim()
 
 describe.runIf(process.platform === 'win32')('[windows-only: Windows accounts]', () => {
   const dirs: string[] = []
@@ -379,7 +322,7 @@ describe.runIf(process.platform === 'win32')('[windows-only: Windows accounts]',
       let launched: Awaited<ReturnType<typeof runLauncher>> | undefined
       let launchError: unknown
       try {
-        launched = await runLauncher(['-Results', results, '-Timeout', String(DRIVER_TIMEOUT_S), '-Driver', 'ports-standard-user.mjs', '-Helper', HELPER_PATH])
+        launched = await runLauncher(['-Results', results, '-Timeout', String(DRIVER_TIMEOUT_S), '-Driver', 'ports-standard-user.mjs', '-Helper', HELPER_PATH], LAUNCHER_TIMEOUT_MS)
       } catch (error) {
         launchError = error
       }
@@ -389,10 +332,7 @@ describe.runIf(process.platform === 'win32')('[windows-only: Windows accounts]',
       if (launched === undefined) throw launchError
       console.info(`standard-user.ps1 exited with ${String(launched.code)}:\n${loggable(launched.stdout)}\n${loggable(launched.stderr)}`)
 
-      const lines = readFileSync(results, 'utf8')
-        .split('\n')
-        .filter((line) => line.trim() !== '')
-        .map((line) => JSON.parse(line) as ResultLine)
+      const lines = readResultLines(results)
       // The standard user could not be created or used: the driver answered every line with the reason.
       const unavailable = lines.find((line) => line.data['unavailable'] === true)
       if (unavailable !== undefined) throw new Error(loggable(`the standard user was unavailable: ${unavailable.detail}`))
