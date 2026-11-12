@@ -514,6 +514,7 @@ describe('workflow policy (design D11)', () => {
       'npm run test:integration',
       'npm run test:perf',
       'npm run test:packaging',
+      'npm run test:packaging:windows',
       'npx playwright test',
       // A direct launch of the built app, as the Windows probe's smoke launch does (design D8).
       'node_modules/electron/dist/electron.exe . --smoke-test',
@@ -748,8 +749,6 @@ const linesContaining = (source: Source, needles: readonly string[]): string[] =
 describe('ci.yml (design D4)', () => {
   const { source: ci, lines, jobs, job, jobField, permissions, scripts, withValue, on, branches } = loadWorkflow('.github/workflows/ci.yml')
 
-  // add-windows-packaging task 2.6 implements this; the tag keeps spec coverage at zero unmapped.
-  it.todo('[spec:quality-gates/helper-build-failure-fails-windows-packaging] dist:windows builds the helper first in an && chain, and windows-package has no continue-on-error (task 2.6)')
   /** Runs ci-ok's script as the runner does (`bash -e`), with `NEEDS` set to `needs` or left unset. */
   const runCiOk = (needs: string | undefined): { status: number | null; stdout: string } => {
     const step = stepsOf(lines, job('ci-ok')).find((s) => stepField(lines, s)('run') !== undefined)
@@ -766,7 +765,7 @@ describe('ci.yml (design D4)', () => {
 
   it('exists and has the expected jobs', () => {
     expect(ci.text).not.toBe('')
-    expect(jobs.map((j) => j.name)).toEqual(['static', 'unit', 'integration', 'e2e', 'package', 'windows', 'ci-ok'])
+    expect(jobs.map((j) => j.name)).toEqual(['static', 'unit', 'integration', 'e2e', 'package', 'windows', 'windows-package', 'ci-ok'])
   })
 
   it('never skips a check step while the job still succeeds', () => {
@@ -781,6 +780,7 @@ describe('ci.yml (design D4)', () => {
     expect(conditions('package')).toEqual([undefined, undefined, undefined, undefined])
     const afterHelper = "${{ !cancelled() && steps.setup.outcome == 'success' && steps.helper.outcome == 'success' }}"
     expect(conditions('windows')).toEqual([undefined, undefined, guard, guard, guard, guard, afterHelper, afterHelper, 'failure()'])
+    expect(conditions('windows-package')).toEqual([undefined, undefined, undefined, undefined, 'failure()'])
     // The guard refers to the setup step by its id, so the setup step must keep it.
     for (const name of ['static', 'windows']) {
       const setup = stepsOf(lines, job(name)).map((s) => stepField(lines, s))[1]
@@ -812,6 +812,23 @@ describe('ci.yml (design D4)', () => {
     expect(withValue(packages, 'if-no-files-found')).toBe('error')
   })
 
+  it('uploads the Windows installer for seven days, and the Windows packaging test results on failure (add-windows-packaging design D6)', () => {
+    const uploads = stepsOf(lines, job('windows-package')).filter((s) => /^actions\/upload-artifact@[0-9a-f]{40}\s/.test(stepField(lines, s)('uses')?.value ?? ''))
+    expect(uploads).toHaveLength(2)
+    const [installer, results] = uploads as [Range, Range]
+    expect(stepField(lines, installer)('if')).toBeUndefined()
+    expect(withValue(installer, 'name')).toBe('windows-package')
+    expect(withValue(installer, 'path')).toBe('dist/*-x64-setup.exe')
+    expect(withValue(installer, 'retention-days')).toBe('7')
+    // A packaging run that built no installer must fail, not upload nothing.
+    expect(withValue(installer, 'if-no-files-found')).toBe('error')
+    expect(stepField(lines, results)('if')?.value).toBe('failure()')
+    expect(withValue(results, 'name')).toBe('windows-package-test-results')
+    expect(withValue(results, 'path')).toBe('test-results/')
+    expect(withValue(results, 'retention-days')).toBe('7')
+    expect(withValue(results, 'if-no-files-found')).toBe('ignore')
+  })
+
   it('[spec:quality-gates/pull-request-runs-the-full-check-set] runs every check on pull requests to master, against the merge commit', () => {
     expect(childNames(lines, on).sort()).toEqual(['merge_group', 'pull_request', 'push'])
     expect(childNames(lines, childAt(lines, on, 'pull_request'))).toEqual(['branches'])
@@ -839,6 +856,16 @@ describe('ci.yml (design D4)', () => {
       'npm run test:windows',
       'npm run test:e2e',
     ])
+    // The Windows installer is built and the Windows packaging tests run on Windows, against the same
+    // commit, with read-only contents and Electron prepared (add-windows-packaging design D6).
+    expect(jobField('windows-package', 'runs-on')?.value).toBe('windows-2025')
+    expect(jobField('windows-package', 'timeout-minutes')?.value).toBe('45')
+    expect(permissions('windows-package')).toEqual({ contents: 'read' })
+    const packageSteps = stepsOf(lines, job('windows-package'))
+    expect(stepField(lines, packageSteps[1] ?? { start: 0, end: 0 })('uses')?.value).toBe('./.github/actions/setup')
+    expect(withValue(packageSteps[1] ?? { start: 0, end: 0 }, 'electron')).toBe('"true"')
+    expect(scripts('windows-package')).toEqual(['npm run test:packaging:windows'])
+    expect(withValue(packageSteps[3] ?? { start: 0, end: 0 }, 'name')).toBe('windows-package')
     const actionlint = stepsOf(lines, job('static')).map((s) => stepField(lines, s)('uses')?.value ?? '')
     expect(actionlint).toContainEqual(expect.stringMatching(/^docker:\/\/rhysd\/actionlint@sha256:[0-9a-f]{64}$/))
     // The default checkout of a pull_request run is the merge commit; nothing overrides it, and no
@@ -886,10 +913,11 @@ describe('ci.yml (design D4)', () => {
     const setsCi = (l: Line): boolean => l.kind === 'node' && l.key?.toUpperCase() === 'CI'
     const workflowEnv = topLevelBlock(lines, 'env')
     expect(workflowEnv === undefined ? [] : within(lines, workflowEnv).filter(setsCi)).toEqual([])
-    expect(within(lines, job('windows')).filter(setsCi)).toEqual([])
+    // The same holds for windows-package, whose installer tests run only when CI is "true" (add-windows-packaging design D5).
+    for (const name of ['windows', 'windows-package']) expect(within(lines, job(name)).filter(setsCi), name).toEqual([])
     // Nor through a script: PowerShell's $env:CI, an assignment, setx, or GITHUB_ENV, which carries a value to later steps.
     const overrides = /\$env:CI\b|\bCI\s*=|\bsetx\b|GITHUB_ENV/i
-    expect(scripts('windows').filter((s) => overrides.test(s))).toEqual([])
+    for (const name of ['windows', 'windows-package']) expect(scripts(name).filter((s) => overrides.test(s)), name).toEqual([])
     // The local setup action runs inside the job too.
     const action = githubFiles().find((f) => f.path === '.github/actions/setup/action.yml')?.text ?? ''
     expect(action).not.toBe('')
@@ -921,6 +949,41 @@ describe('ci.yml (design D4)', () => {
     expect(stepsOf(lines, job('windows')).flatMap((s) => within(lines, s)).filter((l) => l.key === 'continue-on-error')).toEqual([])
     // The step the condition names is the helper build, and nothing else uses that id.
     expect(steps.filter((field) => field('id')?.value === 'helper')).toHaveLength(1)
+  })
+
+  it('[spec:quality-gates/helper-build-failure-fails-windows-packaging] builds the helper first, so a failed helper build builds no installer and fails windows-package', () => {
+    // dist:windows is one && chain that starts with the helper build: if csc.exe fails, the script
+    // exits non-zero before electron-builder runs, and test:packaging:windows runs no test either.
+    const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')) as { scripts: Record<string, string> }
+    const chain = (script: string | undefined): string[] => (script ?? '').split(' && ')
+    expect(chain(pkg.scripts['dist:windows'])[0]).toBe('node scripts/build-windows-helper.mjs')
+    expect(chain(pkg.scripts['dist:windows']).at(-1)).toBe('electron-builder --win --publish never')
+    expect(pkg.scripts['dist:windows']).not.toMatch(/;|\|\||(?<!&)&(?!&)|\|/)
+    expect(chain(pkg.scripts['test:packaging:windows'])).toEqual(['npm run dist:windows', 'vitest run --project packaging-windows'])
+    // The job runs that script unconditionally, and nothing in it tolerates a failure.
+    const steps = stepsOf(lines, job('windows-package')).map((s) => stepField(lines, s))
+    const build = steps.find((field) => field('run')?.value === 'npm run test:packaging:windows')
+    expect(build).toBeDefined()
+    expect(build?.('if')).toBeUndefined()
+    expect(jobField('windows-package', 'if')).toBeUndefined()
+    expect(jobField('windows-package', 'continue-on-error')).toBeUndefined()
+    expect(within(lines, job('windows-package')).filter((l) => l.key === 'continue-on-error')).toEqual([])
+    // The installer upload fails when no installer was built.
+    expect(childNames(lines, childAt(lines, job('ci-ok').start, 'needs'))).toContain('windows-package')
+  })
+
+  // On Windows electron-builder takes a certificate only from CSC_LINK / WIN_CSC_LINK (or the
+  // configuration, see windows-builder-config.test.ts); CSC_IDENTITY_AUTO_DISCOVERY affects macOS only.
+  // Repository or organization variables and secrets reach a step only through a reference, which this
+  // also rejects. The decision itself is enforced by the NotSigned test of the Windows package.
+  it('defines and references no signing certificate variable: only CSC_IDENTITY_AUTO_DISCOVERY "false", on the Windows packaging step (add-windows-packaging design D8)', () => {
+    const signing = /^(?:WIN_)?CSC_/i
+    const found = githubFiles()
+      .filter((f) => isYaml(f.path))
+      .flatMap((f) => parse(f.text).filter((l) => l.kind !== 'comment' && (signing.test(l.key ?? '') || /\b(?:WIN_)?CSC_\w+/i.test(l.body))).map((l) => `${f.path}: ${l.body}`))
+    expect(found).toEqual(['.github/workflows/ci.yml: CSC_IDENTITY_AUTO_DISCOVERY: "false"'])
+    const step = stepsOf(lines, job('windows-package')).find((s) => stepField(lines, s)('run')?.value === 'npm run test:packaging:windows')
+    expect(within(lines, step ?? { start: 0, end: 0 }).filter((l) => l.key === 'CSC_IDENTITY_AUTO_DISCOVERY').map((l) => l.value)).toEqual(['"false"'])
   })
 
   it('[spec:process-supervision/windows-process-trees-verified-natively] runs the Windows process-tree tests on a native Windows runner for pull requests and pushes to master', () => {

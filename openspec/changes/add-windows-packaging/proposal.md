@@ -20,7 +20,7 @@ W0 already showed that the route works on the runner: `nsis-build` and `nsis-ins
 - **The helper ships outside the archive.** `veydr-helper.exe` is built from source by the packaging script (`dist:windows`) and packaged as `resources\veydr-helper.exe`, beside `app.asar`. A packaged app looks for it there; an unpackaged app keeps `out-helper/`. No helper binary is committed.
 - **Windows packaging tests.** A new test set runs on `windows-2025` against the built package and the installed app:
   - the archive and the `resources` directory hold only what they should;
-  - the fuses are set, and an `app.asar` whose index was modified is refused (Electron validates the archive's index on Windows, unlike on Linux; a change to a file's bytes alone is a documented limit);
+  - the fuses are set, and an `app.asar` whose index or file bytes were modified is refused (on Windows Electron checks the archive's header hash at startup and each file's hash when it reads that file, unlike on Linux; measured in CI, task 2.4);
   - `--smoke-test` passes for the unpacked build and for the installed app, including the `platform` check, which lists ports through the packaged helper;
   - a command tree starts and stops through the installed helper;
   - silent install, reinstall over an existing install, and silent uninstall work, and the uninstall keeps the user's configuration;

@@ -188,6 +188,49 @@ jobs:
           retention-days: 7
           if-no-files-found: ignore
 
+  # Builds the Windows installer from this commit and runs the Windows packaging tests against it
+  # (add-windows-packaging design D3, D6). A job of its own, so it runs in parallel with windows and
+  # neither outgrows its timeout. Nothing is signed (design D8): no CSC_LINK, WIN_CSC_LINK or other
+  # certificate variable is defined, so electron-builder finds no certificate and skips signing, and
+  # the packaging tests require every built executable to read NotSigned.
+  # CSC_IDENTITY_AUTO_DISCOVERY only affects macOS signing; it is kept as an explicit marker.
+  windows-package:
+    name: windows-package
+    runs-on: windows-2025
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # On Windows, electron: "true" installs only the dependencies; dist:windows downloads Electron
+      # itself (scripts/ensure-electron.cjs).
+      - uses: ./.github/actions/setup
+        with:
+          electron: "true"
+      # dist:windows builds the helper from source first, in an && chain: a failed helper build ends
+      # the script before electron-builder runs, so no installer is built and the job fails.
+      - name: Build the Windows installer and run the Windows packaging tests
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+        run: npm run test:packaging:windows
+      - name: Upload installer
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: windows-package
+          path: dist/*-x64-setup.exe
+          retention-days: 7
+          if-no-files-found: error
+      - name: Upload test results
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: windows-package-test-results
+          path: test-results/
+          retention-days: 7
+          if-no-files-found: ignore
+
   # The one required check. It runs whatever happened to the jobs above and fails unless every one
   # of them succeeded: a plain needs: would let a skipped or cancelled job through.
   ci-ok:
@@ -200,6 +243,7 @@ jobs:
       - e2e
       - package
       - windows
+      - windows-package
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions: {}

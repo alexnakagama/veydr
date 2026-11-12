@@ -1,10 +1,12 @@
 'use strict'
 // Renders `assets/brand/veydr-icon.svg` to the PNG sizes the Linux packages use
-// (`build/icons/<size>x<size>.png`, read by electron-builder). Run with Electron:
+// (`build/icons/<size>x<size>.png`, read by electron-builder), then writes the Windows icon
+// `build/windows/icon.ico` from those PNGs (scripts/windows-icon.mjs, add-windows-packaging design
+// D1). Run with Electron:
 //
 //   npx electron scripts/render-icons.cjs
 //
-// The PNGs are committed; rerun only when the SVG changes.
+// The PNGs and the ICO are committed; rerun only when the SVG changes.
 const { readFileSync, mkdirSync, writeFileSync } = require('node:fs')
 const { join, resolve } = require('node:path')
 const { app, BrowserWindow } = require('electron')
@@ -49,6 +51,9 @@ app
       writeFileSync(file, await render(svg, size))
       console.log(`wrote ${file}`)
     }
+    // Outside build/icons/, which electron-builder reads as the Linux icon set.
+    const { writeWindowsIcon } = await import('./windows-icon.mjs')
+    console.log(`wrote ${writeWindowsIcon({ pngDir: outDir })}`)
     app.exit(0)
   })
   .catch((error) => {

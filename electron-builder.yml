@@ -1,5 +1,6 @@
-# Linux packaging (task group L8, design D2/D13). `npm run dist:linux` builds `out/` first.
-# Windows (NSIS) and macOS targets belong to later changes.
+# Linux packaging (task group L8, design D2/D13): `npm run dist:linux` builds `out/` first.
+# Windows packaging (add-windows-packaging design D1, D2): `npm run dist:windows` builds the helper
+# and `out/` first, on Windows only. A macOS target belongs to a later change.
 appId: io.github.alexnakagama.veydr
 productName: Veydr
 copyright: Copyright © 2026 alexnakagama
@@ -16,10 +17,11 @@ files:
   - '!**/*.map'
 asar: true
 # No auto-update (a non-goal): without a publish target no update metadata (app-update.yml,
-# latest-linux.yml) is generated.
+# latest-linux.yml, latest.yml) is generated.
 publish: null
-# Design D2. Applied by electron-builder with `@electron/fuses` right after packing;
-# `test/packaging/fuses.test.ts` reads the wire of the packaged binary.
+# Design D2. Applied by electron-builder with `@electron/fuses` right after packing, for every
+# target; `test/packaging/fuses.test.ts` and `test/packaging-windows/fuses.test.ts` read the wire of
+# the packaged binaries.
 electronFuses:
   runAsNode: false
   enableCookieEncryption: true
@@ -90,3 +92,44 @@ deb:
   # profile grants them to /opt/Veydr/veydr only (see docs/install-linux.md). electron-builder's
   # post-install script installs it where AppArmor supports it and sets chrome-sandbox's mode.
   appArmorProfile: build/linux/apparmor-profile
+# Windows (add-windows-packaging design D1). Unsigned (design D8, gate G-6): electron-builder signs on
+# Windows only with a certificate from cscLink, signtoolOptions or azureSignOptions here, or from the
+# CSC_LINK / WIN_CSC_LINK environment variables. None is set (windows-builder-config.test.ts and
+# workflow-policy.test.ts), and test/packaging-windows/package-contents.test.ts requires every built
+# executable to read NotSigned.
+# `test/unit/windows-builder-config.test.ts` pins every option below.
+win:
+  target:
+    # x64 only: the configuration W0 measured; no arm64, MSI, MSIX or portable build (non-goals).
+    - target: nsis
+      arch: [x64]
+  # Rendered from the same SVG as the Linux PNGs (scripts/render-icons.cjs); kept outside
+  # build/icons/, which electron-builder reads as the Linux icon set.
+  icon: build/windows/icon.ico
+  # The helper ships beside app.asar as resources\veydr-helper.exe (design D2): no executable can
+  # start from inside the archive. It is built from source by `dist:windows` in the same run; a
+  # missing file is only a warning to electron-builder, so the package-contents and smoke tests
+  # require it. `files` is unchanged, so the archive holds no executable.
+  extraResources:
+    - from: out-helper/veydr-helper.exe
+      to: veydr-helper.exe
+nsis:
+  # Per-user and one-click, as measured in W0: no elevation and no UAC prompt, and a standard user
+  # can install. The directory is %LOCALAPPDATA%\Programs\veydr (package.json `name`).
+  oneClick: true
+  perMachine: false
+  # A per-user install never elevates, so elevate.exe (one more unsigned executable) is left out.
+  packElevateHelper: false
+  # No .blockmap: with `publish: null` the output carries no update metadata, as on Linux.
+  differentialPackage: false
+  # A Start menu entry only.
+  createDesktopShortcut: false
+  createStartMenuShortcut: true
+  # Uninstalling keeps %APPDATA%\Veydr (configuration and run ledger), as removing the .deb keeps
+  # ~/.config/Veydr.
+  deleteAppDataOnUninstall: false
+  # `x64` is written literally, so the name does not depend on how electron-builder expands ${arch}
+  # for a single-architecture target, and the release can check it: Veydr-X.Y.Z-x64-setup.exe.
+  # `runAfterFinish` keeps its default; a silent install is expected not to start the app
+  # (electron-builder's installSection.nsh), which test/packaging-windows/installer.test.ts checks.
+  artifactName: ${productName}-${version}-x64-setup.${ext}
