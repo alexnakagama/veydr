@@ -111,6 +111,7 @@ describe('archive validation on Windows, documented', () => {
     expect(integrity).toContain('What the validation covers: an archive whose index was changed is refused at startup')
     expect(integrity).toContain('a file whose bytes were changed with the index untouched is refused when it is read')
     expect(integrity).toContain('on Windows the bytes-only limit that the design predicted does not exist')
+    expect(integrity).toContain('Both were measured by changing the main bundle; other files of the archive were not modified in a test.')
     const fuses = readFileSync(join(root, 'test/packaging-windows/fuses.test.ts'), 'utf8')
     expect(fuses).toMatch(/\bit\(\s*'\[spec:desktop-shell\/modified-archive-refused-on-windows\] refuses to start with an archive whose index was changed/)
     expect(fuses).toMatch(/\bit\(\s*'refuses to start with an archive whose file bytes alone changed, its index untouched/)
@@ -123,6 +124,9 @@ describe('archive validation on Windows, documented', () => {
     expect(unsigned).toContain('the installer, `Veydr.exe`, the uninstaller and the helper carry no Authenticode signature')
     expect(unsigned).toContain('nothing checks `Veydr.exe` or the helper when they start')
     expect(unsigned).toContain('(install-windows.md#download-and-verify)')
+    // Provenance comes from the attestation; the checksum and the install record are not proof of origin.
+    expect(unsigned).toContain('What ties a downloaded installer to this repository is its build provenance attestation (`gh attestation verify`); its line in the release\'s `SHA256SUMS` only shows that the download matches that file')
+    expect(unsigned).toContain('The Windows install record attached to a release is neither in `SHA256SUMS` nor attested')
     // The Linux limitation stays stated separately, and the Windows bullets follow the Linux one.
     expect(bullet('ASAR integrity on Linux (limitation)')).toContain('on Linux a modified archive still loads')
     expect(baseline.indexOf('* **ASAR integrity on Linux')).toBeLessThan(baseline.indexOf('* **ASAR integrity on Windows**'))

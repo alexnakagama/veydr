@@ -2,7 +2,10 @@ import { existsSync, readFileSync } from 'node:fs'
 import { dirname, join, relative } from 'node:path'
 
 // Relative links of the Markdown documents, checked down to the heading they point at
-// (add-windows-packaging task 6.3).
+// (add-windows-packaging task 6.3). Limits: only inline links `[text](target)` are checked, not
+// reference-style links or HTML `href` attributes (readme-docs.test.ts checks the README's `href`
+// files, without anchors); and a heading that contains a link, an image or an HTML entity gets the
+// anchor of its literal text here, which may differ from GitHub's.
 
 /** `text` without its fenced code blocks, so that `# comment` lines in a block are not headings. */
 function withoutCodeBlocks(text: string): string {

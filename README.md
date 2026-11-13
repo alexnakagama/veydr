@@ -228,11 +228,11 @@ This starts Veydr with hot reload for the interface. See [Development](#developm
 
 ### Install on Windows
 
-**Windows: preview. Unsigned installer; verified in CI on Windows Server 2025.** Download `Veydr-X.Y.Z-x64-setup.exe` and `SHA256SUMS` from a release, and verify the installer before you run it: it is unsigned, so the checksum and the build provenance are what tie it to this repository, and Windows SmartScreen may warn about it. Then run it. It installs Veydr for your user only, without administrator rights, into `%LOCALAPPDATA%\Programs\veydr`, and adds a Start menu entry. The verification commands, the SmartScreen warning, updating, uninstalling (your configuration is kept), building the installer yourself, and what CI has not verified are in [docs/install-windows.md](docs/install-windows.md).
+**Windows: preview. Unsigned installer; verified in CI on Windows Server 2025.** Download `Veydr-X.Y.Z-x64-setup.exe` and `SHA256SUMS` from a release, and verify the installer before you run it: it is unsigned, so its build provenance (`gh attestation verify`) is what ties it to this repository, and Windows SmartScreen may warn about it. Then run it. It installs Veydr for your user only, with no administrator rights needed, into `%LOCALAPPDATA%\Programs\veydr`, and adds a Start menu entry. The verification commands, the SmartScreen warning, updating, uninstalling (your configuration is kept), building the installer yourself, and what CI has not verified are in [docs/install-windows.md](docs/install-windows.md).
 
 ### Running from source on Windows
 
-**Windows: preview. Unsigned installer; verified in CI on Windows Server 2025.** To run Veydr from a clone instead of installing it (see [Install on Windows](#install-on-windows) and [docs/install-windows.md](docs/install-windows.md) for the installer), on Windows 10 or 11 (x64), or Windows Server 2025 as in CI:
+**Windows: preview. Unsigned installer; verified in CI on Windows Server 2025.** To run Veydr from a clone instead of installing it (see [Install on Windows](#install-on-windows) and [docs/install-windows.md](docs/install-windows.md) for the installer), on Windows x64 (CI runs Windows Server 2025; Windows 10 and 11 are not verified):
 
 1. Install **Node.js 24** and **npm 11.19.0 or newer**, as for Linux (see [Prerequisites](#prerequisites)).
 2. In a clone of the repository, run:
@@ -243,7 +243,7 @@ This starts Veydr with hot reload for the interface. See [Development](#developm
    npm run dev
    ```
 
-`node scripts/build-windows-helper.mjs` builds `veydr-helper.exe`, the helper that runs each command in a Windows Job Object, into `out-helper/`. It compiles the helper's source with the .NET Framework 4.8 compiler that Windows includes, so no other toolchain is needed (see [dependencies.md](docs/dependencies.md#windows-process-tree-helper-gate-g-4-2026-11-03)). Run it again after updating the repository: Veydr refuses a helper of another protocol version. The helper is unsigned, so antivirus software or SmartScreen may flag it.
+`node scripts/build-windows-helper.mjs` builds `veydr-helper.exe`, the helper that runs each command in a Windows Job Object, into `out-helper/`. It compiles the helper's source with the .NET Framework 4.8 compiler, which Windows 10 version 1903 and later include, so no other toolchain is needed (see [dependencies.md](docs/dependencies.md#windows-process-tree-helper-gate-g-4-2026-11-03)). Run it again after updating the repository: Veydr refuses a helper of another protocol version. The helper is unsigned, so antivirus software or SmartScreen may flag it.
 
 On Windows, shell mode runs `cmd.exe` only, commands get the environment Veydr was started with (restart Veydr after changing `PATH`), and the **Ports** view lists ports through Veydr's helper, showing the holders a standard user may not query, such as system services, as restricted. The rules are in [commands.md](docs/commands.md#windows-preview), [processes.md](docs/processes.md#windows-preview), [logs.md](docs/logs.md#windows-preview) and [ports.md](docs/ports.md#windows-preview), together with what the CI runner cannot verify.
 

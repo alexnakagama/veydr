@@ -81,11 +81,24 @@ describe('docs/install-windows.md', () => {
     const nsis = config.nsis
     // Per-user and one-click, without elevation.
     expect([nsis['oneClick'], nsis['perMachine'], nsis['packElevateHelper']]).toEqual([true, false, false])
-    expect(section('The installer')).toContain('- **per-user and one-click:** it installs into your own profile without asking anything, and needs no administrator rights;')
-    expect(section('Requirements')).toContain('- **No administrator rights.** The installer installs for your user only and never asks for elevation.')
+    expect(section('The installer')).toContain('- **per-user and one-click:** it installs into your own profile, with no pages to go through, and needs no administrator rights;')
+    // Only the silent standard-user install was observed without elevation (task 4.3); the
+    // interactive installer's UAC behavior is listed as not verified.
+    const requirements = flat(section('Requirements'))
+    expect(requirements).toContain('A silent install by a standard user succeeded in CI without elevation; whether the interactive installer shows a UAC prompt was not observed')
+    expect(doc).not.toMatch(/never asks? for elevation|without asking anything/i)
+    expect(flat(section('Not verified'))).toContain('(`ux-uac-prompt`): whether the interactive installer shows one')
+    // The helper's runtime: named with the Windows versions that lack it, and unverified outside CI.
+    expect(requirements).toContain('Windows 10 1809 and earlier, LTSC 2019 among them, ship 4.7.2')
+    expect(requirements).toContain('Windows 10 and 11 are not verified')
     // The Start menu entry only, and the configuration kept.
     expect([nsis['createStartMenuShortcut'], nsis['createDesktopShortcut'], nsis['deleteAppDataOnUninstall']]).toEqual([true, false, false])
-    expect(section('What is installed where')).toContain('The installer creates no desktop shortcut, nothing under `HKEY_LOCAL_MACHINE`, and no logon entry or Startup shortcut: Veydr never starts when you log in.')
+    // Narrowed to what installer.test.ts checks: the HKLM uninstall keys, Run/RunOnce and the Startup folder.
+    const where = flat(section('What is installed where'))
+    expect(where).toContain('The installer creates no desktop shortcut, no uninstall entry under `HKEY_LOCAL_MACHINE`, and no `Run` or `RunOnce` value or Startup shortcut')
+    expect(where).toContain('other autostart places, such as scheduled tasks or services, were not inspected')
+    const installer = read('test/packaging-windows/installer.test.ts')
+    for (const key of ['HKLM:\\\\$run\\\\Uninstall', 'HKCU:\\\\$run\\\\RunOnce', 'HKLM:\\\\$run\\\\Run']) expect(installer, key).toContain(key)
     expect(flat(section('Uninstalling'))).toContain('Your configuration in `%APPDATA%\\Veydr` is kept')
     // No update metadata.
     expect([config.publish, nsis['differentialPackage']]).toEqual([null, false])
@@ -116,15 +129,36 @@ describe('docs/install-windows.md', () => {
     expect(ciBlocks[0]).toContain('Get-FileHash -Algorithm SHA256')
     expect(ciBlocks[1]).toContain(`gh attestation verify ${installerName()} --repo alexnakagama/veydr --signer-workflow alexnakagama/veydr/.github/workflows/release.yml`)
     expect(existsSync(join(root, '.github/workflows/release.yml'))).toBe(true)
-    expect(flat(verify)).toContain('Run both before you start it.')
+    // Only the attestation is provenance: SHA256SUMS comes from the same release page, and the
+    // install record is in neither SHA256SUMS nor the attestation (release.yml attests SHA256SUMS's subjects).
+    const flatVerify = flat(verify)
+    expect(flatVerify).toContain('Run both checks before you start it.')
+    expect(flatVerify).toContain('that file comes from the same release page, so it does not show where the installer came from. The attestation does')
+    expect(flatVerify).toContain('This is the provenance check.')
+    expect(flatVerify).toContain('It is not in `SHA256SUMS` and not attested, so it is information, not proof')
+    expect(doc).not.toMatch(/these two checks are what ties/i)
+    expect(read('.github/workflows/release.yml')).toMatch(/uses: actions\/attest-build-provenance@[0-9a-f]{40} # \S+\n\s+with:\n\s+subject-checksums: \$\{\{ runner\.temp \}\}\/release\/SHA256SUMS\n/)
+    // Nothing that CI cannot show is called verified: SmartScreen, the interactive install, a UAC prompt.
+    for (const sentence of doc.split(/(?<=\.)\s+/)) {
+      if (/SmartScreen|interactive install|UAC/i.test(sentence) && /\bverified\b/i.test(sentence)) {
+        expect(sentence, sentence).toMatch(/\b(?:not|neither is|un)\s?verified\b/i)
+      }
+    }
+  })
+
+  it('says what the smoke test writes, as observed with no configuration present', () => {
+    const check = flat(section('Checking an installation'))
+    expect(check).toContain('It does not read or write `config.json` or the run record by design; in CI, which ran it with no configuration present, it left none of Veydr\'s own files behind.')
+    expect(check).toContain('Electron keeps its own profile data (caches, local storage) in the same directory')
+    expect(check).not.toMatch(/never reads or changes/)
   })
 
   it('tells the user to quit Veydr before updating, and keeps the configuration on update and uninstall', () => {
     const updating = flat(section('Updating'))
     expect(updating).toContain('1. Quit Veydr.')
     expect(updating).toContain('Your configuration is kept.')
-    expect(updating).toContain('Do not run the installer while Veydr is running')
-    expect(updating).toContain('that case is not tested')
+    expect(updating).toContain('Do not run the installer while Veydr is running: it may close Veydr')
+    expect(updating).toContain('That case is not tested.')
     const uninstalling = flat(section('Uninstalling'))
     expect(uninstalling).toContain('Uninstalling removes the install directory, the Start menu entry and the uninstall entry.')
     expect(uninstalling).toContain('To remove it too, delete that folder.')
@@ -148,6 +182,8 @@ describe('docs/install-windows.md', () => {
     expect(integrity).toContain('at startup, an archive whose index was changed is refused')
     expect(integrity).toContain('an archive whose file bytes alone were changed, its index untouched, is refused as well')
     expect(integrity).not.toMatch(/bytes[^.]*(?:still load|are not checked|not validated)/)
+    // Measured with the main bundle only, and said so.
+    expect(integrity).toContain('by changing the main bundle (`test/packaging-windows/fuses.test.ts`); other files of the archive were not modified in a test')
     // The tests that measured it exist and are real tests, not placeholders.
     const fuses = read('test/packaging-windows/fuses.test.ts')
     expect(integrity).toContain('`test/packaging-windows/fuses.test.ts`')

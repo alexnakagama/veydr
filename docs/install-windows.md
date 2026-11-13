@@ -7,14 +7,14 @@ In the commands below, replace `X.Y.Z` with the version you install.
 ## Requirements
 
 - **Windows x64.** There is no build for Arm64 or 32-bit Windows.
-- **No administrator rights.** The installer installs for your user only and never asks for elevation.
-- The **.NET Framework 4.8** runtime that Windows includes. Veydr's helper, `veydr-helper.exe`, is compiled for it (see [dependencies.md](dependencies.md#windows-process-tree-helper-gate-g-4-2026-11-03)). Windows Server 2025, which CI runs, has it.
+- **No administrator rights.** The installer installs for your user only. A silent install by a standard user succeeded in CI without elevation; whether the interactive installer shows a UAC prompt was not observed (see [Not verified](#not-verified)).
+- The **.NET Framework 4.8** runtime. Veydr's helper, `veydr-helper.exe`, is compiled with its compiler (see [dependencies.md](dependencies.md#windows-process-tree-helper-gate-g-4-2026-11-03)). Windows 10 version 1903 and later and Windows 11 include it; Windows 10 1809 and earlier, LTSC 2019 among them, ship 4.7.2 and need it installed. The helper has run only on Windows Server 2025, in CI; Windows 10 and 11 are not verified.
 
 ## The installer
 
 The installer is `Veydr-X.Y.Z-x64-setup.exe`: an NSIS installer built by electron-builder from `electron-builder.yml` with `npm run dist:windows`. It is:
 
-- **per-user and one-click:** it installs into your own profile without asking anything, and needs no administrator rights;
+- **per-user and one-click:** it installs into your own profile, with no pages to go through, and needs no administrator rights;
 - **unsigned:** the installer, the application (`Veydr.exe`) and its helper (`veydr-helper.exe`) carry no Authenticode signature, so Windows shows no publisher for them (see [SmartScreen](#smartscreen));
 - **without auto-update:** Veydr never checks for or downloads a newer version, and the package carries no update metadata. You update by running a newer installer (see [Updating](#updating)).
 
@@ -24,11 +24,11 @@ Released versions are on the [GitHub Releases page](https://github.com/alexnakag
 
 - `Veydr-X.Y.Z-x64-setup.exe`, the installer;
 - `SHA256SUMS`, the checksums of every package of the release, the installer included;
-- `install-windows-steps.jsonl`, the record of the installation test the release ran on exactly this installer: its first line names the installer's SHA-256, and each later line one step, as the administrator and as a standard user.
+- `install-windows-steps.jsonl`, the record of the installation test the release ran on this installer: its first line names the installer's SHA-256, and each later line one step, as the administrator and as a standard user. It is not in `SHA256SUMS` and not attested, so it is information, not proof: anyone who could change the release could change it.
 
 Earlier releases have Linux packages only. For a version without an installer, [build it yourself](#building-the-installer).
 
-Because the installer is unsigned, these two checks are what ties it to this repository. Run both before you start it. In PowerShell, in the folder with the downloaded installer and `SHA256SUMS`:
+Because the installer is unsigned, nothing in Windows tells you who built it. Run both checks before you start it. The checksum shows that your download is complete and matches the release's `SHA256SUMS`, but that file comes from the same release page, so it does not show where the installer came from. The attestation does: it ties the installer to this repository's release workflow. In PowerShell, in the folder with the downloaded installer and `SHA256SUMS`:
 
 ```powershell
 $name = 'Veydr-X.Y.Z-x64-setup.exe'
@@ -42,7 +42,7 @@ It must print `OK`. Then check the build provenance with the [GitHub CLI](https:
 gh attestation verify Veydr-X.Y.Z-x64-setup.exe --repo alexnakagama/veydr --signer-workflow alexnakagama/veydr/.github/workflows/release.yml
 ```
 
-It succeeds only for a file whose digest this repository's release workflow attested, and prints the workflow run and the source commit it was built from. More on both checks is in [ci.md](ci.md#verifying-a-release-package).
+This is the provenance check. It succeeds only for a file whose digest this repository's release workflow attested, and prints the workflow run and the source commit it was built from. More on both checks is in [ci.md](ci.md#verifying-a-release-package).
 
 ## SmartScreen
 
@@ -73,7 +73,7 @@ A silent install does not start Veydr.
 | An uninstall entry | your user's part of the registry (`HKEY_CURRENT_USER`), shown in **Settings › Apps › Installed apps** |
 | Your configuration and run record | `%APPDATA%\Veydr`, created by Veydr when it first runs, not by the installer |
 
-The installer creates no desktop shortcut, nothing under `HKEY_LOCAL_MACHINE`, and no logon entry or Startup shortcut: Veydr never starts when you log in. Your configuration lives outside the install directory, so installing, updating and uninstalling leave it alone.
+The installer creates no desktop shortcut, no uninstall entry under `HKEY_LOCAL_MACHINE`, and no `Run` or `RunOnce` value or Startup shortcut, so Veydr does not start when you log in. These are what CI checks; other autostart places, such as scheduled tasks or services, were not inspected, and the installer is not configured to create any. Your configuration lives outside the install directory, so installing, updating and uninstalling leave it alone.
 
 ## Checking an installation
 
@@ -84,14 +84,14 @@ Close Veydr first, then run its smoke test in PowerShell:
 $LASTEXITCODE
 ```
 
-It prints a line starting with `VEYDR_SMOKE_TEST` with a JSON report of seven checks, and exits with status 0 if every check passed. The checks are the ones described in [install-linux.md](install-linux.md#checking-an-installation); on Windows the `platform` check reads the environment Veydr was started with and lists the listening ports through the installed helper, so it also shows that the helper can be found and started. The smoke test creates the configuration directory if needed and writes and removes a probe file there; it never reads or changes your configuration.
+It prints a line starting with `VEYDR_SMOKE_TEST` with a JSON report of seven checks, and exits with status 0 if every check passed. The checks are the ones described in [install-linux.md](install-linux.md#checking-an-installation); on Windows the `platform` check reads the environment Veydr was started with and lists the listening ports through the installed helper, so it also shows that the helper can be found and started. The smoke test creates the configuration directory if needed and writes and removes a probe file there. It does not read or write `config.json` or the run record by design; in CI, which ran it with no configuration present, it left none of Veydr's own files behind. Electron keeps its own profile data (caches, local storage) in the same directory, and the smoke test, like any start of Veydr, may write there.
 
 ## Updating
 
 1. Quit Veydr. Quitting stops every command it started, as described in [processes.md](processes.md#windows-preview).
 2. Download and verify the newer installer, and run it. It installs over the existing installation.
 
-Your configuration is kept. Do not run the installer while Veydr is running: it would close Veydr, which ends its commands as an abnormal exit does ([processes.md](processes.md#after-an-abnormal-exit-on-windows)), and that case is not tested.
+Your configuration is kept. Do not run the installer while Veydr is running: it may close Veydr, which would end its commands as an abnormal exit does ([processes.md](processes.md#after-an-abnormal-exit-on-windows)). That case is not tested.
 
 ## Uninstalling
 
@@ -116,7 +116,7 @@ The application's code is in `resources\app.asar`. `Veydr.exe` holds the SHA-256
 - at startup, an archive whose index was changed is refused: Veydr does not start, and the changed code does not run;
 - when a file is read from the archive, its bytes are checked against its hash in the index: an archive whose file bytes alone were changed, its index untouched, is refused as well.
 
-Both were measured in CI on the packaged build (`test/packaging-windows/fuses.test.ts`). What the validation does not cover:
+Both were measured in CI on the packaged build, by changing the main bundle (`test/packaging-windows/fuses.test.ts`); other files of the archive were not modified in a test, so for them this is Electron's documented behavior, not a measurement. What the validation does not cover:
 
 - `Veydr.exe` itself, which holds the expected hash and is unsigned: whoever can write the install directory can replace it together with the archive;
 - files outside the archive: the helper, the uninstaller, and Electron's own libraries and resources beside `Veydr.exe`;
@@ -159,7 +159,7 @@ The CI runner is a Windows Server 2025 virtual machine without an interactive de
 - installing or updating while Veydr is running;
 - starting Veydr from the Start menu or Explorer, and the environment it then gets (`env-desktop-launch`), with no Job Object around it (`ctx-job`);
 - logging off or shutting down Windows while commands run (`pt-logoff`);
-- elevation prompts (`ux-uac-prompt`): the installer never asks for elevation, but a command that does was not tried;
+- elevation prompts (`ux-uac-prompt`): whether the interactive installer shows one, and a command that requests elevation;
 - a localized Windows (`l10n-console`);
 - third-party antivirus software (`av-third-party`);
 - the `koffi` foreign-function check, which was not approved and which Veydr does not use (`ffi-koffi-electron`).
