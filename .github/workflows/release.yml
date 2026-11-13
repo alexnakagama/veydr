@@ -243,6 +243,129 @@ jobs:
           if-no-files-found: ignore
           overwrite: true
 
+  # The Windows gate (add-windows-packaging design D6): the Windows integration and end-to-end tests
+  # on the bumped tree, as ci.yml's windows job runs them. The run steps that use $VERSION run in bash:
+  # the runner's default shell on Windows is PowerShell, where "$VERSION" is not the environment variable.
+  windows:
+    name: windows
+    needs:
+      - validate
+    runs-on: windows-2025
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.validate.outputs.source_sha }}
+          persist-credentials: false
+      # On Windows, electron: "true" installs only the dependencies; the e2e step downloads Electron
+      # itself (scripts/ensure-electron.cjs).
+      - id: setup
+        uses: ./.github/actions/setup
+        with:
+          electron: "true"
+          cache: "false"
+      - name: Apply the version
+        shell: bash
+        env:
+          VERSION: ${{ inputs.version }}
+        run: node scripts/release-version.mjs apply "$VERSION"
+      # As in ci.yml: the helper is built from source, and the test steps require the build step's
+      # success, so after a failed build no Windows test is reported, neither passed nor skipped, and
+      # the failed build fails the job. A failed version step skips the build, and so the tests.
+      - id: helper
+        name: Build Windows helper
+        run: node scripts/build-windows-helper.mjs
+      - name: Windows integration tests
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' && steps.helper.outcome == 'success' }}
+        run: npm run test:windows
+      - name: Windows end-to-end tests
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' && steps.helper.outcome == 'success' }}
+        run: npm run test:e2e
+      - name: Upload test results
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-windows-test-results
+          path: test-results/
+          retention-days: 14
+          if-no-files-found: ignore
+          overwrite: true
+
+  # Builds the Windows installer once on the bumped tree and tests it, as an administrator and as a
+  # standard user. publish attaches this installer and its install record: what ships is what was
+  # tested. Nothing is signed (design D8): no certificate variable is defined.
+  windows-package:
+    name: windows-package
+    needs:
+      - validate
+    runs-on: windows-2025
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.validate.outputs.source_sha }}
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+        with:
+          electron: "true"
+          cache: "false"
+      - name: Apply the version
+        shell: bash
+        env:
+          VERSION: ${{ inputs.version }}
+        run: node scripts/release-version.mjs apply "$VERSION"
+      # dist:windows builds the helper from source first, in an && chain: a failed helper build ends
+      # the script before electron-builder runs, so no installer is built and the job fails.
+      - name: Build the Windows installer and run the Windows packaging tests
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+        run: npm run test:packaging:windows
+      - name: Check the installer name
+        shell: bash
+        working-directory: dist
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          shopt -s nullglob
+          found=(*.exe)
+          expected="Veydr-$VERSION-x64-setup.exe"
+          if [ "${found[*]}" != "$expected" ]; then
+            echo "::error title=Unexpected installer::expected exactly $expected in dist/, found: ${found[*]}"
+            exit 1
+          fi
+      - name: Upload installer
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-windows-package
+          path: dist/*-x64-setup.exe
+          retention-days: 14
+          if-no-files-found: error
+          overwrite: true
+      # The install record (design D3): its first line names the SHA-256 of the installer tested,
+      # which publish checks against the attached installer. Uploaded on failure too, to diagnose it.
+      - name: Upload install record
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-windows-install
+          path: test-results/windows-install/
+          retention-days: 14
+          if-no-files-found: error
+          overwrite: true
+      - name: Upload test results
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-windows-package-test-results
+          path: test-results/
+          retention-days: 14
+          if-no-files-found: ignore
+          overwrite: true
+
   # The only job with write scopes, and the only one that reaches the remote. Safe to rerun: a tag
   # this run already pushed is recognised and not pushed again, and an existing draft is completed
   # instead of duplicated (design D6).
@@ -255,6 +378,8 @@ jobs:
       - package
       - smoke
       - acceptance
+      - windows
+      - windows-package
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
@@ -327,34 +452,62 @@ jobs:
         with:
           name: release-acceptance-linux
           path: ${{ runner.temp }}/acceptance
-      # SHA256SUMS covers exactly the two packages. The acceptance record names the SHA-256 of the
-      # .deb it tested, which must be the one attached.
+      - name: Download the Windows installer
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-windows-package
+          path: ${{ runner.temp }}/release
+      - name: Download the Windows install record
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-windows-install
+          path: ${{ runner.temp }}/windows-install
+      # SHA256SUMS covers exactly the three packages. Each record names the SHA-256 line of the
+      # package it tested, which must be the line of the package attached: the acceptance record the
+      # .deb's, the Windows install record the installer's (add-windows-packaging design D6).
       - name: Write SHA256SUMS
         working-directory: ${{ runner.temp }}/release
         env:
           VERSION: ${{ inputs.version }}
           ACCEPTANCE: ${{ runner.temp }}/acceptance/steps.jsonl
+          WINDOWS_INSTALL: ${{ runner.temp }}/windows-install/steps.jsonl
         run: |
           shopt -s nullglob
           found=(*)
           deb="Veydr-$VERSION-amd64.deb"
           appimage="Veydr-$VERSION-x86_64.AppImage"
-          if [ "${#found[@]}" -ne 2 ] || [ ! -f "$deb" ] || [ ! -f "$appimage" ]; then
-            echo "::error title=Unexpected packages::expected exactly $deb and $appimage, found: ${found[*]}"
+          installer="Veydr-$VERSION-x64-setup.exe"
+          if [ "${#found[@]}" -ne 3 ] || [ ! -f "$deb" ] || [ ! -f "$appimage" ] || [ ! -f "$installer" ]; then
+            echo "::error title=Unexpected packages::expected exactly $deb, $appimage and $installer, found: ${found[*]}"
             exit 1
           fi
-          sha256sum -- "$deb" "$appimage" > SHA256SUMS
+          sha256sum -- "$deb" "$appimage" "$installer" > SHA256SUMS
           sha256sum -c SHA256SUMS
+          # The first line of a record, `detail.<field>`, or empty for anything else.
+          tested() {
+            head -n 1 -- "$1" | FIELD="$2" node -e 'let s = ""; process.stdin.on("data", (d) => (s += d)).on("end", () => { let v = ""; try { v = JSON.parse(s).detail?.[process.env.FIELD] } catch {} console.log(typeof v === "string" ? v : "") })'
+          }
           if [ ! -s "$ACCEPTANCE" ]; then
             echo "::error title=No acceptance record::steps.jsonl is missing from the acceptance results"
             exit 1
           fi
-          tested="$(head -n 1 "$ACCEPTANCE" | node -e 'let s = ""; process.stdin.on("data", (d) => (s += d)).on("end", () => console.log(JSON.parse(s).detail?.deb ?? ""))')"
-          if ! grep -Fxq -- "$tested" SHA256SUMS; then
-            echo "::error title=Acceptance record mismatch::the acceptance record tested '$tested', which is not the attached $deb"
+          # SHA256SUMS lists the .deb on line 1 and the installer on line 3.
+          deb_tested="$(tested "$ACCEPTANCE" deb)"
+          if [ -z "$deb_tested" ] || [ "$deb_tested" != "$(sed -n 1p SHA256SUMS)" ]; then
+            echo "::error title=Acceptance record mismatch::the acceptance record tested '$deb_tested', which is not the attached $deb"
+            exit 1
+          fi
+          if [ ! -s "$WINDOWS_INSTALL" ]; then
+            echo "::error title=No Windows install record::steps.jsonl is missing from the Windows install results"
+            exit 1
+          fi
+          installer_tested="$(tested "$WINDOWS_INSTALL" installer)"
+          if [ -z "$installer_tested" ] || [ "$installer_tested" != "$(sed -n 3p SHA256SUMS)" ]; then
+            echo "::error title=Windows install record mismatch::the Windows install record tested '$installer_tested', which is not the attached $installer"
             exit 1
           fi
           cp -- "$ACCEPTANCE" acceptance-linux-steps.jsonl
+          cp -- "$WINDOWS_INSTALL" install-windows-steps.jsonl
       - name: Attest build provenance
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
@@ -378,7 +531,7 @@ jobs:
           TAG: ${{ needs.validate.outputs.tag }}
           PRERELEASE: ${{ needs.validate.outputs.prerelease }}
         run: |
-          files=("Veydr-$VERSION-amd64.deb" "Veydr-$VERSION-x86_64.AppImage" SHA256SUMS acceptance-linux-steps.jsonl)
+          files=("Veydr-$VERSION-amd64.deb" "Veydr-$VERSION-x86_64.AppImage" "Veydr-$VERSION-x64-setup.exe" SHA256SUMS acceptance-linux-steps.jsonl install-windows-steps.jsonl)
           draft="$(gh api --paginate "repos/$GH_REPO/releases" --jq '.[] | select(.tag_name == env.TAG) | .draft')"
           case "$draft" in
             "")

@@ -9,8 +9,8 @@ Veydr's checks run on GitHub Actions, on GitHub-hosted `ubuntu-24.04` runners; t
 | `ci.yml` | `pull_request` to `master`, `push` to `master`, `merge_group` | Quality gate: typecheck, lint, spec coverage, production audit, workflow lint, unit, integration, E2E, packaging; typecheck, lint, unit tests, the Windows integration tests, and the E2E tests also on Windows; the Windows installer with the Windows packaging tests | Merge, through the aggregate check `ci-ok` |
 | `security.yml` | `pull_request`, `push` to `master`, weekly schedule | CodeQL analysis; dependency review (pull requests only) | Merge (dependency review is required; CodeQL alerts go to the Security tab) |
 | `nightly.yml` | Daily schedule, manual run with a `ref` | Performance scenarios P1–P4, `scripts/smoke-linux.sh`, `scripts/acceptance-linux.sh` | Nothing; failures are reported in one tracking issue |
-| `build.yml` | Manual run with a `ref` and a `smoke` option | Packages any ref into downloadable `.deb` and AppImage artifacts with `SHA256SUMS` | Nothing |
-| `release.yml` | Manual run with a `version` | Validates the version, runs the full gate on the bumped tree, then pushes the bump commit and tag and creates a draft release | n/a |
+| `build.yml` | Manual run with a `ref` and a `smoke` option | Packages any ref into downloadable `.deb` and AppImage artifacts, and a Windows installer artifact, each with its `SHA256SUMS` | Nothing |
+| `release.yml` | Manual run with a `version` | Validates the version, runs the full gate on the bumped tree, on Linux and on Windows, then pushes the bump commit and tag and creates a draft release | n/a |
 | `windows-probe.yml` | Manual run with a `negative-control` option | Probes how Windows behaves on the `windows-2025` runner and records the answers as evidence for the Windows platform work; a run never changes what Veydr claims for Windows | Nothing; never a required check |
 | `website.yml` | A release is published, edited, unpublished or deleted; manual run | Calls the Vercel Deploy Hook of [veydr-web](https://github.com/alexnakagama/veydr-web), so the website rebuilds with the current releases | Nothing |
 
@@ -209,9 +209,12 @@ gh workflow run build.yml --ref master -f ref=my-branch -f smoke=true
 | Job | What it runs | Artifacts (kept 14 days) | Timeout |
 |---|---|---|---|
 | `package` | `xvfb-run --auto-servernum npm run test:packaging`, then writes `SHA256SUMS` for the `.deb` and the AppImage and checks it | `linux-packages`: the `.deb`, the AppImage and `SHA256SUMS` | 45 min |
+| `windows-package` | On `windows-2025`: `npm run test:packaging:windows`, the same build and Windows packaging tests as in [CI](#ci) (including the installation as the administrator and as a standard user), then `node scripts/sha256sums.mjs dist <installer>` writes `SHA256SUMS` for the installer, which a second step checks with `Get-FileHash` | `windows-package`: `Veydr-<version>-x64-setup.exe` and its `SHA256SUMS`; `windows-package-test-results`: `test-results/`, only when the job fails | 45 min |
 | `smoke` | Only with `smoke: true`: checks out the commit `package` built (not the ref again, which may have moved), downloads `linux-packages`, checks it against `SHA256SUMS`, then runs `scripts/smoke-linux.sh` on those same files | `smoke-linux`: `test-results/smoke-linux/`, whether it passes or fails, unless the run was cancelled | 90 min |
 
-The packages carry the version that is in `package.json` at that ref; a manual build never bumps it. Both jobs have `contents: read` and nothing else, and the workflow contains no push, tag, commit or release step, so the repository's branches, tags and releases are unchanged after any run. The policy test checks both. The `package` job fails unless `dist/` holds exactly one `.deb` and one AppImage.
+The packages carry the version that is in `package.json` at that ref; a manual build never bumps it. Every job has `contents: read` and nothing else, and the workflow contains no push, tag, commit or release step, so the repository's branches, tags and releases are unchanged after any run. The policy test checks both. The `package` job fails unless `dist/` holds exactly one `.deb` and one AppImage; the `windows-package` job fails unless `dist\` holds exactly one installer, named for the version in `package.json`. The installer is unsigned (see [CI](#ci)).
+
+Each artifact carries its own `SHA256SUMS`: `windows-package` and `package` run in parallel on different systems, and the Linux job is unchanged. `SHA256SUMS` is in GNU `sha256sum`'s text format (`<sha256>  <name>`, LF line ends) in both. On Windows it is written by `scripts/sha256sums.mjs`, because the `sha256sum` of Git for Windows writes binary-mode lines (`<sha256> *<name>`). The script lists only plain file names inside the directory, verifies what it wrote, and exits 1 for a missing file, a name with a path separator, or no file.
 
 To download and check a build:
 
@@ -223,7 +226,26 @@ gh run download <run-id> --name linux-packages --dir veydr-build
 cd veydr-build && sha256sum -c SHA256SUMS
 ```
 
-Manual builds are for testing a branch on a real machine. They are not releases: they have no provenance attestation and are deleted after 14 days.
+The Windows installer, on Linux:
+
+```bash
+gh run download <run-id> --name windows-package --dir veydr-build-windows
+```
+
+```bash
+cd veydr-build-windows && sha256sum -c SHA256SUMS
+```
+
+or on Windows, in PowerShell, in the folder with the downloaded files:
+
+```powershell
+$hash, $name = (Get-Content SHA256SUMS) -split '  '
+(Get-FileHash -Algorithm SHA256 -LiteralPath $name).Hash.ToLower() -eq $hash
+```
+
+It prints `True` for an intact installer.
+
+Manual builds are for testing a branch on a real machine. They are not releases: they have no provenance attestation and are deleted after 14 days. The `windows-package` job installs and uninstalls the installer on the runner, as in CI; it does not install anything on your machine.
 
 ## Windows probes
 
@@ -276,7 +298,9 @@ A run's results become evidence only after review (design D4, tasks 8.1):
 
 ## Releasing
 
-`.github/workflows/release.yml` turns `master` into a release. It is the only workflow that writes to the repository, and it does so only after the full gate passed on the exact tree it is about to push (design D6).
+`.github/workflows/release.yml` turns `master` into a release. It is the only workflow that writes to the repository, and it does so only after the full gate passed on the exact tree it is about to push (design D6), on Linux and on Windows.
+
+**The Windows release path has not run yet.** The two Windows gate jobs and the installer in the draft were added by `add-windows-packaging` (design D6). Their steps are covered by `workflow-policy.test.ts`, which runs the changed `publish` script against fixtures, and by the same packaging script running in `ci.yml` and `build.yml`, but the release itself first runs them at the first release after that change. A failure in any gate job, Windows ones included, stops the release before `publish` pushes anything. Check that first draft as described in [Before publishing the draft](#before-publishing-the-draft).
 
 ### One-time repository setup
 
@@ -318,36 +342,39 @@ gh workflow run release.yml --ref master -f version=0.1.0
 |---|---|---|
 | `validate` | Fails unless the run is on `master`. Checks out with every tag and runs `node scripts/release-version.mjs check`. Outputs the tag, whether it is a prerelease, and the commit the run started from (the source commit) | 10 min |
 | `verify` | On the source commit: applies the version (`release-version.mjs apply`), then `xvfb-run --auto-servernum npm run verify` (the integration tests launch the app) | 45 min |
-| `e2e` | The same bump, then `xvfb-run --auto-servernum npm run test:e2e` | 60 min |
+| `e2e` | The same bump, then `xvfb-run --auto-servernum npm run test:e2e`. Uploads `release-e2e-test-results` only when it fails | 60 min |
 | `package` | The same bump, then `xvfb-run --auto-servernum npm run test:packaging`. Fails unless `dist/` holds exactly `Veydr-X.Y.Z-amd64.deb` and `Veydr-X.Y.Z-x86_64.AppImage`, and uploads them as `release-packages` | 60 min |
-| `smoke` | `scripts/smoke-linux.sh` on the `release-packages` files | 90 min |
+| `smoke` | `scripts/smoke-linux.sh` on the `release-packages` files; uploads its results as `release-smoke-linux`, unless the run was cancelled | 90 min |
 | `acceptance` | `scripts/acceptance-linux.sh` on the `release-packages` files; uploads its results as `release-acceptance-linux` | 60 min |
+| `windows` | On `windows-2025`, the same bump, then `node scripts/build-windows-helper.mjs`, `npm run test:windows` and `npm run test:e2e`, as the `windows` job of [CI](#ci). The test steps run only after a successful helper build, so a failed build fails the job and no Windows test is reported as passed or skipped. Uploads `release-windows-test-results` only when it fails | 60 min |
+| `windows-package` | On `windows-2025`, the same bump, then `npm run test:packaging:windows`: the installer is built and tested, installed and uninstalled as the administrator and as a temporary standard user. Fails unless `dist\` holds exactly `Veydr-X.Y.Z-x64-setup.exe`. Uploads it as `release-windows-package`, and the install record `test-results/windows-install/` as `release-windows-install` (also when it fails, unless cancelled, to diagnose it); `release-windows-package-test-results` only when it fails | 60 min |
 | `publish` | Only if every job above succeeded; see below | 20 min |
 
-All jobs except `publish` have `contents: read` only and keep no credentials. Every job runs the setup action with `cache: "false"`, so nothing comes from a cache. `publish`:
+All jobs except `publish` have `contents: read` only and keep no credentials. Every job runs the setup action with `cache: "false"`, so nothing comes from a cache. The Windows jobs apply the version in `bash`, as the Linux jobs do: in PowerShell, the runner's default shell on Windows, `"$VERSION"` would be an unset PowerShell variable. Nothing is signed: no workflow defines a certificate variable (see [CI](#ci)). `publish`:
 
 1. checks out the source commit with every tag, applies the version again, and commits `package.json` and `package-lock.json` as `github-actions[bot]` ("release vX.Y.Z"), failing if the commit changes any other file;
 2. checks the remote: `master` must still be the source commit. If `master` moved during the run, it stops here, because the commit that would be released is not the one that was tested; start a new release from the current `master`;
-3. downloads `release-packages` and the acceptance results, writes `SHA256SUMS` for the two packages and checks it, and checks that the acceptance record names the SHA-256 of the attached `.deb`;
+3. downloads `release-packages`, the acceptance results (`release-acceptance-linux`), the installer (`release-windows-package`) and the install record (`release-windows-install`). The release directory must then hold exactly `Veydr-X.Y.Z-amd64.deb`, `Veydr-X.Y.Z-x86_64.AppImage` and `Veydr-X.Y.Z-x64-setup.exe`. It writes `SHA256SUMS` for the three and checks it, then checks that the first line of the acceptance record names the `.deb`'s line in `SHA256SUMS` and that the first line of the install record (`detail.installer`) names the installer's line. A missing record, or one that names another file or digest, stops the job here;
 4. creates a build provenance attestation for every package in `SHA256SUMS`;
 5. creates the annotated tag `vX.Y.Z` and pushes the commit and the tag with one `git push --atomic`, so both land or neither does;
-6. creates a **draft** release for the tag with generated notes (marked as a prerelease for a prerelease version), attaching both packages, `SHA256SUMS` and `acceptance-linux-steps.jsonl`.
+6. creates a **draft** release for the tag with generated notes (marked as a prerelease for a prerelease version), attaching the three packages, `SHA256SUMS`, `acceptance-linux-steps.jsonl` and `install-windows-steps.jsonl` (the Windows install record).
 
-Nothing reaches the remote repository before step 5. An attestation from step 4 stays in the attestation log even if the push then fails; it names packages that were never released, which is harmless.
+Nothing reaches the remote repository before step 5. The attestation reads `SHA256SUMS`, so it covers the installer too. An attestation from step 4 stays in the attestation log even if the push then fails; it names packages that were never released, which is harmless.
 
 `publish` stores its write credentials in the checkout, so the steps after it (the setup action from the source commit, the official download and attestation actions, and the scripts above) run next to them. It never runs `npm ci`, so no dependency's install script does.
 
-The acceptance record names the SHA-256 of the `.deb` it tested, and `publish` checks it against the attached `.deb`. The AppImage has no such record of its own: it is tied to the gate only by coming from the same `release-packages` artifact that `smoke` tested. Only one release runs at a time: a second run waits for the first, and a running release is never cancelled by a new one. (GitHub keeps only one waiting run per concurrency group, so starting a third run while one is waiting cancels the waiting one.)
+The acceptance record names the SHA-256 of the `.deb` it tested, and the Windows install record that of the installer it tested; `publish` checks each against the attached file. The AppImage has no such record of its own: it is tied to the gate only by coming from the same `release-packages` artifact that `smoke` tested. Only one release runs at a time: a second run waits for the first, and a running release is never cancelled by a new one. (GitHub keeps only one waiting run per concurrency group, so starting a third run while one is waiting cancels the waiting one.)
 
 ### Before publishing the draft
 
 The draft is visible only to people with write access until you publish it. The tag and the version commit are already public on `master`. In **Releases**, open the draft and check:
 
 - **Tag and commit**: the tag is `vX.Y.Z`, its commit changes only `package.json` and `package-lock.json`, and its parent is the commit you meant to release.
-- **Files**: exactly `Veydr-X.Y.Z-amd64.deb`, `Veydr-X.Y.Z-x86_64.AppImage`, `SHA256SUMS` and `acceptance-linux-steps.jsonl`.
+- **Files**: exactly `Veydr-X.Y.Z-amd64.deb`, `Veydr-X.Y.Z-x86_64.AppImage`, `Veydr-X.Y.Z-x64-setup.exe`, `SHA256SUMS`, `acceptance-linux-steps.jsonl` and `install-windows-steps.jsonl`. `SHA256SUMS` has exactly three lines, one per package.
+- **Both records**: the first line of `acceptance-linux-steps.jsonl` names the `.deb`'s line of `SHA256SUMS`, and the first line of `install-windows-steps.jsonl` (`detail.installer`) the installer's line. Every later line of both has `"ok":true`; the install record has the `administrator/…` steps and the `standard-user/…` steps, including `standard-user/account-removed`.
 - **Prerelease**: set only for a version with a prerelease suffix.
 - **Notes**: the generated list of pull requests. Edit it into a short summary of what changed for users, call out anything that breaks existing configurations, and repeat the open platform limitations (Ubuntu 24.04, see the README's platform notes).
-- **The downloads verify**: download the files and run the checks users run (below). Optionally install the `.deb` on a real machine and run `veydr --smoke-test`.
+- **The downloads verify**: download the files and run the checks users run (below), on Linux and on Windows, including `gh attestation verify` on the installer. Optionally install the `.deb` on a real machine and run `veydr --smoke-test`.
 
 Then **Publish release**. Publishing starts `website.yml`, which rebuilds the website with the new release (see [Website](#website)). To discard it instead, see [Recovering from a failed release](#recovering-from-a-failed-release).
 
@@ -367,16 +394,31 @@ Then check the build provenance with the [GitHub CLI](https://cli.github.com/):
 gh attestation verify Veydr-X.Y.Z-amd64.deb --repo alexnakagama/veydr --signer-workflow alexnakagama/veydr/.github/workflows/release.yml
 ```
 
-It succeeds only for a file whose digest was attested by this repository's release workflow, and prints the workflow run and the source commit it was built from. That commit is the parent of the tagged commit: the release tests and builds the source commit plus the version bump, and the tagged commit is exactly that bump. Provenance attestations need a public repository (see [Repository settings](#repository-settings)); if the repository becomes private, the attestation step fails and the release stops before pushing.
+It succeeds only for a file whose digest was attested by this repository's release workflow, and prints the workflow run and the source commit it was built from.
+
+On Windows, in PowerShell, in the folder with the downloaded installer and `SHA256SUMS`:
+
+```powershell
+$name = 'Veydr-X.Y.Z-x64-setup.exe'
+$line = Get-Content SHA256SUMS | Where-Object { $_ -ceq "$((Get-FileHash -Algorithm SHA256 -LiteralPath $name).Hash.ToLower())  $name" }
+if ($line) { "${name}: OK" } else { "${name}: FAILED" }
+```
+
+```powershell
+gh attestation verify Veydr-X.Y.Z-x64-setup.exe --repo alexnakagama/veydr --signer-workflow alexnakagama/veydr/.github/workflows/release.yml
+```
+
+The installer is unsigned, so Windows shows no publisher for it; these two checks are what ties it to the release. That commit is the parent of the tagged commit: the release tests and builds the source commit plus the version bump, and the tagged commit is exactly that bump. Provenance attestations need a public repository (see [Repository settings](#repository-settings)); if the repository becomes private, the attestation step fails and the release stops before pushing.
 
 ### Recovering from a failed release
 
 What to do depends on where the run stopped. The run's summary shows which job failed.
 
 - **`validate` failed** (wrong branch, malformed or too low version, existing tag): nothing was built or pushed. Fix the input and start a new run.
-- **A gate job failed** (`verify`, `e2e`, `package`, `smoke`, `acceptance`): nothing was pushed, and the same version can be requested again.
+- **A gate job failed** (`verify`, `e2e`, `package`, `smoke`, `acceptance`, `windows`, `windows-package`): nothing was pushed, and the same version can be requested again.
   - For a flaky or infrastructure failure (a Docker Hub rate limit, for example), use **Re-run failed jobs**. GitHub reruns the failed job and the jobs that depend on it, on the same source commit. Do not weaken a flaky check to get a release through (see [Triaging a nightly failure](#triaging-a-nightly-failure)).
   - For a real failure, fix it in a pull request, then start a new release from the new `master`.
+  - **A failed Windows gate stops the whole release**, Linux packages included: one release has one set of packages. Read the failed job's log and its `release-windows-test-results` or `release-windows-package-test-results` artifact (and `release-windows-install`, the steps recorded so far). The standard user's account and the installation exist only on the discarded runner; a rerun starts on a fresh one. A Windows-only infrastructure failure (an NSIS toolchain download, a slow runner) is rerun with **Re-run failed jobs**, as above. There is no way to release the Linux packages alone; for an urgent Linux fix while Windows is broken, fix or revert the Windows change in a pull request first.
 - **`publish` failed before "Tag and push"** (for example the attestation, or "master moved"): nothing was pushed. Rerun the failed jobs, or, if `master` moved, start a new release.
 - **`publish` failed after "Tag and push"** (creating the draft or uploading a file): the commit and the tag are on the remote. Use **Re-run failed jobs**, not **Re-run all jobs**: a full rerun starts again at `validate`, which checks out the new `master` and refuses the version because its tag now exists. `publish` recognises the tag as its own (its commit's parent is the source commit and its content is the same bump), skips the commit and the push, and creates the draft, or uploads the files again to the existing draft.
 - **To abandon a version after the push**: delete the draft and the tag with `gh release delete vX.Y.Z --cleanup-tag`. The version commit stays on `master` (force pushes are blocked), so the next release must be greater than that version anyway. Release the next patch or prerelease number instead of reusing the abandoned one. A rerun of the old run's `publish` after the tag was deleted stops with "master moved", because `master` now holds the version commit; that is expected, and the way forward is again a new release with the next version.
