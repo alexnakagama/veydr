@@ -6,7 +6,9 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { integrityOf, overwriteInPlace, parseAsar, readAsar, replaceFile } from '../packaging-windows/asar'
 import { startRecordFor } from '../packaging-windows/global-setup'
-import { aclChunks, cleanEnv, installerName, recordedStep, recordStep, startInstallRecord, windowsPowerShellEnv } from '../packaging-windows/support'
+import { aclChunks, cleanEnv, type InstallRecordLine, installerName, recordedStep, recordStep, standardUserStepPassed, startInstallRecord, windowsPowerShellEnv } from '../packaging-windows/support'
+import { RUN_LAST, runLastOrder } from '../support/sequencer'
+import { loggable, type ResultLine } from '../support/standard-user'
 
 // The pure parts of the Windows packaging tests' support (add-windows-packaging design D3, tasks
 // 2.3 and 2.4), which run on every system: the installer's name and the ASAR rewriting the fuse
@@ -215,5 +217,77 @@ describe('aclChunks', () => {
     expect(aclChunks(['a'])).toEqual([['a']])
     expect(aclChunks([])).toEqual([])
     expect(() => aclChunks(['x'.repeat(100)], 50)).toThrow(/path too long/)
+  })
+})
+
+// The standard user's installation (task 4.3, design D5): how its result lines are judged, the file
+// order that puts it after the administrator's install, and the launcher output kept for the log.
+
+describe('standardUserStepPassed', () => {
+  const line = (id: string, answer: ResultLine['answer'], data: Record<string, unknown> = {}): ResultLine => ({ id, answer, detail: answer === 'yes' ? '' : 'why', data })
+  const at = '2026-11-12T00:00:00.000Z'
+  const adminSmoke = (ok: boolean): InstallRecordLine => ({ at, step: 'administrator/smoke', ok, detail: null })
+  const first: InstallRecordLine = { at, step: 'installer', ok: true, detail: { installer: 'x' } }
+
+  it('passes a step other than the smoke step only with yes', () => {
+    for (const id of ['install-std-installer', 'install-std-install', 'install-std-permissions', 'install-std-helper', 'install-std-uninstall']) {
+      expect(standardUserStepPassed(line(id, 'yes'), [first]), id).toBe(true)
+      expect(standardUserStepPassed(line(id, 'no'), [first]), id).toBe(false)
+      // A step answered null is never a pass, even marked not testable.
+      expect(standardUserStepPassed(line(id, null, { smokeCase: 'not-testable' }), [first, adminSmoke(true), { at, step: 'administrator/stock-window', ok: true, detail: null }]), id).toBe(false)
+    }
+  })
+
+  it('passes the smoke step when it passed, or when it was not testable while the administrator\'s smoke test of the same run passed', () => {
+    expect(standardUserStepPassed(line('install-std-smoke', 'yes', { smokeCase: 'passed' }), [first])).toBe(true)
+    // A yes that does not say it passed is malformed.
+    expect(standardUserStepPassed(line('install-std-smoke', 'yes', {}), [first])).toBe(false)
+    const notTestable = line('install-std-smoke', null, { smokeCase: 'not-testable' })
+    const stockWindow = (ok: boolean): InstallRecordLine => ({ at, step: 'administrator/stock-window', ok, detail: null })
+    expect(standardUserStepPassed(notTestable, [first, adminSmoke(true), stockWindow(true)])).toBe(true)
+    expect(standardUserStepPassed(notTestable, [first, adminSmoke(false), stockWindow(true)])).toBe(false)
+    // The control itself must be known to work where windows do: without that, a broken control would excuse any failure.
+    expect(standardUserStepPassed(notTestable, [first, adminSmoke(true)])).toBe(false)
+    expect(standardUserStepPassed(notTestable, [first, adminSmoke(true), stockWindow(false)])).toBe(false)
+    // The administrator's smoke test did not run (yet): no evidence, no pass.
+    expect(standardUserStepPassed(notTestable, [first])).toBe(false)
+    expect(standardUserStepPassed(notTestable, [first, { at, step: 'administrator/reinstall', ok: true, detail: null }])).toBe(false)
+    // A failure with the stock binary working, a null for another reason, or an unavailable account.
+    expect(standardUserStepPassed(line('install-std-smoke', 'no', { smokeCase: 'failed' }), [first, adminSmoke(true)])).toBe(false)
+    expect(standardUserStepPassed(line('install-std-smoke', null, {}), [first, adminSmoke(true)])).toBe(false)
+    expect(standardUserStepPassed(line('install-std-smoke', null, { unavailable: true }), [first, adminSmoke(true)])).toBe(false)
+  })
+})
+
+describe('the test file order (test/support/sequencer.ts)', () => {
+  const spec = (project: string, moduleId: string) => ({ project: { name: project }, moduleId })
+
+  it('runs the standard user\'s installation after every other file, keeping vitest\'s order otherwise', () => {
+    expect(RUN_LAST).toEqual({ 'packaging-windows': ['standard-user-install.test.ts'] })
+    const std = spec('packaging-windows', 'C:\\a\\veydr\\test\\packaging-windows\\standard-user-install.test.ts')
+    const installer = spec('packaging-windows', 'C:\\a\\veydr\\test\\packaging-windows\\installer.test.ts')
+    const fuses = spec('packaging-windows', '/repo/test/packaging-windows/fuses.test.ts')
+    expect(runLastOrder([std, fuses, installer])).toEqual([fuses, installer, std])
+    expect(runLastOrder([fuses, installer])).toEqual([fuses, installer])
+    // Only that project's file, and only by its whole name.
+    const otherProject = spec('unit', '/repo/test/unit/standard-user-install.test.ts')
+    const similar = spec('packaging-windows', '/repo/test/packaging-windows/not-standard-user-install.test.ts')
+    expect(runLastOrder([otherProject, similar, fuses])).toEqual([otherProject, similar, fuses])
+  })
+})
+
+describe('the packaging-windows project', () => {
+  it('runs one file at a time, which the sequencer\'s "standard user last" relies on', async () => {
+    const config = (await import('../../vitest.config')).default as { test?: { sequence?: { sequencer?: unknown }; projects?: { test?: { name?: string; fileParallelism?: boolean } }[] } }
+    const sequencer = (await import('../support/sequencer')).default
+    expect(config.test?.sequence?.sequencer).toBe(sequencer)
+    const project = config.test?.projects?.find((p) => p.test?.name === 'packaging-windows')
+    expect(project?.test?.fileParallelism).toBe(false)
+  })
+})
+
+describe('loggable', () => {
+  it('drops workflow commands, so the launcher\'s ::add-mask:: line never reaches the log', () => {
+    expect(loggable('::add-mask::s3cr3t\r\nstandard-user.ps1: created the account veydr-probe\n  ::warning::x\n')).toBe('standard-user.ps1: created the account veydr-probe')
   })
 })

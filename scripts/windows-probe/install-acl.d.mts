@@ -39,3 +39,5 @@ export function isAccountSid(value: unknown): value is string
 export function writeRightsIn(mask: number): string[]
 export function aclViolations(report: AclReport, options?: { userSid?: string }): AclViolation[]
 export const READ_ACL_SCRIPT: string
+export const ACL_CHUNK_CHARS: number
+export function aclChunks(paths: readonly string[], limit?: number): string[][]

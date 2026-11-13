@@ -662,8 +662,18 @@ describe('standard-user.ps1 -Helper', () => {
   it('is an optional parameter of the Run mode only, checked case-sensitively for its name, as a full path to a regular file', () => {
     expect(text).toContain("  [Parameter(ParameterSetName = 'Run')] [string] $Helper,\n")
     expect(text).toContain("$HelperName = 'veydr-helper.exe'\n")
-    const check = text.slice(text.indexOf('function Get-HelperProblem('), text.indexOf('\n}\n', text.indexOf('function Get-HelperProblem(')))
-    expect(check).toContain('[System.IO.Path]::GetFileName($Path) -cne $HelperName')
+    const fn = (name: string): string => text.slice(text.indexOf(`function ${name}(`), text.indexOf('\n}\n', text.indexOf(`function ${name}(`)))
+    // The name check is the helper's own; the path checks are shared with -Installer (Get-CopyProblem).
+    const helperCheck = fn('Get-HelperProblem')
+    expect(helperCheck).toContain("return Get-CopyProblem $Path 'C:\\out-helper\\veydr-helper.exe' {")
+    expect(helperCheck).toContain('if ($Name -cne $HelperName) { return "must name a file called exactly $HelperName" }')
+    const check = fn('Get-CopyProblem')
+    expect(check).toContain('$nameIssue = & $NameProblem ([System.IO.Path]::GetFileName($Path))')
+    // PowerShell variable names ignore case: no variable may shadow the [scriptblock] parameter $NameProblem (CI run 43323706530).
+    expect(check.match(/\$nameproblem\b/gi)).toEqual(['$NameProblem', '$NameProblem'])
+    // The name is judged after the path is known to be fully qualified, and before the file is looked at.
+    expect(check.indexOf('$full -cne $Path')).toBeLessThan(check.indexOf('& $NameProblem'))
+    expect(check.indexOf('& $NameProblem')).toBeLessThan(check.indexOf('Test-Path -LiteralPath $Path -PathType Leaf'))
     expect(check).toContain('$full -cne $Path')
     expect(check).toContain('Test-Path -LiteralPath $Path -PathType Leaf')
     expect(check).toContain('[System.IO.FileAttributes]::ReparsePoint')
@@ -700,6 +710,8 @@ describe('standard-user.ps1 -Helper', () => {
   })
 
   it('accepts as fully qualified only a path from a drive letter, so a relative, rooted, UNC or device path is refused', () => {
+    // One check, shared by -Helper and -Installer.
+    expect(text.match(/\$Path -notmatch '/g)).toHaveLength(1)
     const source = /\$Path -notmatch '([^']+)'/.exec(text)?.[1]
     expect(source).toBe('^[A-Za-z]:\\\\[^\\\\]')
     const pattern = new RegExp(source ?? '$^')
@@ -793,6 +805,212 @@ describe('standard-user.ps1 -Helper', () => {
       expect(accepted.status).toBe(1)
       expect(accepted.stderr).not.toContain('-Helper')
       expect(accepted.stderr).toContain('does not exist; identity.mjs writes its first line')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})
+
+// The standard user's installation (add-windows-packaging task 4.1, design D5): the -Installer
+// parameter that gives standard-user.ps1 the installer to copy for installer-standard-user.mjs. The
+// real run is in test/packaging-windows/standard-user-install.test.ts.
+
+describe('standard-user.ps1 -Installer', () => {
+  const text = readFileSync(join(root, 'scripts/windows-probe/standard-user.ps1'), 'utf8')
+  const lines = text.split(/\r?\n/)
+  const at = (needle: string): number => {
+    const found = lines.filter((l) => l.includes(needle))
+    expect(found, needle).toHaveLength(1)
+    return lines.findIndex((l) => l.includes(needle))
+  }
+  /** $InstallerPattern as written in the script (a .NET pattern ending in \z). */
+  const dotnetPattern = /^\$InstallerPattern = '([^']+)'$/m.exec(text)?.[1] ?? ''
+  /** The same pattern for JavaScript: \z is "the very end", which $ is in JavaScript without the m flag. */
+  const pattern = new RegExp(dotnetPattern.replace(/\\z$/, '$'))
+
+  it('is an optional parameter of the Run mode only, its name matched case-sensitively, its path checked as -Helper\'s is', () => {
+    expect(text).toContain("  [Parameter(ParameterSetName = 'Run')] [string] $Installer,\n")
+    expect(text).toContain("$InstallerDriver = 'installer-standard-user.mjs'\n")
+    const fn = text.slice(text.indexOf('function Get-InstallerProblem('), text.indexOf('\n}\n', text.indexOf('function Get-InstallerProblem(')))
+    expect(fn).toContain("return Get-CopyProblem $Path 'C:\\dist\\Veydr-1.2.3-x64-setup.exe' {")
+    expect(fn).toContain('if ($Name -cnotmatch $InstallerPattern) {')
+    // Only -cmatch/-cnotmatch: PowerShell's -match and -notmatch ignore case.
+    expect(text).not.toMatch(/-(?:i?match|i?notmatch)\s+\$InstallerPattern\b/)
+    expect(lines.filter((l) => l.includes('$InstallerPattern')).map((l) => l.trim())).toEqual([
+      expect.stringMatching(/^\$InstallerPattern = '/) as string,
+      'if ($Name -cnotmatch $InstallerPattern) { return \'must name a file called Veydr-<version>-x64-setup.exe, with <version> a semantic version without build metadata\' }',
+    ])
+    // ASCII digits and the very end only: .NET's \d matches every Unicode digit, and its $ also matches before a final line feed.
+    expect(dotnetPattern.endsWith('-x64-setup\\.exe\\z')).toBe(true)
+    expect(dotnetPattern.startsWith('^Veydr-')).toBe(true)
+    expect(dotnetPattern).not.toMatch(/\\d|\$/)
+  })
+
+  it('accepts the installer of a release or a prerelease, and refuses any other name', () => {
+    for (const name of ['Veydr-1.2.3-x64-setup.exe', 'Veydr-0.1.0-rc.1-x64-setup.exe', 'Veydr-10.20.30-beta.2.x-x64-setup.exe', 'Veydr-1.0.0-0-x64-setup.exe']) {
+      expect(pattern.test(name), name).toBe(true)
+    }
+    for (const name of [
+      // Another file name.
+      'veydr-helper.exe',
+      'Veydr-setup.exe',
+      'Veydr-1.2.3-setup.exe',
+      'Veydr-1.2.3-x64-setup.msi',
+      'Veydr-1.2.3-x64-setup.exe.exe',
+      'Veydr-1.2.3-arm64-setup.exe',
+      // Differing only in case.
+      'veydr-1.2.3-x64-setup.exe',
+      'Veydr-1.2.3-X64-setup.exe',
+      'Veydr-1.2.3-x64-Setup.exe',
+      'Veydr-1.2.3-x64-setup.EXE',
+      // Build metadata.
+      'Veydr-1.2.3+build.1-x64-setup.exe',
+      'Veydr-1.2.3-rc.1+sha.abc-x64-setup.exe',
+      // Characters outside a semantic version.
+      'Veydr-1.2.3_rc-x64-setup.exe',
+      'Veydr-1.2.3-rc 1-x64-setup.exe',
+      'Veydr-1.2.3-rc/1-x64-setup.exe',
+      'Veydr-1.2.3-rc\\..\\1-x64-setup.exe',
+      'Veydr-1.2.3-rc..1-x64-setup.exe',
+      'Veydr-1.2.3-rc.01-x64-setup.exe',
+      'Veydr-v1.2.3-x64-setup.exe',
+      'Veydr-01.2.3-x64-setup.exe',
+      'Veydr-1.2-x64-setup.exe',
+      'Veydr-\u0661.2.3-x64-setup.exe',
+      'Veydr-1.2.3-x64-setup.exe\n',
+      ' Veydr-1.2.3-x64-setup.exe',
+    ]) {
+      expect(pattern.test(name), JSON.stringify(name)).toBe(false)
+    }
+  })
+
+  it('agrees with the installer name the packaging tests expect and the driver accepts', async () => {
+    const { installerName } = await import('../packaging-windows/support')
+    const { INSTALLER_NAME } = await import('../../scripts/windows-probe/installer-standard-user.mjs')
+    expect(INSTALLER_NAME.source).toBe(pattern.source)
+    for (const version of ['1.2.3', '0.1.0-rc.1', '1.0.0-alpha.beta', '1.0.0-x.7.z.92', '2.0.0-0.3.7']) {
+      expect(pattern.test(installerName(version)), version).toBe(true)
+    }
+    for (const version of ['1.2.3+b', '01.2.3', '1.2.3-01', '1.2', '1.2.3-rc_1']) {
+      expect(() => installerName(version), version).toThrow()
+      expect(pattern.test(`Veydr-${version}-x64-setup.exe`), version).toBe(false)
+    }
+  })
+
+  it('is given with the installer driver only, which needs it and takes no -Helper or driver arguments, all before the account exists', () => {
+    const driverCheck = at("if ($Driver -notmatch '^[a-z0-9-]+\\.mjs$'")
+    const helperCheck = at('$problem = Get-HelperProblem $Helper')
+    const pairing = at('if ($Driver -ceq $InstallerDriver) {')
+    const installerCheck = at('$problem = Get-InstallerProblem $Installer')
+    const hashed = at('$installerHash = Get-Sha256 $Installer')
+    const electron = at("if (-not (Test-Path -LiteralPath $electronExe -PathType Leaf)) {")
+    const results = at('$resultsPath = [System.IO.Path]::GetFullPath(')
+    const account = at('$account = New-LocalUser')
+    for (const [a, b] of [[driverCheck, helperCheck], [helperCheck, pairing], [pairing, installerCheck], [installerCheck, hashed], [hashed, electron], [electron, results], [results, account]] as const) {
+      expect(a).toBeLessThan(b)
+    }
+    expect(lines.slice(pairing, installerCheck).join('\n')).toContain([
+      '  if (-not $PSBoundParameters.ContainsKey(\'Installer\')) {',
+      '    [Console]::Error.WriteLine("standard-user.ps1: -Driver $InstallerDriver needs -Installer")',
+      '    exit 1',
+      '  }',
+      '  if ($PSBoundParameters.ContainsKey(\'Helper\') -or $DriverArgs.Count -gt 0) {',
+      '    [Console]::Error.WriteLine("standard-user.ps1: -Driver $InstallerDriver takes -Installer only, no -Helper and no driver arguments")',
+      '    exit 1',
+      '  }',
+      '} elseif ($PSBoundParameters.ContainsKey(\'Installer\')) {',
+      '  [Console]::Error.WriteLine("standard-user.ps1: -Installer is given only with -Driver $InstallerDriver, not $Driver")',
+      '  exit 1',
+      '}',
+    ].join('\n'))
+    // A refused -Installer exits before anything else runs.
+    expect(lines.slice(installerCheck, installerCheck + 4).join('\n')).toMatch(/\[Console\]::Error\.WriteLine\("standard-user\.ps1: -Installer \$problem, not '\$Installer'"\)\n\s+exit 1/)
+    // $Installer is read only to be checked, named and hashed, all before the results file.
+    const uses = lines.map((l, i) => [i, l] as const).filter(([, l]) => /\$Installer\b/.test(l))
+    expect(uses.length).toBeGreaterThan(0)
+    expect(uses.every(([i]) => i < results)).toBe(true)
+  })
+
+  it('copies the checked installer next to the drivers, refuses a copy whose SHA-256 differs, and hands the driver its name, digest and the stock electron.exe', () => {
+    const copy = at('Copy-Item -LiteralPath $installerSource -Destination $installerCopy -Force')
+    expect(lines.slice(copy - 2, copy + 3).map((l) => l.trim())).toEqual([
+      'if ($null -ne $installerSource) {',
+      '$installerCopy = Join-Path $stdScripts $installerName',
+      'Copy-Item -LiteralPath $installerSource -Destination $installerCopy -Force',
+      'if ((Get-Sha256 $installerCopy) -cne $installerHash) { throw "$installerSource changed after it was checked" }',
+      '}',
+    ])
+    // After the probe directory got its access rules, like the helper's copy.
+    expect(copy).toBeGreaterThan(at('$directory.SetAccessControl($acl)'))
+    expect(copy).toBeGreaterThan(at('Copy-Item -LiteralPath $helperSource -Destination $helperCopy -Force'))
+    expect(text).toContain("$electronDirectory = [System.IO.Path]::GetFullPath([System.IO.Path]::Combine($PSScriptRoot, '..', '..', 'node_modules', 'electron', 'dist'))")
+    expect(text).toContain('$driverExtra = @($installerName, $installerHash.ToLowerInvariant(), $electronExe)')
+    // Both command lines: the run as the account, and the one answering for an unavailable account.
+    expect(lines.filter((l) => l.includes('$DriverArgs + $driverExtra + @('))).toHaveLength(2)
+    expect(lines.filter((l) => /\$DriverArgs \+ @\(/.test(l))).toEqual([])
+  })
+
+  it('checks as the account that the stock Electron directory is readable, after the Node runtime\'s, making the account unavailable if not', () => {
+    const nodeCheck = at("if ($code -ne 0) { throw \"the Node runtime's directory $nodeDirectory is not readable to $AccountName")
+    const electronRun = at("(Join-CommandLine @($node, '-e', \"const fs=require('fs');fs.readdirSync(process.argv[1]);fs.closeSync(fs.openSync(require('path').join(process.argv[1],'electron.exe'),'r'))\", $electronDirectory)),")
+    const electronCheck = at('if ($code -ne 0) { throw "the stock Electron directory $electronDirectory is not readable to $AccountName')
+    // Inside the block whose errors make the account unavailable ($unavailable), before the driver runs.
+    const unavailable = at('$unavailable = Get-ErrorText $_')
+    const driverRun = at('$commandLine = Join-CommandLine (@($node, (Join-Path $stdScripts \'launch-detached.mjs\')')
+    for (const [a, b] of [[nodeCheck, electronRun], [electronRun, electronCheck], [electronCheck, unavailable], [unavailable, driverRun]] as const) expect(a).toBeLessThan(b)
+    expect(lines[electronRun - 2]?.trim()).toBe('try {')
+    expect(lines[electronRun - 1]?.trim()).toBe('$code = [VeydrProbeLogon]::Run($AccountName, $securePassword, $node,')
+  })
+
+  // As for -Helper: the checks run before the account exists, so the Windows unit lane runs them.
+  it.skipIf(process.platform !== 'win32')('[windows-only: Windows PowerShell 5.1] refuses an -Installer that is not a fully qualified Veydr-<version>-x64-setup.exe, or with another driver, before anything else', { timeout: 300_000 }, () => {
+    const dir = realpathSync.native(mkdtempSync(join(tmpdir(), 'veydr-probe-installer-')))
+    try {
+      const good = join(dir, 'good')
+      const lower = join(dir, 'lower')
+      for (const sub of [good, lower, join(dir, 'folder', 'Veydr-1.2.3-x64-setup.exe')]) mkdirSync(sub, { recursive: true })
+      for (const name of ['Veydr-1.2.3-x64-setup.exe', 'Veydr-0.1.0-rc.1-x64-setup.exe', 'other.exe', 'Veydr-1.2.3+b.1-x64-setup.exe', 'Veydr-1.2.3_rc-x64-setup.exe']) writeFileSync(join(good, name), '')
+      writeFileSync(join(lower, 'veydr-1.2.3-x64-setup.exe'), '')
+      const powershell = join(process.env['SystemRoot'] ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
+      const script = join(root, 'scripts/windows-probe/standard-user.ps1')
+      const missingResults = join(dir, 'no-such-results.jsonl')
+      const launch = (args: readonly string[]) =>
+        spawnSync(powershell, ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', script, '-Results', missingResults, '-Timeout', '60', ...args], {
+          encoding: 'utf8',
+          windowsHide: true,
+          cwd: good,
+          timeout: 60_000,
+        })
+      const withInstaller = (installer: string) => launch(['-Driver', 'installer-standard-user.mjs', '-Installer', installer])
+      const refused: [readonly string[], string][] = [
+        [['-Driver', 'installer-standard-user.mjs', '-Installer', 'Veydr-1.2.3-x64-setup.exe'], '-Installer must be a fully qualified path'],
+        [['-Driver', 'installer-standard-user.mjs', '-Installer', '.\\Veydr-1.2.3-x64-setup.exe'], '-Installer must be a fully qualified path'],
+        [['-Driver', 'installer-standard-user.mjs', '-Installer', `${good}\\..\\good\\Veydr-1.2.3-x64-setup.exe`], '-Installer must be a fully qualified path'],
+        [['-Driver', 'installer-standard-user.mjs', '-Installer', join(dir, 'folder', 'Veydr-1.2.3-x64-setup.exe')], '-Installer must name an existing file'],
+        [['-Driver', 'installer-standard-user.mjs', '-Installer', join(dir, 'missing', 'Veydr-1.2.3-x64-setup.exe')], '-Installer must name an existing file'],
+        [['-Driver', 'installer-standard-user.mjs', '-Installer', join(good, 'other.exe')], '-Installer must name a file called Veydr-<version>-x64-setup.exe'],
+        [['-Driver', 'installer-standard-user.mjs', '-Installer', join(lower, 'veydr-1.2.3-x64-setup.exe')], '-Installer must name a file called Veydr-<version>-x64-setup.exe'],
+        [['-Driver', 'installer-standard-user.mjs', '-Installer', join(good, 'Veydr-1.2.3+b.1-x64-setup.exe')], '-Installer must name a file called Veydr-<version>-x64-setup.exe'],
+        [['-Driver', 'installer-standard-user.mjs', '-Installer', join(good, 'Veydr-1.2.3_rc-x64-setup.exe')], '-Installer must name a file called Veydr-<version>-x64-setup.exe'],
+        [['-Driver', 'installer-standard-user.mjs'], '-Driver installer-standard-user.mjs needs -Installer'],
+        [['-Driver', 'installer-standard-user.mjs', '-Installer', join(good, 'Veydr-1.2.3-x64-setup.exe'), 'extra'], '-Driver installer-standard-user.mjs takes -Installer only, no -Helper and no driver arguments'],
+        [['-Driver', 'ports-standard-user.mjs', '-Installer', join(good, 'Veydr-1.2.3-x64-setup.exe')], '-Installer is given only with -Driver installer-standard-user.mjs'],
+      ]
+      for (const [args, message] of refused) {
+        const run = launch(args)
+        expect(run.status, `${args.join(' ')}: ${run.stdout}${run.stderr}`).toBe(1)
+        expect(run.stderr, args.join(' ')).toContain(`standard-user.ps1: ${message}`)
+        expect(run.stdout, args.join(' ')).not.toContain('::add-mask::')
+      }
+      // Accepted: the run goes on to the stock Electron directory and then the results file, and stops at the first missing.
+      const electron = join(root, 'node_modules', 'electron', 'dist', 'electron.exe')
+      for (const name of ['Veydr-1.2.3-x64-setup.exe', 'Veydr-0.1.0-rc.1-x64-setup.exe']) {
+        const accepted = withInstaller(join(good, name))
+        expect(accepted.status, name).toBe(1)
+        expect(accepted.stderr, name).not.toContain('-Installer')
+        expect(accepted.stderr, name).toContain(existsSync(electron) ? 'does not exist; identity.mjs writes its first line' : 'electron.exe does not exist; run node scripts/ensure-electron.cjs first')
+        expect(accepted.stdout, name).not.toContain('::add-mask::')
+      }
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }

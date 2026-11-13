@@ -1,8 +1,11 @@
 import { defineConfig } from 'vitest/config'
+import Sequencer from './test/support/sequencer'
 
 export default defineConfig({
   oxc: { jsx: { runtime: 'automatic' } },
   test: {
+    // vitest's order, but the standard user's Windows installation last (test/support/sequencer.ts).
+    sequence: { sequencer: Sequencer },
     projects: [
       {
         test: {
@@ -45,6 +48,8 @@ export default defineConfig({
           environment: 'node',
           testTimeout: 600_000,
           hookTimeout: 600_000,
+          // Also what makes test/support/sequencer.ts's order mean "after": standard-user-install.test.ts
+          // starts only once installer.test.ts has finished and recorded its steps.
           fileParallelism: false,
         },
       },

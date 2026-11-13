@@ -1,8 +1,10 @@
 import { randomBytes } from 'node:crypto'
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join, win32 } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { aclViolations } from '../../scripts/windows-probe/install-acl.mjs'
+import { controlOutcome, WINDOWS_STEPS } from '../../scripts/windows-probe/installer-standard-user.mjs'
 import { createWindowsPlatform } from '../../src/main/platform/windows'
 import { createPortService } from '../../src/main/ports/service'
 import { createPlanner } from '../../src/main/supervisor/plan'
@@ -19,6 +21,7 @@ import {
   powershellJson,
   readAcls,
   recordedStep,
+  repoRoot,
   recordStep,
   requirePackages,
   resourcesDir,
@@ -315,6 +318,23 @@ describe.skipIf(process.platform !== 'win32')('[windows-only: the Windows instal
 
   it.skipIf(notCi)('[spec:desktop-shell/installed-application-passes-its-self-check] the installed application passes all seven smoke checks, the platform check included, and writes no configuration', async () => {
     await recordedStep('administrator/smoke', smokeInstalled)
+  })
+
+  // The control of the standard user's smoke step (design D5), run where windows are known to work:
+  // the standard user's smoke step may be "not testable" only if this step passed, so a control that
+  // is itself broken can never excuse a failed smoke test (standardUserStepPassed).
+  it.skipIf(notCi)('the stock Electron binary opens a hidden window for the administrator, the control the standard user\'s smoke step relies on', async () => {
+    await recordedStep('administrator/stock-window', async () => {
+      const dir = mkdtempSync(join(tmpdir(), 'veydr-stock-window-'))
+      try {
+        const control = await WINDOWS_STEPS.control(join(repoRoot, 'node_modules', 'electron', 'dist', 'electron.exe'), dir)
+        expect(controlOutcome(control), JSON.stringify({ ...control.window, version: control.version.stdout })).toBe('opened')
+        expect(control.version.code).toBe(0)
+        return { version: control.version.stdout.trim(), windowCode: control.window.code }
+      } finally {
+        rmSync(dir, { recursive: true, force: true })
+      }
+    })
   })
 
   it.skipIf(notCi)('[spec:desktop-shell/command-started-through-the-installed-helper] starts a command tree through the installed helper, lists its listener as the command\'s, and ends the tree', async () => {

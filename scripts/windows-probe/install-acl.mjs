@@ -105,6 +105,25 @@ export function aclViolations(report, { userSid = report?.user } = {}) {
   return violations
 }
 
+/** The most JSON one environment variable carries per ACL read (a variable holds at most 32,767 characters). */
+export const ACL_CHUNK_CHARS = 16_000
+
+/** `paths` split so each chunk's JSON fits `limit`; a single path that does not fit is refused. */
+export function aclChunks(paths, limit = ACL_CHUNK_CHARS) {
+  const chunks = []
+  let current = []
+  for (const path of paths) {
+    if (JSON.stringify([path]).length > limit) throw new Error(`path too long for an ACL read: ${path.slice(0, 200)}`)
+    if (current.length > 0 && JSON.stringify([...current, path]).length > limit) {
+      chunks.push(current)
+      current = []
+    }
+    current.push(path)
+  }
+  if (current.length > 0) chunks.push(current)
+  return chunks
+}
+
 /**
  * Windows PowerShell 5.1: prints `{ user, paths: [{ path, owner, access: [{ sid, type, rights,
  * inherited }] }] }` as one line of JSON, for the JSON array of full paths in $env:VEYDR_ACL_PATHS.
