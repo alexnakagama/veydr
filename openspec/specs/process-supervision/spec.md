@@ -186,7 +186,7 @@ Veydr SHALL document that on Linux, processes it started can continue running af
 - **THEN** the Windows crash behavior and the conditions not verified on Windows are stated, labelled as part of the Windows preview
 
 ### Requirement: Windows supervision in preview
-On Windows, commands SHALL start, stop and be recovered from the app through the Windows process tree, and the platform SHALL report itself as supported. Windows SHALL be described as a preview: run from source and verified on the native Windows CI runner, with no Windows package. The process-tree behavior required for Windows SHALL be verified on native Windows for every pull request and push to `master`.
+On Windows, commands SHALL start, stop and be recovered from the app through the Windows process tree, and the platform SHALL report itself as supported. Windows SHALL be described as a preview: installed from an unsigned installer or run from source, and verified on the native Windows CI runner. The process-tree behavior required for Windows SHALL be verified on native Windows for every pull request and push to `master`.
 
 #### Scenario: Command started on Windows
 - **WHEN** on Windows the user starts a configured direct-mode or shell-mode command
@@ -198,4 +198,8 @@ On Windows, commands SHALL start, stop and be recovered from the app through the
 
 #### Scenario: Windows preview documented
 - **WHEN** the user reads the README or the process-management documentation
-- **THEN** Windows is described as a preview that runs from source and is verified in CI on Windows Server 2025, with no Windows package, and the conditions not verified on Windows are listed
+- **THEN** Windows is described as a preview that is installed from an unsigned installer and is verified in CI on Windows Server 2025, and the conditions not verified on Windows are listed
+
+#### Scenario: Unsigned installer documented
+- **WHEN** the user reads the Windows installation documentation
+- **THEN** it states that the installer, the application and the helper are unsigned, that Windows may warn before running them, and how to verify a downloaded installer against the release's checksums and build provenance
