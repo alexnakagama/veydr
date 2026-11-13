@@ -1520,6 +1520,8 @@ describe('build.yml', () => {
       'Build the Windows installer and run the Windows packaging tests',
       'Write SHA256SUMS',
       'Check SHA256SUMS with Get-FileHash',
+      'Check SHA256SUMS as the docs tell users (PowerShell 7)',
+      'Check SHA256SUMS as the docs tell users (Windows PowerShell 5.1)',
       'Upload installer',
       'Upload test results',
     ])
@@ -2505,6 +2507,8 @@ if (args[0] === 'api') {
     for (const heading of ['### Before publishing the draft', '### Verifying a release package', '### Recovering from a failed release']) expect(section, heading).toContain(`\n${heading}\n`)
     expect(section).toContain('Get-FileHash')
     expect(section).toContain('gh attestation verify Veydr-X.Y.Z-x64-setup.exe')
+    // The one known intermittent Windows failure is named where a maintainer recovers from it.
+    expect(section.replace(/\s+/g, ' ')).toContain('One intermittent failure is known: in one run of 2026-11-13 (`build.yml` run 43456337022), `administrator/uninstall` failed')
   })
 
   it('[spec:release-automation/draft-created] creates a draft with generated notes, the packages, the Windows installer, SHA256SUMS and both records', () => {

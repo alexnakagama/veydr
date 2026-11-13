@@ -127,4 +127,19 @@ describe.skipIf(process.platform !== 'win32')('[windows-only: the Windows packag
       expect(installer.includes(readFileSync(join(repoRoot, 'build/icons', `${size}x${size}.png`))), `${size} px`).toBe(true)
     }
   })
+
+  it('[spec:desktop-shell/silent-installation-as-a-standard-user] requests no elevation: the installer\'s manifest asks for asInvoker only', () => {
+    // Windows shows a UAC prompt for an executable whose manifest requests requireAdministrator or
+    // highestAvailable, or, with no requested level, one its installer detection takes for a setup
+    // program (a name with "setup"). makensis writes RequestExecutionLevel into the manifest of the
+    // installer's stub, in plain UTF-8; the payload, where Veydr.exe and the uninstaller are, is
+    // compressed. So every requested level in the file is the installer's own. The standard user's
+    // install (standard-user-install.test.ts) shows that it then runs unelevated; this shows why no
+    // prompt is asked for, for the interactive installer too.
+    const installer = readFileSync(join(distDir, installerName(version))).toString('latin1')
+    const levels = [...installer.matchAll(/<requestedExecutionLevel\s[^>]*\blevel=["']([A-Za-z]+)["']/g)].map((m) => m[1])
+    expect(levels.length, 'requestedExecutionLevel in the installer').toBeGreaterThan(0)
+    expect(new Set(levels)).toEqual(new Set(['asInvoker']))
+    expect(installer).not.toMatch(/<requestedExecutionLevel\s[^>]*\buiAccess=["']true["']/)
+  })
 })

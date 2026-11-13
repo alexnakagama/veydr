@@ -119,6 +119,24 @@ jobs:
           $actual = (Get-FileHash -LiteralPath (Join-Path dist $name) -Algorithm SHA256).Hash.ToLowerInvariant()
           if ($actual -ne $expected) { throw "Get-FileHash gives $actual for $name, SHA256SUMS has $expected" }
           "${name}: OK ($actual)"
+      # The check docs/install-windows.md and docs/ci.md give users, verbatim but for the first line
+      # (install-windows-docs.test.ts keeps them in step), run as a user would in either PowerShell.
+      - name: Check SHA256SUMS as the docs tell users (PowerShell 7)
+        shell: pwsh
+        working-directory: dist
+        run: |
+          $name = @(Get-ChildItem -Name -Filter 'Veydr-*-x64-setup.exe')[0]
+          $line = Get-Content SHA256SUMS | Where-Object { $_ -ceq "$((Get-FileHash -Algorithm SHA256 -LiteralPath $name).Hash.ToLower())  $name" }
+          if ($line) { "${name}: OK" } else { "${name}: FAILED" }
+          if (-not $line) { exit 1 }
+      - name: Check SHA256SUMS as the docs tell users (Windows PowerShell 5.1)
+        shell: powershell
+        working-directory: dist
+        run: |
+          $name = @(Get-ChildItem -Name -Filter 'Veydr-*-x64-setup.exe')[0]
+          $line = Get-Content SHA256SUMS | Where-Object { $_ -ceq "$((Get-FileHash -Algorithm SHA256 -LiteralPath $name).Hash.ToLower())  $name" }
+          if ($line) { "${name}: OK" } else { "${name}: FAILED" }
+          if (-not $line) { exit 1 }
       - name: Upload installer
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:

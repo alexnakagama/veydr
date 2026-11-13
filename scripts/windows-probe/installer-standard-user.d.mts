@@ -85,7 +85,9 @@ export function helperAnswer(outcome: HelperOutcome): ProbeAnswer
 export function smokeProblem(smoke: SmokeRun, installDir: string): string | undefined
 export function controlOutcome(control: ControlRun): ControlOutcome
 export function smokeAnswer(input: { smoke: SmokeRun; control: ControlRun | undefined; installDir: string }): ProbeAnswer
-export function uninstallAnswer(input: { run: TimedRun; left: boolean; state: InstallState; installDir: string }): ProbeAnswer
+export function uninstallRemaining(state: InstallState, installDir: string): string[]
+export function waitUntilUninstalled(installDir: string, deps: { inspect: (installDir: string) => Promise<InstallState>; pause: (ms: number) => Promise<void>; now: () => number }): Promise<InstallState>
+export function uninstallAnswer(input: { run: TimedRun; state: InstallState; installDir: string }): ProbeAnswer
 
 export function requireEveryPath(paths: readonly string[], entries: readonly { readonly path: string }[]): void
 export function powershellJson(script: string, env?: Readonly<Record<string, string>>): Promise<unknown>
@@ -104,7 +106,9 @@ export interface InstallerSteps {
   smoke: (app: string, dir: string) => Promise<SmokeRun>
   control: (electron: string, dir: string) => Promise<ControlRun>
   uninstall: (uninstaller: string) => Promise<TimedRun>
-  waitUntilGone: (directory: string) => Promise<boolean>
+  /** Waits between inspections of the uninstall; the unit tests advance their own clock instead. */
+  pause: (ms: number) => Promise<void>
+  now: () => number
   tempDir: () => string
   removeDir: (dir: string) => void
 }
