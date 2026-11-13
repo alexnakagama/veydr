@@ -1,6 +1,6 @@
 # Logs (output of commands)
 
-This page describes how Veydr captures, keeps, and shows what your commands print, and what it does not guarantee. The [Windows (preview)](#windows-preview) section describes how output is decoded on Windows. **Windows: preview. Run from source; verified in CI on Windows Server 2025. No Windows package yet.**
+This page describes how Veydr captures, keeps, and shows what your commands print, and what it does not guarantee. The [Windows (preview)](#windows-preview) section describes how output is decoded on Windows. **Windows: preview. Unsigned installer; verified in CI on Windows Server 2025.** Installing it is described in [install-windows.md](install-windows.md).
 
 ## What is captured
 
@@ -72,7 +72,7 @@ Values shorter than 4 characters are not redacted at all (they would match ordin
 
 ## Windows (preview)
 
-**Windows: preview. Run from source; verified in CI on Windows Server 2025. No Windows package yet.** Output of commands on Windows follows the rules below, which are tested on a native Windows runner in CI. The runner's ANSI code page is 1252, so the other code pages are tested with synthetic bytes only (see [processes.md](processes.md#not-verified-on-the-ci-runner)).
+**Windows: preview. Unsigned installer; verified in CI on Windows Server 2025.** Installing it is described in [install-windows.md](install-windows.md). Output of commands on Windows follows the rules below, which are tested on a native Windows runner in CI. The runner's ANSI code page is 1252, so the other code pages are tested with synthetic bytes only (see [processes.md](processes.md#not-verified-on-the-ci-runner)).
 
 ### The console is set to UTF-8
 

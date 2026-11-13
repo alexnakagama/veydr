@@ -8,8 +8,14 @@ import { HELPER_KILL_WAIT_MS } from '../../src/main/platform/windows/helper-clie
 import { DEFAULT_STOP_TIMEOUT_MS, MAX_STOP_TIMEOUT_MS } from '../../src/shared/config'
 
 const root = join(__dirname, '../..')
-/** The Windows support statement of the preview (add-windows-environment-and-commands design D6). */
-const WINDOWS_PREVIEW = 'Windows: preview. Run from source; verified in CI on Windows Server 2025. No Windows package yet.'
+/** The Windows support statement of the preview, since the installer (add-windows-packaging design D9). */
+const WINDOWS_PREVIEW = 'Windows: preview. Unsigned installer; verified in CI on Windows Server 2025.'
+/**
+ * The statement before the installer (add-windows-environment-and-commands design D6), kept only as
+ * dated history in docs/deferred-checks.md; matched without its last word, so that a search for the
+ * old statement finds only that history.
+ */
+const WINDOWS_PREVIEW_FROM_SOURCE = /\*\*Windows: preview\. Run from source; verified in CI on Windows Server 2025\. No Windows package \w+\.\*\*/
 const doc = readFileSync(join(root, 'docs/processes.md'), 'utf8')
 
 /** The `## <title>` section, without its heading. */
@@ -138,10 +144,25 @@ describe('docs/processes.md matches the implementation', () => {
     expect(row).toContain('(processes.md#not-verified-on-the-ci-runner)')
     expect(doc).toContain('(deferred-checks.md#windows-process-supervision-2026-11-06)')
     expect(deferred).toContain('\n## Windows process supervision (2026-11-06)\n')
-    // The preview's own section keeps W4's packaging and helper-placement row.
-    const preview = deferred.slice(deferred.indexOf('\n## Windows preview (2026-11-08)\n'))
-    expect(preview).toContain(`| Windows commands | **${WINDOWS_PREVIEW}**`)
-    expect(preview).toContain('| Windows packaging and helper placement | Unchanged, owned by W4')
+    // The preview's own section keeps its statement of that date, and W4's packaging and
+    // helper-placement row, which the dated "Windows packaging" section closes.
+    const preview = deferred.slice(deferred.indexOf('\n## Windows preview (2026-11-08)\n'), deferred.indexOf('\n## Windows packaging (2026-11-13)\n'))
+    expect(preview.split('\n').find((line) => line.startsWith('| Windows commands | '))).toMatch(new RegExp(String.raw`^\| Windows commands \| ${WINDOWS_PREVIEW_FROM_SOURCE.source}`))
+    const placement = preview.split('\n').find((line) => line.startsWith('| Windows packaging and helper placement |')) ?? ''
+    expect(placement).toContain('| Windows packaging and helper placement | Unchanged, owned by W4')
+    expect(placement).toContain('Closed on 2026-11-13, see [Windows packaging](#windows-packaging-2026-11-13).')
+    // The rows that said the helper is inside app.asar in a packaged app say where it is now.
+    expect(row).toContain('Since 2026-11-13 the packaged helper is `resources\\veydr-helper.exe`, beside `app.asar`')
+    const packaging = deferred.slice(deferred.indexOf('\n## Windows packaging (2026-11-13)\n'))
+    expect(packaging.length).toBeGreaterThan(1)
+    const done = packaging.split('\n').find((line) => line.startsWith('| Windows packaging and helper placement |')) ?? ''
+    expect(done).toContain(`| **Done (W4, OpenSpec change add-windows-packaging). ${WINDOWS_PREVIEW}**`)
+    expect(done).toContain('The packaged helper is `resources\\veydr-helper.exe`, beside `app.asar`')
+    expect(done).toContain('the profile\'s inherited default')
+    for (const area of ['Windows signing (G-6)', 'Windows archive integrity', 'Still not verified']) {
+      expect(packaging, area).toContain(`\n| ${area} | `)
+    }
+    expect(packaging).toContain('(install-windows.md#not-verified)')
     // W3 replaced the "not available" row: Windows lists ports, as a preview verified in CI.
     expect(preview).toContain('| Windows port inspection | **Preview since W3 (2026-11-11), verified in CI on Windows Server 2025 by the integration tests.**')
     expect(preview).not.toContain('| Windows port inspection | Not available until W3')
@@ -158,15 +179,18 @@ describe('the Windows preview is documented', () => {
       .map((name): [string, string] => [`docs/${name}`, readFileSync(join(root, 'docs', name), 'utf8')]),
   ])
 
-  it('[spec:process-supervision/windows-preview-documented] says run from source, no Windows package, and lists what is not verified, claiming nothing beyond them', () => {
+  it('[spec:process-supervision/windows-preview-documented] says installed from an unsigned installer and verified in CI on Windows Server 2025, lists what is not verified, and claims nothing beyond them', () => {
     // The preview statement, where the user reads about support and about processes.
     for (const [name, text] of [['README.md', readme], ['docs/processes.md', doc]] as const) {
       expect(text, name).toContain(`**${WINDOWS_PREVIEW}**`)
     }
     expect(readme.indexOf(WINDOWS_PREVIEW), 'the README states it before its first section').toBeLessThan(readme.indexOf('\n## '))
     const platformRow = readme.split('\n').find((line) => line.startsWith('| Windows x64 |')) ?? ''
-    expect(platformRow).toContain('| **Preview.** Run from source; verified in CI on Windows Server 2025. No Windows package yet.')
+    expect(platformRow).toContain('| **Preview.** Unsigned installer; verified in CI on Windows Server 2025. See [Installing on Windows](docs/install-windows.md)')
 
+    // How to install it, before how to run it from source.
+    expect(readme.indexOf('\n### Install on Windows\n')).toBeGreaterThan(0)
+    expect(readme.indexOf('\n### Install on Windows\n')).toBeLessThan(readme.indexOf('\n### Running from source on Windows\n'))
     // How to run it from source, in order.
     const fromSource = readme.slice(readme.indexOf('\n### Running from source on Windows\n'))
     const steps = ['npm ci', 'node scripts/build-windows-helper.mjs', 'npm run dev'].map((step) => fromSource.indexOf(`   ${step}\n`))
@@ -180,24 +204,39 @@ describe('the Windows preview is documented', () => {
       expect(unverified, condition).toContain(condition)
     }
 
-    // No page claims more: no Windows package or installer, and no support beyond the preview. This
-    // is a tripwire for the usual phrasings, not a proof that no page overstates the preview.
+    // Every Windows statement links the installation page (one paragraph is one line in these pages),
+    // and the statement from before the installer is left only in the dated history.
+    let statements = 0
+    for (const [name, text] of pages) {
+      if (name === 'docs/install-windows.md') continue
+      for (const line of text.split('\n').filter((l) => l.includes('Unsigned installer; verified in CI on Windows Server 2025.'))) {
+        statements += 1
+        expect(line, `${name}: ${line.slice(0, 80)}`).toMatch(/\]\((?:docs\/)?install-windows\.md(?:#[\w-]+)?\)/)
+      }
+      const history = name === 'docs/deferred-checks.md' ? text.slice(0, text.indexOf('\n## Windows packaging (2026-11-13)\n')) : ''
+      expect(text.replace(history, ''), name).not.toMatch(WINDOWS_PREVIEW_FROM_SOURCE)
+      expect(text.replace(history, ''), name).not.toMatch(/\bno Windows package\b/i)
+    }
+    expect(statements).toBeGreaterThanOrEqual(10)
+
+    // No page claims more: no support beyond the preview, and no signature. This is a tripwire for
+    // the usual phrasings, not a proof that no page overstates the preview.
     const windows = String.raw`Windows(?: 1[01]| Server \d{4}| x64)?`
     const beyond = [
       new RegExp(String.raw`\b${windows} (?:is|are) (?:now |fully |officially )?supported\b`, 'i'),
       new RegExp(String.raw`\b(?:full|complete|stable|official) ${windows} support\b`, 'i'),
       new RegExp(String.raw`\b(?:Veydr|the app|it) (?:now |fully )?(?:supports|works on|runs on) ${windows}\b(?! (?:paths?|as a preview|in preview|from source))`, 'i'),
       new RegExp(String.raw`\b(?:fully|officially) supported on ${windows}\b`, 'i'),
-      new RegExp(String.raw`\b${windows} (?:package|installer|build|release)s? (?:is|are) (?:now )?(?:available|published|provided|shipped)\b`, 'i'),
-      new RegExp(String.raw`\b(?:download|install) (?:the |a )?${windows} (?:package|installer|build|release)\b`, 'i'),
-      new RegExp(String.raw`\b${windows} users can (?:download|install)\b`, 'i'),
+      /(?<!not |un)\b(?:verified|tested) on Windows 1[01]\b/i,
+      /\b(?:installer|Veydr\.exe`?|helper|application|binar(?:y|ies)) (?:is|are) (?:now )?(?:code[- ])?signed\b/i,
+      /(?<!un)\bsigned (?:installer|application|helper|binar(?:y|ies)|executables?)\b/i,
       /\bnot yet supported\b[^.\n]*\bWindows\b|\bWindows\b[^.\n]*\bnot yet supported\b/i,
     ]
     // The tripwire catches what it is meant to, and lets the preview's own wording through.
-    for (const claim of ['Windows 11 is supported.', 'Veydr runs on Windows.', 'Download the Windows installer.', 'Windows users can install it.', 'Full Windows support.']) {
+    for (const claim of ['Windows 11 is supported.', 'Veydr runs on Windows.', 'Full Windows support.', 'Verified on Windows 11.', 'The installer is signed.', 'A signed installer.', 'The binaries are code-signed.']) {
       expect(beyond.some((pattern) => pattern.test(claim)), claim).toBe(true)
     }
-    for (const allowed of [WINDOWS_PREVIEW, 'Veydr supports Windows paths such as C:\\tools.', 'Veydr runs on Windows as a preview.', 'Port inspection is not available on Windows yet.']) {
+    for (const allowed of [WINDOWS_PREVIEW, 'Veydr supports Windows paths such as C:\\tools.', 'Veydr runs on Windows as a preview.', 'Download the Windows installer.', 'The installer is unsigned.', 'An unsigned installer.', 'Not verified on Windows 10 or 11.', 'Microsoft-signed `powershell.exe`']) {
       expect(beyond.some((pattern) => pattern.test(allowed)), allowed).toBe(false)
     }
     for (const [name, text] of pages) {

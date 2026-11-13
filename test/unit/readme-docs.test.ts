@@ -17,7 +17,7 @@ describe('README.md', () => {
   it('states "Linux; Windows in preview" near the top, with the preview statement', () => {
     expect(readme).toContain('**Linux; Windows in preview.**')
     expect(readme.indexOf('**Linux; Windows in preview.**')).toBeLessThan(readme.indexOf('\n## '))
-    expect(readme).toContain('**Windows: preview. Run from source; verified in CI on Windows Server 2025. No Windows package yet.**')
+    expect(readme).toContain('**Windows: preview. Unsigned installer; verified in CI on Windows Server 2025.**')
   })
 
   it('links every document in docs/', () => {

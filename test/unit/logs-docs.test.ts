@@ -56,7 +56,7 @@ describe('docs/logs.md', () => {
 
   it('[spec:process-logs/ansi-output-on-windows] states the Windows output decoding, labelled as the Windows preview', () => {
     const text = section('Windows (preview)')
-    expect(text.slice(text.indexOf('\n')).trimStart().startsWith('**Windows: preview. Run from source; verified in CI on Windows Server 2025. No Windows package yet.**')).toBe(true)
+    expect(text.slice(text.indexOf('\n')).trimStart().startsWith('**Windows: preview. Unsigned installer; verified in CI on Windows Server 2025.**')).toBe(true)
     // The UTF-8 console, and what happens when it cannot be set.
     expect(text).toContain('output code page is set to UTF-8 (65001) before the command runs')
     expect(text).toContain('`process.windows-console-not-utf8`')
