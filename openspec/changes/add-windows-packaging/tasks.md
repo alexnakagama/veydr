@@ -197,6 +197,9 @@ Group 6 outcome (2026-11-13):
 - [ ] 7.2 Run `build.yml` manually on the final commit and check the result by hand: download `windows-package`, confirm `SHA256SUMS`, and read the uploaded `steps.jsonl` of the pull request's `windows-package` run. Verify: the record's first line names the installer the same run uploaded, and every step, administrator and standard user, is `ok`. Record the run, the installer's size and its SHA-256 below this group.
 - [ ] 7.3 Hand the whole change to `reviewer2` for a final pass over the claims in the docs against the CI evidence, fix the findings, have them re-reviewed, and record the outcome below this group.
 
+Group 7 outcome (2026-11-13):
+- Verification on Linux, on master 2c7fdd8 (every group merged): `npm run verify` passed every stage (unit 1520 passed, 9 skipped; integration 50 passed, 50 skipped, all `[windows-only: …]`); `npm run test:e2e` 72 passed, 4 skipped (three `[windows-only: …]`, and `offline.spec.ts` `[linux-only: network namespaces]`, which this machine cannot create; it runs in CI); `npm run test:packaging` 25 passed. `openspec validate add-windows-packaging --strict` passes; `npm run spec-coverage` reports 190 scenarios, 0 unmapped; no `it.todo` is left in the repository. Since every group is merged, `git diff master` is empty by construction; the meaningful base is e8cc8d5, the master commit before the change's first commit (11a6514): `package-lock.json` is unchanged against it, and `package.json` differs only in `dist:windows` and `test:packaging:windows`.
+
 ## Workflow follow-up
 
 - Archive the change once its last pull request is merged. Archiving updates the four main specs; then edit the Purpose of `openspec/specs/release-automation/spec.md` by hand, which still says "Linux packages".
