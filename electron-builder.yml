@@ -125,6 +125,10 @@ nsis:
   # A Start menu entry only.
   createDesktopShortcut: false
   createStartMenuShortcut: true
+  # One hook, customUnInstall: the uninstaller retries deleting the Start menu entry for up to
+  # 10 s, which electron-builder deletes once and leaves behind when the file is briefly held open
+  # (seen twice in CI). The file says why; windows-builder-config.test.ts limits what it may do.
+  include: build/windows/installer.nsh
   # Uninstalling keeps %APPDATA%\Veydr (configuration and run ledger), as removing the .deb keeps
   # ~/.config/Veydr.
   deleteAppDataOnUninstall: false

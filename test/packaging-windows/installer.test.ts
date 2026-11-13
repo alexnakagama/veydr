@@ -1,3 +1,4 @@
+import { spawn } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -19,6 +20,7 @@ import {
   cleanEnv,
   installerPath,
   powershellJson,
+  powershellPath,
   readAcls,
   recordedStep,
   repoRoot,
@@ -46,6 +48,8 @@ const notCi = process.env['CI'] !== 'true'
 const INSTALL_MS = 180_000
 /** The uninstaller copies itself to a temporary file and returns; the directory goes after that. */
 const UNINSTALL_GONE_MS = 120_000
+/** How long the Start menu entry is held open at the start of the uninstall: less than the 10 s build/windows/installer.nsh retries for. */
+const HOLD_LINK_MS = 5_000
 const SMOKE_MS = 120_000
 /** How long a process the silent install might have started is looked for. */
 const NO_PROCESS_WATCH_MS = 5_000
@@ -185,6 +189,31 @@ describe.skipIf(process.platform !== 'win32')('[windows-only: the Windows instal
       if (left.length === 0 || Date.now() > deadline) return left
       await sleep(1_000)
     }
+  }
+
+  /**
+   * Opens `file` for reading without delete sharing, as a virus scanner or the search indexer may,
+   * and keeps it open for `ms`. Resolves once the file is open; `closed` resolves with the exit code.
+   * While it is open, a Delete of the file fails with a sharing violation.
+   */
+  function holdOpen(file: string, ms: number): Promise<{ closed: Promise<number | null> }> {
+    const script = "$f = [IO.File]::Open($env:VEYDR_HOLD_FILE, 'Open', 'Read', 'Read'); [Console]::Out.WriteLine('held'); [Console]::Out.Flush(); Start-Sleep -Milliseconds ([int]$env:VEYDR_HOLD_MS); $f.Close()"
+    const child = spawn(powershellPath, ['-NoProfile', '-NonInteractive', '-Command', script], {
+      env: { ...cleanEnv(), VEYDR_HOLD_FILE: file, VEYDR_HOLD_MS: String(ms) },
+      stdio: ['ignore', 'pipe', 'pipe'],
+      windowsHide: true,
+    })
+    const closed = new Promise<number | null>((resolveClosed) => child.on('close', (code) => resolveClosed(code)))
+    return new Promise((resolveHeld, reject) => {
+      let out = ''
+      let err = ''
+      child.stdout.on('data', (chunk: Buffer) => {
+        out += chunk.toString()
+        if (out.includes('held')) resolveHeld({ closed })
+      })
+      child.stderr.on('data', (chunk: Buffer) => (err += chunk.toString()))
+      void closed.then((code) => reject(new Error(`could not hold ${file} open (exit ${String(code)}): ${err.trim()}`)))
+    })
   }
 
   /** Runs the installed app's `--smoke-test` and checks its report; returns what the record keeps. */
@@ -414,21 +443,31 @@ describe.skipIf(process.platform !== 'win32')('[windows-only: the Windows instal
     })
   })
 
-  it.skipIf(notCi)('[spec:desktop-shell/silent-uninstallation] removes the install directory, the Start menu entry and the uninstall entry, and keeps the configuration', async () => {
+  it.skipIf(notCi)('[spec:desktop-shell/silent-uninstallation] removes the install directory, the Start menu entry and the uninstall entry, and keeps the configuration, with the Start menu entry briefly held open', async () => {
     await recordedStep('administrator/uninstall', async () => {
       mkdirSync(configDir, { recursive: true })
       marker = join(configDir, `uninstall-marker-${randomBytes(6).toString('hex')}.txt`)
       writeFileSync(marker, 'written before the uninstall; must survive it\n', { flag: 'wx' })
+      // The Start menu entry is held open without delete sharing for the first HOLD_LINK_MS of the
+      // uninstall, as a scanner may hold it. electron-builder's own single Delete then fails, which
+      // left Veydr.lnk behind in two CI runs; build/windows/installer.nsh retries for up to 10 s.
+      const link = (await inspect()).startMenu?.path
+      expect(link, 'the Start menu entry before the uninstall').toBeDefined()
+      const holder = await holdOpen(link as string, HOLD_LINK_MS)
       const started = Date.now()
       const result = await run(uninstaller, ['/S'], cleanEnv(), { timeoutMs: INSTALL_MS })
       expect(result.code, result.stderr).toBe(0)
+      const returnedMs = Date.now() - started
+      const holderCode = await holder.closed
+      const heldMs = Date.now() - started
+      expect(holderCode, 'the process holding the Start menu entry').toBe(0)
       const left = await waitUntilUninstalled()
       const ms = Date.now() - started
       expect(left, `still there ${UNINSTALL_GONE_MS / 1000} s after the uninstall`).toEqual([])
       expect(existsSync(marker), marker).toBe(true)
       rmSync(marker)
       marker = null
-      return { code: result.code, ms }
+      return { code: result.code, ms, uninstallerReturnedMs: returnedMs, linkHeldMs: heldMs }
     })
   })
 })
