@@ -1,6 +1,6 @@
 # Processes
 
-This page describes how Veydr starts, tracks, and stops the commands you configure, and what it cannot guarantee. Everything below describes Linux, except the [Windows (preview)](#windows-preview) section. **Windows: preview. Run from source; verified in CI on Windows Server 2025. No Windows package yet.**
+This page describes how Veydr starts, tracks, and stops the commands you configure, and what it cannot guarantee. Everything below describes Linux, except the [Windows (preview)](#windows-preview) section. **Windows: preview. Unsigned installer; verified in CI on Windows Server 2025.** Installing it is described in [install-windows.md](install-windows.md).
 
 ## Starting
 
@@ -130,7 +130,7 @@ Evidence: `test/unit/linux-process-tree.test.ts` › "reports a process it is no
 
 ## Windows (preview)
 
-**Windows: preview. Run from source; verified in CI on Windows Server 2025. No Windows package yet.** On Windows, commands start, stop and are recovered from the app as described below, and the process-tree behavior is tested on a native Windows runner (GitHub's `windows-2025`, Windows Server 2025) for every pull request and push to `master`. To run Veydr on Windows, see [Running from source on Windows](../README.md#running-from-source-on-windows). How the program is found, which environment a command gets, and how its output is decoded are in [commands.md](commands.md#windows-preview) and [logs.md](logs.md#windows-preview). The Ports view lists ports on Windows too, as described in [ports.md](ports.md#windows-preview). The limits below, and the conditions the runner cannot verify, are part of the preview.
+**Windows: preview. Unsigned installer; verified in CI on Windows Server 2025.** On Windows, commands start, stop and are recovered from the app as described below, and the process-tree behavior is tested on a native Windows runner (GitHub's `windows-2025`, Windows Server 2025) for every pull request and push to `master`. To install Veydr on Windows, see [install-windows.md](install-windows.md); to run it from source, [Running from source on Windows](../README.md#running-from-source-on-windows). How the program is found, which environment a command gets, and how its output is decoded are in [commands.md](commands.md#windows-preview) and [logs.md](logs.md#windows-preview). The Ports view lists ports on Windows too, as described in [ports.md](ports.md#windows-preview). The limits below, and the conditions the runner cannot verify, are part of the preview.
 
 ### Containment
 
@@ -169,7 +169,7 @@ These tests run on GitHub's `windows-2025` runner, which cannot show the followi
 - a desktop session on Windows 10 or 11, including Windows Terminal as the default console;
 - logging off or shutting down Windows while commands run;
 - Veydr started with no Job Object around it, as when it is started from Explorer (the runner runs every step inside a job);
-- a standard user account: the CI job runs Veydr as the runner's administrator only (only the helper's `ports` subcommand is also run as a standard user, see [ports.md](ports.md#windows-preview));
+- a standard user account using Veydr: CI runs Veydr's end-to-end tests as the runner's administrator only. As a standard user it runs the helper's `ports` subcommand (see [ports.md](ports.md#windows-preview)), and installs the package, runs the installed helper and the installed application's smoke test, and uninstalls it (see [install-windows.md](install-windows.md#what-ci-verifies));
 - localized ANSI code pages: the runner uses code page 1252 (and OEM code page 437), so 932, 936, 949 and 950 are tested with synthetic bytes only;
 - a user-customized `PATHEXT`;
 - App Execution Aliases other than those the runner has (for example `winget`);
@@ -177,6 +177,6 @@ These tests run on GitHub's `windows-2025` runner, which cannot show the followi
 
 The preview's own limits are stated where they apply: shell mode supports `cmd.exe` only, on one line of at most 8191 characters ([commands.md](commands.md#shell-mode)), a `PATH` change needs a Veydr restart ([commands.md](commands.md#environment-1)), and output that is neither UTF-8 nor in the ANSI code page is shown wrongly ([logs.md](logs.md#programs-that-write-oem-bytes-to-a-pipe)).
 
-The helper is not signed yet, so antivirus software or SmartScreen may flag it (see [deferred-checks.md](deferred-checks.md#windows-process-supervision-2026-11-06)).
+The helper, like the installer and `Veydr.exe`, is unsigned, so antivirus software or SmartScreen may flag it (see [install-windows.md](install-windows.md#smartscreen) and [deferred-checks.md](deferred-checks.md#windows-process-supervision-2026-11-06)).
 
 Evidence: `test/integration/windows-process-tree.test.ts` › "[spec:process-supervision/veydr-ends-abnormally-on-windows]"; `test/integration/windows-process-tree.test.ts` › "[spec:process-supervision/helper-ends-abnormally-on-windows]"; `test/integration/windows-process-tree.test.ts` › "[spec:process-supervision/cooperative-process-on-windows]"; `test/unit/supervisor.test.ts` › "ends a run as unverified when its leader exits and the run can no longer be checked"; `test/unit/supervisor.test.ts` › "[spec:process-supervision/command-started-on-windows]"; `test/integration/windows-commands.test.ts` › "[spec:process-supervision/command-started-on-windows]".

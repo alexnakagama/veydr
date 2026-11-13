@@ -1,6 +1,6 @@
 # Installing Veydr on Linux
 
-Veydr's packages are built for **Linux x64** only. Windows is a preview that runs from source, with no Windows package yet (see [Running from source on Windows](../README.md#running-from-source-on-windows)); macOS is not supported. Two packages are produced by `npm run dist:linux` (in `dist/`):
+Veydr's Linux packages are built for **Linux x64** only. Windows is a preview with its own unsigned installer, described in [install-windows.md](install-windows.md); macOS is not supported. Two packages are produced by `npm run dist:linux` (in `dist/`):
 
 | Package | File | Use it on |
 |---|---|---|

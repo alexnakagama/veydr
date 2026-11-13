@@ -1,6 +1,6 @@
 # Windows evidence
 
-Windows is a **preview**: run from source, verified in CI on Windows Server 2025, with no Windows package yet (see the [README](../README.md#platform-support)). This document records what the `windows-probe.yml` workflow observed on the `windows-2025` GitHub Actions runner, what it cannot observe there, and the decisions the Windows platform work (W1–W4) takes from it. It is evidence for that work, not a support statement. How the probes work, and how a run becomes evidence, is in [ci.md](ci.md#windows-probes).
+Windows is a **preview**, with an unsigned installer, verified in CI on Windows Server 2025 (see the [README](../README.md#platform-support) and [install-windows.md](install-windows.md)). This document records what the `windows-probe.yml` workflow observed on the `windows-2025` GitHub Actions runner, what it cannot observe there, and the decisions the Windows platform work (W1–W4) takes from it. It is evidence for that work, not a support statement. How the probes work, and how a run becomes evidence, is in [ci.md](ci.md#windows-probes).
 
 ## Recorded run
 
@@ -151,6 +151,8 @@ These apply the decision rules of the `assess-windows-platform` design (D5), whi
 
 The helper must also start each command itself, suspended, and assign it to the job before resuming it. `pt-job-race` is `EXPECTED-FAIL`: a grandchild created before the assignment escapes. The suspended start closed that gap, and Node cannot request `CREATE_SUSPENDED`.
 
+**Resolved in W4** (OpenSpec change add-windows-packaging), the helper's placement: the Windows package ships the helper as `resources\veydr-helper.exe`, beside `app.asar`, compiled from the committed source in the run that builds the package, and a packaged Veydr looks for it there. The helper built with `csc.exe` as in `helper-csc-build` and `helper-csc-build-std` also works from the install directory: CI starts and ends a command tree through the installed helper as the administrator, and runs its `version` and `ports` as a standard user ([install-windows.md](install-windows.md#what-ci-verifies)).
+
 ### Graceful stop (W1)
 
 **Graceful stop through the attaching helper, then the forced stop.**
@@ -198,3 +200,9 @@ Further findings W2 must handle, outside the D5 rules:
 **The Windows CI lane can run Electron under Playwright.** `electron-launch`, `electron-playwright` and `ctx-electron-no-console` are `PASS`, and every `electron-smoke-*` check passes except `electron-smoke-platform`, as predicted. The existing e2e harness depends on Linux `/proc` helpers, so it must be made portable before e2e tests can run on Windows. W1 did not take this on: commands cannot be started on Windows until W2, so W2 makes the harness portable. **Resolved in W2** (OpenSpec change add-windows-environment-and-commands): the harness reads processes through `test/support/processes.ts` (`/proc` on Linux, `Win32_Process` and each process's environment block on Windows), every spec is classified as portable, Linux-only or Windows-specific, and the `windows` CI job runs the end-to-end suite against the built app ([ci.md](ci.md#end-to-end-tests-on-windows)).
 
 W4 can build and install a per-user NSIS installer on the runner: `nsis-build` and `nsis-install` are `PASS`. Its signing and SmartScreen behavior stay unverified (`smartscreen`).
+
+**Resolved in W4** (OpenSpec change add-windows-packaging):
+
+- `nsis-build`: the same per-user, one-click NSIS installer is now configured in `electron-builder.yml` instead of on the command line, and the `windows-package` CI job builds it with `npm run dist:windows` for every pull request and push to `master`, as do manual builds and releases ([ci.md](ci.md#manual-builds)).
+- `nsis-install`: the silent install, the installed app's `--smoke-test`, an install over the existing one, and the silent uninstall are tested in that job as the administrator and, without the reinstall, as a standard user. The installed app now passes every smoke check, the platform check included, which lists the ports through the packaged helper ([install-windows.md](install-windows.md#what-ci-verifies)).
+- Signing: the maintainer decided on 2026-11-12 that the installer, the application and the helper ship unsigned (gate G-6). `smartscreen` stays unverified, and is listed in [install-windows.md](install-windows.md#not-verified).

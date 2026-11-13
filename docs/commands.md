@@ -1,6 +1,6 @@
 # Projects and commands
 
-This page describes how you register projects, how Veydr runs the commands you configure for them, which environment those commands get, and how secret values are handled. Everything below describes Linux, except the [Windows (preview)](#windows-preview) section, which gives the rules commands follow on Windows. **Windows: preview. Run from source; verified in CI on Windows Server 2025. No Windows package yet.** How commands are started, stopped, and tracked is described in [processes.md](processes.md).
+This page describes how you register projects, how Veydr runs the commands you configure for them, which environment those commands get, and how secret values are handled. Everything below describes Linux, except the [Windows (preview)](#windows-preview) section, which gives the rules commands follow on Windows. **Windows: preview. Unsigned installer; verified in CI on Windows Server 2025.** Installing it is described in [install-windows.md](install-windows.md). How commands are started, stopped, and tracked is described in [processes.md](processes.md).
 
 ## Projects
 
@@ -76,7 +76,7 @@ These examples are the ones the end-to-end tests use (`test/e2e/commands.spec.ts
 
 ## Windows (preview)
 
-**Windows: preview. Run from source; verified in CI on Windows Server 2025. No Windows package yet.** Commands start on Windows by the rules below, which are tested on a native Windows runner in CI. What that runner cannot verify is listed in [processes.md](processes.md#not-verified-on-the-ci-runner). To run Veydr on Windows, see [Running from source on Windows](../README.md#running-from-source-on-windows).
+**Windows: preview. Unsigned installer; verified in CI on Windows Server 2025.** Commands start on Windows by the rules below, which are tested on a native Windows runner in CI. What that runner cannot verify is listed in [processes.md](processes.md#not-verified-on-the-ci-runner). To install Veydr on Windows, see [install-windows.md](install-windows.md); to run it from source, [Running from source on Windows](../README.md#running-from-source-on-windows).
 
 ### Finding the program
 

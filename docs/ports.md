@@ -59,7 +59,7 @@ A listing with 1,000 listening sockets of one process took a median of 58 ms on 
 
 ## Windows (preview)
 
-**Windows: preview. Run from source; verified in CI on Windows Server 2025. No Windows package yet.** The Ports view lists the same sockets as on Linux, IPv4 and IPv6, with the same two lists, owners, refresh, and attribution: a port belongs to a command when its holder is one of the command's processes, which on Windows are the processes in the command's Job Object (see [processes.md](processes.md#containment)). Processes are matched by PID and creation time.
+**Windows: preview. Unsigned installer; verified in CI on Windows Server 2025.** Installing it is described in [install-windows.md](install-windows.md). The Ports view lists the same sockets as on Linux, IPv4 and IPv6, with the same two lists, owners, refresh, and attribution: a port belongs to a command when its holder is one of the command's processes, which on Windows are the processes in the command's Job Object (see [processes.md](processes.md#containment)). Processes are matched by PID and creation time.
 
 ### How Windows ports are read
 
@@ -79,7 +79,7 @@ Each listing runs `veydr-helper.exe ports`, the helper that also runs commands (
 
 **IPv6 scope.** As on Linux, the scope of a link-local IPv6 address (`fe80::1%3`) is not shown, so two such sockets on the same port, one per network interface, look alike.
 
-**Speed.** The helper is started anew for each listing, every 3 seconds while the view is open. With 1,045 listening sockets on the runner (1,000 of one process), a listing, the helper's start included, took a median of 64–67 ms in the CI checks of 2026-11-10 (Windows Server 2025, threshold 500 ms, `test/integration/windows-ports.test.ts`). The helper is not signed yet, so antivirus software may scan it at each start and slow the listing down (see [deferred-checks.md](deferred-checks.md#windows-process-supervision-2026-11-06)).
+**Speed.** The helper is started anew for each listing, every 3 seconds while the view is open. With 1,045 listening sockets on the runner (1,000 of one process), a listing, the helper's start included, took a median of 64–67 ms in the CI checks of 2026-11-10 (Windows Server 2025, threshold 500 ms, `test/integration/windows-ports.test.ts`). The helper is unsigned, so antivirus software may scan it at each start and slow the listing down (see [install-windows.md](install-windows.md#smartscreen)).
 
 ### Verified on the CI runner, and what is not
 

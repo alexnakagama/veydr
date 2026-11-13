@@ -1,4 +1,6 @@
 import { EventEmitter } from 'node:events'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import type { Session, WebContents } from 'electron'
 import { describe, expect, it, vi } from 'vitest'
 import { createDiagnosticLog } from '../../src/main/app/diagnostics'
@@ -93,8 +95,37 @@ describe('disableProxyDiscovery', () => {
   })
 })
 
-// The documented limits of the archive validation on Windows (add-windows-packaging design D3, D8).
-// Task 6.3 implements this against docs/security-baseline.md, once task 2.4 has measured them.
+// The documented limits of the archive validation on Windows (add-windows-packaging design D3, D8),
+// as task 2.4 measured them in CI: both the changed index and the changed bytes are refused.
 describe('archive validation on Windows, documented', () => {
-  it.todo('[spec:desktop-shell/archive-validation-limits-documented] states what the validation covers on Windows, what it does not, and that the application binary is unsigned (task 6.3)')
+  const root = join(__dirname, '../..')
+  const baseline = readFileSync(join(root, 'docs/security-baseline.md'), 'utf8')
+  /** The `* **<title>**` bullet of docs/security-baseline.md, on one line. */
+  const bullet = (title: string): string => baseline.split('\n').find((line) => line.startsWith(`* **${title}**`)) ?? ''
+
+  it('[spec:desktop-shell/archive-validation-limits-documented] states what the validation covers on Windows, what it does not, and that the application binary is unsigned', () => {
+    const integrity = bullet('ASAR integrity on Windows')
+    expect(integrity).not.toBe('')
+    // What it covers: both modifications measured in task 2.4, by the test that measured them.
+    expect(integrity).toContain('`test/packaging-windows/fuses.test.ts`')
+    expect(integrity).toContain('What the validation covers: an archive whose index was changed is refused at startup')
+    expect(integrity).toContain('a file whose bytes were changed with the index untouched is refused when it is read')
+    expect(integrity).toContain('on Windows the bytes-only limit that the design predicted does not exist')
+    const fuses = readFileSync(join(root, 'test/packaging-windows/fuses.test.ts'), 'utf8')
+    expect(fuses).toMatch(/\bit\(\s*'\[spec:desktop-shell\/modified-archive-refused-on-windows\] refuses to start with an archive whose index was changed/)
+    expect(fuses).toMatch(/\bit\(\s*'refuses to start with an archive whose file bytes alone changed, its index untouched/)
+    // What it does not cover.
+    expect(integrity).toContain('What it does not cover: `Veydr.exe` itself, which holds the expected hash')
+    expect(integrity).toContain('files outside the archive (the helper, the uninstaller, and Electron\'s own libraries and resources)')
+    expect(integrity).toContain('a file of the archive that is never read')
+    // The application binary, and the other Windows executables, are unsigned.
+    const unsigned = bullet('Unsigned Windows binaries')
+    expect(unsigned).toContain('the installer, `Veydr.exe`, the uninstaller and the helper carry no Authenticode signature')
+    expect(unsigned).toContain('nothing checks `Veydr.exe` or the helper when they start')
+    expect(unsigned).toContain('(install-windows.md#download-and-verify)')
+    // The Linux limitation stays stated separately, and the Windows bullets follow the Linux one.
+    expect(bullet('ASAR integrity on Linux (limitation)')).toContain('on Linux a modified archive still loads')
+    expect(baseline.indexOf('* **ASAR integrity on Linux')).toBeLessThan(baseline.indexOf('* **ASAR integrity on Windows**'))
+    expect(bullet('Packaged Windows build')).toContain('the same six fuses are set in `Veydr.exe`')
+  })
 })

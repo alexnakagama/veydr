@@ -11,7 +11,7 @@
 </p>
 
 <p align="center">
-  Linux x64 &nbsp;·&nbsp; Local-only &nbsp;·&nbsp; <a href="LICENSE">MIT license</a>
+  Linux x64 &nbsp;·&nbsp; Windows x64 (preview) &nbsp;·&nbsp; Local-only &nbsp;·&nbsp; <a href="LICENSE">MIT license</a>
 </p>
 
 <p align="center">
@@ -29,7 +29,7 @@ Veydr is a desktop app for developers who run several long-lived commands across
 Veydr does nothing unless you ask it to. A command starts only when you press **Start**, a command that exits is never restarted on its own, and when you quit, Veydr stops what it started. It runs entirely on your machine: no accounts, no cloud sync, no telemetry, and no network access of its own.
 
 > [!NOTE]
-> **Linux; Windows in preview.** Veydr is an early release. It runs on Linux x64. **Windows: preview. Run from source; verified in CI on Windows Server 2025. No Windows package yet.** macOS is not supported. Released versions are published as Linux packages on [GitHub Releases](https://github.com/alexnakagama/veydr/releases), and you can always build them from source (see [Installation](#installation)).
+> **Linux; Windows in preview.** Veydr is an early release. It runs on Linux x64. **Windows: preview. Unsigned installer; verified in CI on Windows Server 2025.** See [Installing on Windows](docs/install-windows.md). macOS is not supported. Released versions are published on [GitHub Releases](https://github.com/alexnakagama/veydr/releases): the Linux packages, and the Windows installer in releases made after it was added. You can always build them from source (see [Installation](#installation)).
 
 ## Contents
 
@@ -100,7 +100,7 @@ Single-key shortcuts for common actions. Press <kbd>?</kbd> in the app to see th
 |---|---|
 | **Linux x64** | Supported (see the distribution table below) |
 | Linux on other architectures | Not supported; packages are built for x64 only |
-| Windows x64 | **Preview.** Run from source; verified in CI on Windows Server 2025. No Windows package yet. See [Running from source on Windows](#running-from-source-on-windows) and the [Windows limits](docs/processes.md#windows-preview) |
+| Windows x64 | **Preview.** Unsigned installer; verified in CI on Windows Server 2025. See [Installing on Windows](docs/install-windows.md), [Running from source on Windows](#running-from-source-on-windows) and the [Windows limits](docs/processes.md#windows-preview) |
 | macOS | Not supported |
 
 **Linux distributions.** These results come from `scripts/smoke-linux.sh`, which ran the packaged app's built-in smoke test inside Docker containers on 2026-10-25. They are not results from full desktop installations. Details are in [install-linux.md](docs/install-linux.md#supported-distributions).
@@ -119,11 +119,11 @@ Single-key shortcuts for common actions. Press <kbd>?</kbd> in the app to see th
 
 | Available now | Not available yet |
 |---|---|
-| Projects, commands (direct and shell), environment overrides, secret masking | A Windows package (Windows runs from source, as a preview) |
-| Start, stop, restart; process-tree stop; clean quit; crash recovery | Keychain-backed secret storage (secrets are stored unencrypted for now) |
-| Live output with colors, filter, follow/pause, copy, clear | Viewing a previous run's output (it is kept, but not shown yet) |
-| Listening-port inspection | A stable release (only release candidates are published so far) |
-| `.deb` and AppImage packages, from [GitHub Releases](https://github.com/alexnakagama/veydr/releases) or built from source | macOS support, auto-update, code signing |
+| Projects, commands (direct and shell), environment overrides, secret masking | Keychain-backed secret storage (secrets are stored unencrypted for now) |
+| Start, stop, restart; process-tree stop; clean quit; crash recovery | Viewing a previous run's output (it is kept, but not shown yet) |
+| Live output with colors, filter, follow/pause, copy, clear | A stable release (only release candidates are published so far) |
+| Listening-port inspection | macOS support, auto-update, code signing |
+| `.deb` and AppImage packages, and a Windows installer (preview, unsigned), from [GitHub Releases](https://github.com/alexnakagama/veydr/releases) or built from source | Arm64 packages, for Linux or Windows |
 
 Veydr is deliberately not a terminal emulator. Commands get no interactive input (stdin), there is no auto-restart or watch mode, and output is never written to log files. Docker, Git, and tray integration are also out of scope for this release.
 
@@ -135,11 +135,13 @@ In the commands below, replace `X.Y.Z` with the version you install.
 
 Download the packages from the [GitHub Releases page](https://github.com/alexnakagama/veydr/releases). Every release has:
 
-- `Veydr-X.Y.Z-amd64.deb` and `Veydr-X.Y.Z-x86_64.AppImage`, the packages;
-- `SHA256SUMS`, the checksums of both packages;
+- `Veydr-X.Y.Z-amd64.deb` and `Veydr-X.Y.Z-x86_64.AppImage`, the Linux packages;
+- `SHA256SUMS`, the checksums of every package of the release;
 - `acceptance-linux-steps.jsonl`, the record of the acceptance test the release ran on exactly these packages.
 
-Check a download before installing it. In the folder you downloaded to:
+Releases made after the Windows installer was added also have `Veydr-X.Y.Z-x64-setup.exe`, the Windows installer, covered by the same `SHA256SUMS`, and `install-windows-steps.jsonl`, the record of the installation test the release ran on exactly that installer. On Windows, verify and install it as described in [Install on Windows](#install-on-windows).
+
+Check a Linux download before installing it. In the folder you downloaded to:
 
 ```bash
 sha256sum --check --ignore-missing SHA256SUMS
@@ -224,9 +226,13 @@ npm run dev
 
 This starts Veydr with hot reload for the interface. See [Development](#development).
 
+### Install on Windows
+
+**Windows: preview. Unsigned installer; verified in CI on Windows Server 2025.** Download `Veydr-X.Y.Z-x64-setup.exe` and `SHA256SUMS` from a release, and verify the installer before you run it: it is unsigned, so the checksum and the build provenance are what tie it to this repository, and Windows SmartScreen may warn about it. Then run it. It installs Veydr for your user only, without administrator rights, into `%LOCALAPPDATA%\Programs\veydr`, and adds a Start menu entry. The verification commands, the SmartScreen warning, updating, uninstalling (your configuration is kept), building the installer yourself, and what CI has not verified are in [docs/install-windows.md](docs/install-windows.md).
+
 ### Running from source on Windows
 
-**Windows: preview. Run from source; verified in CI on Windows Server 2025. No Windows package yet.** On Windows 10 or 11 (x64), or Windows Server 2025 as in CI:
+**Windows: preview. Unsigned installer; verified in CI on Windows Server 2025.** To run Veydr from a clone instead of installing it (see [Install on Windows](#install-on-windows) and [docs/install-windows.md](docs/install-windows.md) for the installer), on Windows 10 or 11 (x64), or Windows Server 2025 as in CI:
 
 1. Install **Node.js 24** and **npm 11.19.0 or newer**, as for Linux (see [Prerequisites](#prerequisites)).
 2. In a clone of the repository, run:
@@ -237,7 +243,7 @@ This starts Veydr with hot reload for the interface. See [Development](#developm
    npm run dev
    ```
 
-`node scripts/build-windows-helper.mjs` builds `veydr-helper.exe`, the helper that runs each command in a Windows Job Object, into `out-helper/`. It compiles the helper's source with the .NET Framework 4.8 compiler that Windows includes, so no other toolchain is needed (see [dependencies.md](docs/dependencies.md#windows-process-tree-helper-gate-g-4-2026-11-03)). Run it again after updating the repository: Veydr refuses a helper of another protocol version. The helper is not signed yet, so antivirus software or SmartScreen may flag it.
+`node scripts/build-windows-helper.mjs` builds `veydr-helper.exe`, the helper that runs each command in a Windows Job Object, into `out-helper/`. It compiles the helper's source with the .NET Framework 4.8 compiler that Windows includes, so no other toolchain is needed (see [dependencies.md](docs/dependencies.md#windows-process-tree-helper-gate-g-4-2026-11-03)). Run it again after updating the repository: Veydr refuses a helper of another protocol version. The helper is unsigned, so antivirus software or SmartScreen may flag it.
 
 On Windows, shell mode runs `cmd.exe` only, commands get the environment Veydr was started with (restart Veydr after changing `PATH`), and the **Ports** view lists ports through Veydr's helper, showing the holders a standard user may not query, such as system services, as restricted. The rules are in [commands.md](docs/commands.md#windows-preview), [processes.md](docs/processes.md#windows-preview), [logs.md](docs/logs.md#windows-preview) and [ports.md](docs/ports.md#windows-preview), together with what the CI runner cannot verify.
 
@@ -299,7 +305,7 @@ In **Settings › Editor**, set the editor's executable (for example `code`) and
 
 ### Where your data lives
 
-Everything is stored in `~/.config/Veydr/` (or `$XDG_CONFIG_HOME/Veydr/`): `config.json` with your projects, commands, and settings, plus a backup. Veydr also keeps a record of running commands there, which it uses for crash recovery. See [configuration.md](docs/configuration.md).
+Everything is stored in `~/.config/Veydr/` (or `$XDG_CONFIG_HOME/Veydr/`; on Windows, `%APPDATA%\Veydr`): `config.json` with your projects, commands, and settings, plus a backup. Veydr also keeps a record of running commands there, which it uses for crash recovery. See [configuration.md](docs/configuration.md).
 
 ## Known limitations
 
@@ -314,6 +320,7 @@ Everything is stored in `~/.config/Veydr/` (or `$XDG_CONFIG_HOME/Veydr/`): `conf
 | Topic | Document |
 |---|---|
 | Installing on Linux, requirements, distribution results | [docs/install-linux.md](docs/install-linux.md) |
+| Installing on Windows (preview), verifying the unsigned installer, what is not verified | [docs/install-windows.md](docs/install-windows.md) |
 | Projects, command modes, environment, secrets, editor | [docs/commands.md](docs/commands.md) |
 | Starting, stopping, quitting, crash recovery | [docs/processes.md](docs/processes.md) |
 | Output capture, limits, controls, redaction | [docs/logs.md](docs/logs.md) |

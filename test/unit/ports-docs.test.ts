@@ -37,7 +37,7 @@ describe('docs/ports.md', () => {
 
   it('describes Windows as a preview with its own limits, not as unavailable (W3)', () => {
     const windows = section('Windows (preview)')
-    expect(windows).toContain('**Windows: preview. Run from source; verified in CI on Windows Server 2025. No Windows package yet.**')
+    expect(windows).toContain('**Windows: preview. Unsigned installer; verified in CI on Windows Server 2025.**')
     for (const topic of ['veydr-helper.exe ports', '**The time fence.**', '20 milliseconds', '**Restricted.**', 'a standard user', '**IPv6 scope.**', '**Speed.**', 'a real PID reuse']) {
       expect(windows, topic).toContain(topic)
     }
