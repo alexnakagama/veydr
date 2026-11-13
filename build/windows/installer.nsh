@@ -3,9 +3,11 @@
 ;
 ; Why: electron-builder's uninstaller (app-builder-lib templates/nsis/uninstaller.nsh) removes the
 ; Start menu entry with `WinShell::UninstShortcut` followed by a single `Delete`, and ignores the
-; result. UninstShortcut rewrites the .lnk, and a process that opens the file at that moment (a
-; virus scanner, the search indexer) makes the Delete fail with a sharing violation: in two CI runs
-; (43456337022 and 43474232791) Veydr.lnk outlived a silent uninstall that removed everything else.
+; result. In two CI runs (43456337022 and 43474232791) Veydr.lnk outlived a silent uninstall that
+; removed everything else. The most likely cause, inferred from that code and not measured in those
+; runs: UninstShortcut rewrites the .lnk, a process opens the file at that moment (a virus scanner,
+; the search indexer), and the Delete fails with a sharing violation. The administrator's uninstall
+; test simulates that with a 5 s hold, which leaves the entry without this hook (run 43476576477).
 ;
 ; customUnInstall runs inside the uninstall section, after setLinkVars set $oldStartMenuLink and
 ; before electron-builder's own removal. It removes the same entry under the same condition

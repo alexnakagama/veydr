@@ -183,7 +183,8 @@ describe('docs/install-windows.md', () => {
     const uninstalling = flat(section('Uninstalling'))
     expect(uninstalling).toContain('Uninstalling removes the install directory, the Start menu entry and the uninstall entry. If another program briefly holds the Start menu entry open, as a virus scanner may, the uninstaller retries removing it for up to 10 seconds.')
     // The fix is described with its limit, and the tested hold (5 s) is shorter than the retry (10 s).
-    expect(flat(doc)).toContain('The uninstaller now retries for up to 10 seconds, and CI tests the uninstall with the entry held open for 5. A program that holds it longer can still leave it')
+    expect(flat(doc)).toContain('most likely while another process held it open; that cause was not observed in those runs. The uninstaller now retries for up to 10 seconds, and CI tests the uninstall with the entry held open for 5 seconds, a simulation of that cause')
+    expect(flat(doc)).toContain('The fix is verified for that case only')
     expect(uninstalling).toContain('To remove it too, delete that folder.')
   })
 

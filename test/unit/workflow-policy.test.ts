@@ -2509,7 +2509,7 @@ if (args[0] === 'api') {
     expect(section).toContain('gh attestation verify Veydr-X.Y.Z-x64-setup.exe')
     // The one known intermittent Windows failure is named where a maintainer recovers from it.
     expect(section.replace(/\s+/g, ' ')).toContain('One intermittent failure is known and not understood: in one run of 2026-11-13 (CI run 43474249998')
-    expect(section.replace(/\s+/g, ' ')).toContain('(`snapshot` in the `standard-user/install` line of the record)')
+    expect(section.replace(/\s+/g, ' ')).toContain('no command lines; `snapshot` in the `standard-user/install` line of the record). Download the failed attempt\'s test-results artifact, which holds that record, then use **Re-run failed jobs**')
   })
 
   it('[spec:release-automation/draft-created] creates a draft with generated notes, the packages, the Windows installer, SHA256SUMS and both records', () => {

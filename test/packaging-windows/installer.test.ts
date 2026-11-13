@@ -449,8 +449,9 @@ describe.skipIf(process.platform !== 'win32')('[windows-only: the Windows instal
       marker = join(configDir, `uninstall-marker-${randomBytes(6).toString('hex')}.txt`)
       writeFileSync(marker, 'written before the uninstall; must survive it\n', { flag: 'wx' })
       // The Start menu entry is held open without delete sharing for the first HOLD_LINK_MS of the
-      // uninstall, as a scanner may hold it. electron-builder's own single Delete then fails, which
-      // left Veydr.lnk behind in two CI runs; build/windows/installer.nsh retries for up to 10 s.
+      // uninstall, as a scanner may hold it: a simulation of the most likely cause of the two CI runs
+      // that left Veydr.lnk behind. electron-builder's own single Delete then fails (run 43476576477);
+      // build/windows/installer.nsh retries for up to 10 s.
       const link = (await inspect()).startMenu?.path
       expect(link, 'the Start menu entry before the uninstall').toBeDefined()
       const holder = await holdOpen(link as string, HOLD_LINK_MS)
