@@ -982,14 +982,21 @@ describe('ci.yml (design D4)', () => {
   // configuration, see windows-builder-config.test.ts); CSC_IDENTITY_AUTO_DISCOVERY affects macOS only.
   // Repository or organization variables and secrets reach a step only through a reference, which this
   // also rejects. The decision itself is enforced by the NotSigned test of the Windows package.
-  it('defines and references no signing certificate variable: only CSC_IDENTITY_AUTO_DISCOVERY "false", on the Windows packaging step (add-windows-packaging design D8)', () => {
+  it('defines and references no signing certificate variable: only CSC_IDENTITY_AUTO_DISCOVERY "false", on the Windows packaging steps (add-windows-packaging design D8)', () => {
     const signing = /^(?:WIN_)?CSC_/i
     const found = githubFiles()
       .filter((f) => isYaml(f.path))
       .flatMap((f) => parse(f.text).filter((l) => l.kind !== 'comment' && (signing.test(l.key ?? '') || /\b(?:WIN_)?CSC_\w+/i.test(l.body))).map((l) => `${f.path}: ${l.body}`))
-    expect(found).toEqual(['.github/workflows/ci.yml: CSC_IDENTITY_AUTO_DISCOVERY: "false"'])
-    const step = stepsOf(lines, job('windows-package')).find((s) => stepField(lines, s)('run')?.value === 'npm run test:packaging:windows')
-    expect(within(lines, step ?? { start: 0, end: 0 }).filter((l) => l.key === 'CSC_IDENTITY_AUTO_DISCOVERY').map((l) => l.value)).toEqual(['"false"'])
+      .sort()
+    const packaging = ['.github/workflows/build.yml', '.github/workflows/ci.yml', '.github/workflows/release.yml']
+    expect(found).toEqual(packaging.map((path) => `${path}: CSC_IDENTITY_AUTO_DISCOVERY: "false"`))
+    // In each workflow, it is on the step that runs the Windows packaging script, and nowhere else.
+    for (const path of packaging) {
+      const workflow = loadWorkflow(path)
+      const step = workflow.steps('windows-package').find((s) => workflow.field(s, 'run') === 'npm run test:packaging:windows')
+      expect(step, path).toBeDefined()
+      expect(within(workflow.lines, step ?? { start: 0, end: 0 }).filter((l) => l.key === 'CSC_IDENTITY_AUTO_DISCOVERY').map((l) => l.value), path).toEqual(['"false"'])
+    }
   })
 
   it('[spec:process-supervision/windows-process-trees-verified-natively] runs the Windows process-tree tests on a native Windows runner for pull requests and pushes to master', () => {
@@ -1400,8 +1407,6 @@ if (args[0] === 'issue' && args[1] === 'list') process.stdout.write(process.env.
 describe('build.yml', () => {
   const w = loadWorkflow('.github/workflows/build.yml')
 
-  // add-windows-packaging task 5.2 implements this; the tag keeps spec coverage at zero unmapped.
-  it.todo('[spec:release-automation/building-the-windows-installer-of-a-branch] builds the Windows installer of the same ref with its SHA256SUMS, read-only (task 5.2)')
 
   /** Runs the SHA256SUMS step in a directory holding `files`; returns the run and the SHA256SUMS it wrote. */
   const checksums = (files: string[]): { run: ScriptRun; sums: string | undefined } => {
@@ -1418,7 +1423,7 @@ describe('build.yml', () => {
 
   it('exists and has the expected jobs', () => {
     expect(w.source.text).not.toBe('')
-    expect(w.jobs.map((j) => j.name)).toEqual(['package', 'smoke'])
+    expect(w.jobs.map((j) => j.name)).toEqual(['package', 'windows-package', 'smoke'])
   })
 
   // Git Bash's sha256sum marks files as binary (`*name`); the step only ever runs on the ubuntu runner.
@@ -1470,6 +1475,88 @@ describe('build.yml', () => {
       const bad = checksums(files)
       expect(bad.run.status, files.join(' ')).toBe(1)
       expect(bad.run.stdout, files.join(' ')).toContain('::error title=Unexpected packages::')
+    }
+  })
+
+  /**
+   * Runs windows-package's SHA256SUMS step in a checkout at `version` whose dist/ holds `files`
+   * (name → contents) and a win-unpacked/ folder; returns the run and the SHA256SUMS it wrote.
+   */
+  const windowsChecksums = (files: Record<string, string>, version: string): { run: ScriptRun; sums: string | undefined } => {
+    const dir = mkdtempSync(join(tmpdir(), 'veydr-build-windows-sums-'))
+    try {
+      mkdirSync(join(dir, 'scripts'))
+      copyFileSync(join(root, 'scripts/sha256sums.mjs'), join(dir, 'scripts/sha256sums.mjs'))
+      writeFileSync(join(dir, 'package.json'), `${JSON.stringify({ name: 'veydr', version })}\n`)
+      mkdirSync(join(dir, 'dist', 'win-unpacked'), { recursive: true })
+      writeFileSync(join(dir, 'dist', 'win-unpacked', 'Veydr.exe'), 'app')
+      for (const [name, contents] of Object.entries(files)) writeFileSync(join(dir, 'dist', name), contents)
+      const run = w.runStep('windows-package', 'Write SHA256SUMS', { cwd: dir })
+      const sums = join(dir, 'dist', 'SHA256SUMS')
+      return { run, sums: existsSync(sums) ? readFileSync(sums, 'utf8') : undefined }
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  }
+
+  it('[spec:release-automation/building-the-windows-installer-of-a-branch] builds the Windows installer of the same ref, tested, with a SHA256SUMS that covers it, read-only (add-windows-packaging design D6)', () => {
+    // The same ref as the Linux packages, on Windows, read-only and keeping no credentials.
+    expect(w.jobField('windows-package', 'runs-on')?.value).toBe('windows-2025')
+    expect(w.jobField('windows-package', 'needs')).toBeUndefined()
+    expect(w.jobField('windows-package', 'if')).toBeUndefined()
+    expect(w.permissions('windows-package')).toEqual({ contents: 'read' })
+    const checkout = w.stepsUsing('windows-package', 'actions/checkout')
+    expect(checkout).toHaveLength(1)
+    expect(w.withValue(checkout[0] as Range, 'ref')).toBe('${{ inputs.ref }}')
+    expect(w.withValue(checkout[0] as Range, 'persist-credentials')).toBe('false')
+    const setup = w.steps('windows-package').find((s) => w.field(s, 'uses') === './.github/actions/setup')
+    expect(setup === undefined ? undefined : w.withValue(setup, 'electron')).toBe('"true"')
+    // The packaging script that ci.yml runs: the installer is built and tested before it is uploaded,
+    // and no step tolerates a failure.
+    const names = w.steps('windows-package').map((s) => w.field(s, 'name') ?? (w.field(s, 'uses') ?? '').split('@')[0])
+    expect(names).toEqual([
+      'actions/checkout',
+      './.github/actions/setup',
+      'Build the Windows installer and run the Windows packaging tests',
+      'Write SHA256SUMS',
+      'Check SHA256SUMS with Get-FileHash',
+      'Upload installer',
+      'Upload test results',
+    ])
+    expect(w.scripts('windows-package')[0]).toBe('npm run test:packaging:windows')
+    expect(w.steps('windows-package').slice(0, -1).map((s) => w.field(s, 'if'))).toEqual(Array(names.length - 1).fill(undefined))
+    expect(within(w.lines, w.job('windows-package')).filter((l) => l.key === 'continue-on-error')).toEqual([])
+    // SHA256SUMS is written by the script (GNU format on Windows), and checked with Get-FileHash.
+    const step = (name: string): Range => w.steps('windows-package').find((s) => w.field(s, 'name') === name) as Range
+    expect(w.field(step('Write SHA256SUMS'), 'shell')).toBe('bash')
+    expect(w.scripts('windows-package')[1]).toContain('node scripts/sha256sums.mjs dist "$expected"')
+    expect(w.field(step('Check SHA256SUMS with Get-FileHash'), 'shell')).toBe('pwsh')
+    expect(w.scripts('windows-package')[2]).toMatch(/Get-FileHash -LiteralPath .* -Algorithm SHA256/)
+    expect(w.scripts('windows-package')[2]).toContain('-cnotmatch')
+    // The installer and its SHA256SUMS, as one artifact kept 14 days.
+    const upload = w.stepsUsing('windows-package', 'actions/upload-artifact')
+    expect(upload).toHaveLength(2)
+    expect(w.withValue(upload[0] as Range, 'name')).toBe('windows-package')
+    expect(w.withValue(upload[0] as Range, 'path')).toBe('dist/*-x64-setup.exe\ndist/SHA256SUMS')
+    expect(w.withValue(upload[0] as Range, 'retention-days')).toBe('14')
+    expect(w.withValue(upload[0] as Range, 'if-no-files-found')).toBe('error')
+    expect(w.field(upload[1] as Range, 'if')).toBe('failure()')
+    expect(w.withValue(upload[1] as Range, 'name')).toBe('windows-package-test-results')
+    // Nothing in the workflow pushes, tags, commits or releases (checked for the whole file).
+    expect(linesContaining(w.source, ['git push', 'git tag', 'git commit', 'gh release', 'gh api', 'npm version', 'release-version.mjs'])).toEqual([])
+
+    // The step lists exactly the installer named for package.json's version, for a release and a prerelease.
+    for (const version of ['1.2.3', '1.2.3-rc.1']) {
+      const installer = `Veydr-${version}-x64-setup.exe`
+      const good = windowsChecksums({ [installer]: 'installer\r\n', 'builder-debug.yml': 'x', [`${installer}.blockmap`]: 'x' }, version)
+      expect(good.run.status, good.run.stdout + good.run.stderr).toBe(0)
+      expect(good.sums, version).toBe(`${createHash('sha256').update('installer\r\n').digest('hex')}  ${installer}\n`)
+      for (const files of [{}, { [installer]: 'x', 'Veydr-1.2.2-x64-setup.exe': 'x' }, { 'Veydr-0.0.0-x64-setup.exe': 'x' }, { [`Veydr-${version}-setup.exe`]: 'x' }, { [`veydr-${version}-x64-setup.exe`]: 'x' }]) {
+        const bad = windowsChecksums(files, version)
+        expect(bad.run.status, `${version}: ${Object.keys(files).join(' ')}`).toBe(1)
+        expect(bad.run.stdout, `${version}: ${Object.keys(files).join(' ')}`).toContain('::error title=Unexpected installer::')
+        expect(bad.sums).toBeUndefined()
+      }
     }
   })
 
@@ -1751,12 +1838,11 @@ const releaseScripts = ['scripts/release-version.mjs', 'scripts/npm.mjs']
 describe('release.yml (design D6)', { timeout: 60_000 }, () => {
   const w = loadWorkflow('.github/workflows/release.yml')
 
-  // add-windows-packaging task 5.3 implements these; the tags keep spec coverage at zero unmapped.
-  it.todo('[spec:release-automation/windows-gate-fails] publish needs both Windows gate jobs, so a Windows failure publishes nothing, Linux packages included (task 5.3)')
-  it.todo('[spec:release-automation/checksum-of-the-windows-installer] the installer\'s line in SHA256SUMS is the SHA-256 of the attached installer (task 5.3)')
-  it.todo('[spec:release-automation/record-matches-the-attached-installer] the Windows install record names the SHA-256 of the attached installer (task 5.3)')
-  it.todo('[spec:release-automation/record-names-another-installer] a record naming another digest fails publish before the push step (task 5.3)')
   const gates = ['verify', 'e2e', 'package']
+  /** The Windows gate jobs (add-windows-packaging design D6), on windows-2025. */
+  const windowsGates = ['windows', 'windows-package']
+  /** Every fixture of a step that depends on the version runs with a release and a prerelease. */
+  const versions = ['1.2.3', '1.2.3-rc.1']
   const packageTests = ['smoke', 'acceptance']
   const sourceSha = '${{ needs.validate.outputs.source_sha }}'
   const versionEnv = '${{ inputs.version }}'
@@ -1836,18 +1922,56 @@ describe('release.yml (design D6)', { timeout: 60_000 }, () => {
   }
 
   const digest = (text: string): string => createHash('sha256').update(text).digest('hex')
-  /** Runs publish's SHA256SUMS step on `files` (name → contents) with an acceptance record whose first step names `tested`. */
-  const checksums = (files: Record<string, string>, tested: string | undefined, version = '1.2.3') => {
-    const dir = tempDir('sums')
-    for (const [name, contents] of Object.entries(files)) writeFileSync(join(dir, name), contents)
-    const acceptance = join(tempDir('acceptance'), 'steps.jsonl')
-    if (tested !== undefined) {
-      writeFileSync(acceptance, `${JSON.stringify({ step: 'environment', ok: true, detail: { deb: tested } })}\n${JSON.stringify({ step: 'launch', ok: true })}\n`)
-    }
-    const run = w.runStep('publish', 'Write SHA256SUMS', { cwd: dir, env: { VERSION: version, ACCEPTANCE: acceptance } })
-    const read = (name: string): string | undefined => (existsSync(join(dir, name)) ? readFileSync(join(dir, name), 'utf8') : undefined)
-    return { run, dir, sums: read('SHA256SUMS'), record: read('acceptance-linux-steps.jsonl') }
+  /** The three release packages of `version`, as the gate jobs name them. */
+  const packagesOf = (version: string) => ({
+    deb: `Veydr-${version}-amd64.deb`,
+    appimage: `Veydr-${version}-x86_64.AppImage`,
+    installer: `Veydr-${version}-x64-setup.exe`,
+  })
+  // The installer's bytes include CR, LF and NUL, which a text-mode hash would change.
+  const contents = { deb: 'deb contents\n', appimage: 'appimage contents\n', installer: 'MZ installer\r\n\0\r' }
+  /** The three packages of `version` with the contents above. */
+  const releasePackages = (version: string): Record<string, string> => {
+    const names = packagesOf(version)
+    return { [names.deb]: contents.deb, [names.appimage]: contents.appimage, [names.installer]: contents.installer }
   }
+  /** The record lines the acceptance pass and the Windows install tests write for these packages. */
+  const testedLines = (version: string) => ({
+    deb: `${digest(contents.deb)}  ${packagesOf(version).deb}`,
+    installer: `${digest(contents.installer)}  ${packagesOf(version).installer}`,
+  })
+  /**
+   * Runs publish's SHA256SUMS step on `files` (name → contents) with an acceptance record whose first
+   * line names `records.deb` and a Windows install record whose first line names `records.installer`;
+   * a record left undefined is not written. `records.windowsRecord` replaces the whole Windows record.
+   */
+  const checksums = (files: Record<string, string>, records: { deb?: string; installer?: string; windowsRecord?: string }, version = '1.2.3') => {
+    const dir = tempDir('sums')
+    for (const [name, text] of Object.entries(files)) writeFileSync(join(dir, name), text)
+    const acceptance = join(tempDir('acceptance'), 'steps.jsonl')
+    if (records.deb !== undefined) {
+      writeFileSync(acceptance, `${JSON.stringify({ step: 'environment', ok: true, detail: { deb: records.deb } })}\n${JSON.stringify({ step: 'launch', ok: true })}\n`)
+    }
+    const windowsInstall = join(tempDir('windows-install'), 'steps.jsonl')
+    if (records.windowsRecord !== undefined) writeFileSync(windowsInstall, records.windowsRecord)
+    else if (records.installer !== undefined) {
+      writeFileSync(
+        windowsInstall,
+        [
+          { at: '2026-11-13T00:00:00.000Z', step: 'installer', ok: true, detail: { installer: records.installer } },
+          { at: '2026-11-13T00:00:01.000Z', step: 'administrator/install', ok: true, detail: null },
+          { at: '2026-11-13T00:00:02.000Z', step: 'standard-user/install', ok: true, detail: null },
+        ]
+          .map((line) => `${JSON.stringify(line)}\n`)
+          .join(''),
+      )
+    }
+    const run = w.runStep('publish', 'Write SHA256SUMS', { cwd: dir, env: { VERSION: version, ACCEPTANCE: acceptance, WINDOWS_INSTALL: windowsInstall } })
+    const read = (name: string): string | undefined => (existsSync(join(dir, name)) ? readFileSync(join(dir, name), 'utf8') : undefined)
+    return { run, dir, sums: read('SHA256SUMS'), record: read('acceptance-linux-steps.jsonl'), windowsRecord: read('install-windows-steps.jsonl') }
+  }
+  /** checksums() with all three packages of `version` and both records naming them. */
+  const goodChecksums = (version: string) => checksums(releasePackages(version), testedLines(version), version)
 
   /** Runs the draft release step with a fake `gh`; `releases` is what the releases API lists. */
   const draftRelease = (options: { releases?: { tag_name: string; draft: boolean }[]; prerelease?: string; failOn?: string } = {}) => {
@@ -1885,11 +2009,18 @@ if (args[0] === 'api') {
     const calls = existsSync(log) ? readFileSync(log, 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l) as string[]) : []
     return { run, calls }
   }
-  const releaseFiles = ['Veydr-1.2.3-rc.1-amd64.deb', 'Veydr-1.2.3-rc.1-x86_64.AppImage', 'SHA256SUMS', 'acceptance-linux-steps.jsonl']
+  const releaseFiles = [
+    'Veydr-1.2.3-rc.1-amd64.deb',
+    'Veydr-1.2.3-rc.1-x86_64.AppImage',
+    'Veydr-1.2.3-rc.1-x64-setup.exe',
+    'SHA256SUMS',
+    'acceptance-linux-steps.jsonl',
+    'install-windows-steps.jsonl',
+  ]
 
   it('exists and has the expected jobs', () => {
     expect(w.source.text).not.toBe('')
-    expect(w.jobs.map((j) => j.name)).toEqual(['validate', ...gates, ...packageTests, 'publish'])
+    expect(w.jobs.map((j) => j.name)).toEqual(['validate', ...gates, ...packageTests, ...windowsGates, 'publish'])
     // One release at a time, and a running release is never cancelled.
     const concurrency = topLevelBlock(w.lines, 'concurrency')?.start ?? -1
     expect(w.lines[childAt(w.lines, concurrency, 'group')]?.value).toBe('release')
@@ -1947,7 +2078,7 @@ if (args[0] === 'api') {
   })
 
   it('[spec:release-automation/packages-carry-the-release-version] applies the bump in every gate job, and builds packages named for the version', () => {
-    for (const job of gates) {
+    for (const job of [...gates, ...windowsGates]) {
       const checkout = w.stepsUsing(job, 'actions/checkout')
       expect(checkout, job).toHaveLength(1)
       expect(w.withValue(checkout[0] as Range, 'ref'), job).toBe(sourceSha)
@@ -1958,6 +2089,14 @@ if (args[0] === 'api') {
       expect(stepEnv(job, 'Apply the version'), job).toEqual({ VERSION: versionEnv })
       expect(w.scripts(job)[0], job).toBe('node scripts/release-version.mjs apply "$VERSION"')
     }
+    // On Windows the step runs in bash: in PowerShell, the runner's default there, "$VERSION" would
+    // be an unset PowerShell variable, and the tree would be tested at the old version.
+    for (const job of windowsGates) {
+      const apply = w.steps(job).find((s) => w.field(s, 'name') === 'Apply the version') as Range
+      expect(w.field(apply, 'shell'), job).toBe('bash')
+      expect(w.jobField(job, 'runs-on')?.value, job).toBe('windows-2025')
+    }
+    for (const job of gates) expect(w.steps(job).flatMap((s) => w.field(s, 'shell') ?? []), job).toEqual([])
     expect(w.scripts('verify')).toEqual(['node scripts/release-version.mjs apply "$VERSION"', 'xvfb-run --auto-servernum npm run verify'])
     expect(w.scripts('e2e')).toContain('xvfb-run --auto-servernum npm run test:e2e')
     expect(w.scripts('package')).toContain('xvfb-run --auto-servernum npm run test:packaging')
@@ -1981,6 +2120,107 @@ if (args[0] === 'api') {
     expect(w.withValue(upload[0] as Range, 'path')).toBe('dist/*.deb\ndist/*.AppImage')
     expect(w.withValue(upload[0] as Range, 'if-no-files-found')).toBe('error')
     expect(stepNames('package').indexOf('Check the package names')).toBeLessThan(stepNames('package').indexOf('Upload packages'))
+
+    // windows-package uploads exactly the installer named for the version, after its tests passed.
+    expect(w.scripts('windows-package')).toContain('npm run test:packaging:windows')
+    const installerNames = (files: string[], version: string): ScriptRun => {
+      const dir = tempDir('installer-names')
+      for (const file of files) writeFileSync(join(dir, file), file)
+      mkdirSync(join(dir, 'win-unpacked'))
+      writeFileSync(join(dir, 'win-unpacked', 'Veydr.exe'), 'app')
+      return w.runStep('windows-package', 'Check the installer name', { cwd: dir, env: { VERSION: version } })
+    }
+    for (const version of versions) {
+      const installer = packagesOf(version).installer
+      expect(installerNames([installer, 'builder-debug.yml', 'latest.yml'], version).status, version).toBe(0)
+      for (const files of [[], [installer, 'Veydr-1.2.2-x64-setup.exe'], ['Veydr-0.0.0-x64-setup.exe'], [`Veydr-${version}-setup.exe`], [`veydr-${version}-x64-setup.exe`], [`Veydr-${version}-arm64-setup.exe`]]) {
+        const run = installerNames(files, version)
+        expect(run.status, `${version}: ${files.join(' ')}`).toBe(1)
+        expect(run.stdout, `${version}: ${files.join(' ')}`).toContain('::error title=Unexpected installer::')
+      }
+    }
+    const step = (name: string): Range => w.steps('windows-package').find((s) => w.field(s, 'name') === name) as Range
+    expect(w.field(step('Check the installer name'), 'shell')).toBe('bash')
+    expect(w.field(step('Check the installer name'), 'working-directory')).toBe('dist')
+    expect(stepEnv('windows-package', 'Check the installer name')).toEqual({ VERSION: versionEnv })
+    const windowsUploads = w.stepsUsing('windows-package', 'actions/upload-artifact').map((s) => [w.field(s, 'if'), w.withValue(s, 'name'), w.withValue(s, 'path'), w.withValue(s, 'if-no-files-found')])
+    expect(windowsUploads).toEqual([
+      [undefined, 'release-windows-package', 'dist/*-x64-setup.exe', 'error'],
+      ['${{ !cancelled() }}', 'release-windows-install', 'test-results/windows-install/', 'ignore'],
+      ['failure()', 'release-windows-package-test-results', 'test-results/', 'ignore'],
+    ])
+    expect(stepNames('windows-package')).toEqual([
+      'actions/checkout',
+      './.github/actions/setup',
+      'Apply the version',
+      'Build the Windows installer and run the Windows packaging tests',
+      'Check the installer name',
+      'Upload installer',
+      'Upload install record',
+      'Upload test results',
+    ])
+    expect(w.steps('windows-package').slice(0, 5).map((s) => w.field(s, 'if'))).toEqual(Array(5).fill(undefined))
+  })
+
+  it('[spec:release-automation/windows-gate-fails] publishes nothing, Linux packages included, unless both Windows gate jobs succeeded', () => {
+    // publish needs both, and has no if:, so a failed or skipped Windows job skips it.
+    for (const job of windowsGates) {
+      expect(needs('publish'), job).toContain(job)
+      expect(needs(job), job).toEqual(['validate'])
+      expect(w.jobField(job, 'if'), job).toBeUndefined()
+      expect(w.jobField(job, 'continue-on-error'), job).toBeUndefined()
+      // Read-only, no credentials kept, nothing that reaches the remote, no secret.
+      expect(w.permissions(job), job).toEqual({ contents: 'read' })
+      const checkout = w.stepsUsing(job, 'actions/checkout')
+      expect(checkout, job).toHaveLength(1)
+      expect(w.withValue(checkout[0] as Range, 'persist-credentials'), job).toBe('false')
+      const text = within(w.lines, w.job(job)).filter((l) => l.kind !== 'comment').map((l) => l.body).join('\n')
+      expect(text, job).not.toMatch(/git (?:push|tag|commit)|gh (?:release|api)|secrets\./)
+    }
+    expect(w.jobField('publish', 'if')).toBeUndefined()
+    // publish is the only job with a write scope, and the only one that pushes.
+    for (const job of w.jobs.map((j) => j.name).filter((name) => name !== 'publish')) expect(w.permissions(job), job).toEqual({ contents: 'read' })
+    const pushing = w.jobs.filter((j) => within(w.lines, j).some((l) => l.kind !== 'comment' && /git push/.test(l.body))).map((j) => j.name)
+    expect(pushing).toEqual(['publish'])
+    // The Windows tests run on Windows: the integration and end-to-end suites, and the packaging tests.
+    expect(w.scripts('windows')).toEqual([
+      'node scripts/release-version.mjs apply "$VERSION"',
+      'node scripts/build-windows-helper.mjs',
+      'npm run test:windows',
+      'npm run test:e2e',
+    ])
+    expect(w.scripts('windows-package')[1]).toBe('npm run test:packaging:windows')
+    for (const job of windowsGates) {
+      const setup = w.steps(job).find((s) => w.field(s, 'uses') === './.github/actions/setup')
+      expect(setup === undefined ? undefined : w.withValue(setup, 'electron'), job).toBe('"true"')
+      expect(setup === undefined ? undefined : w.withValue(setup, 'cache'), job).toBe('"false"')
+      // CI keeps the runner's value, so the CI-only installer and standard-user tests run, not skip.
+      expect(within(w.lines, w.job(job)).filter((l) => l.kind === 'node' && l.key === 'CI'), job).toEqual([])
+    }
+  })
+
+  it('[spec:quality-gates/helper-build-failure-fails-the-windows-check] runs the release\'s Windows tests only after a successful helper build, by the same condition as ci.yml', () => {
+    const ci = loadWorkflow('.github/workflows/ci.yml')
+    const condition = (workflow: typeof w, step: string): string | undefined => {
+      const found = workflow.steps('windows').find((s) => workflow.field(s, 'name') === step)
+      expect(found, step).toBeDefined()
+      return found === undefined ? undefined : workflow.field(found, 'if')
+    }
+    for (const step of ['Windows integration tests', 'Windows end-to-end tests']) {
+      expect(condition(w, step), step).toBe("${{ !cancelled() && steps.setup.outcome == 'success' && steps.helper.outcome == 'success' }}")
+      expect(condition(w, step), step).toBe(condition(ci, step))
+    }
+    // The build runs only after the version was applied (no if:, so only after every earlier step
+    // succeeded), and its id is the one the conditions read.
+    const helper = w.steps('windows').find((s) => w.field(s, 'name') === 'Build Windows helper') as Range
+    expect(w.field(helper, 'id')).toBe('helper')
+    expect(w.field(helper, 'if')).toBeUndefined()
+    const setup = w.steps('windows').find((s) => w.field(s, 'uses') === './.github/actions/setup') as Range
+    expect(w.field(setup, 'id')).toBe('setup')
+    expect(stepNames('windows').indexOf('Apply the version')).toBeLessThan(stepNames('windows').indexOf('Build Windows helper'))
+    expect(stepNames('windows').indexOf('Build Windows helper')).toBeLessThan(stepNames('windows').indexOf('Windows integration tests'))
+    // dist:windows builds the helper first in windows-package (checked against package.json in ci.yml's test).
+    expect(w.steps('windows-package').some((s) => w.field(s, 'if') !== undefined && w.field(s, 'run') === 'npm run test:packaging:windows')).toBe(false)
   })
 
   it('[spec:release-automation/gate-fails] pushes, tags and releases nothing unless every gate job succeeded', () => {
@@ -2095,36 +2335,124 @@ if (args[0] === 'api') {
   })
 
   it.skipIf(process.platform !== 'linux')('[linux-only: GNU sha256sum text-mode output] [spec:release-automation/checksums-match] writes SHA256SUMS for exactly the tested packages, which sha256sum -c accepts', () => {
-    const deb = 'Veydr-1.2.3-amd64.deb'
-    const appimage = 'Veydr-1.2.3-x86_64.AppImage'
-    const files = { [deb]: 'deb contents\n', [appimage]: 'appimage contents\n' }
-    const good = checksums(files, `${digest('deb contents\n')}  ${deb}`)
-    expect(good.run.status, good.run.stdout + good.run.stderr).toBe(0)
-    expect(good.sums).toBe(`${digest('deb contents\n')}  ${deb}\n${digest('appimage contents\n')}  ${appimage}\n`)
-    // A user's check: sha256sum -c succeeds on the downloaded files.
-    const check = spawnSync('sha256sum', ['-c', 'SHA256SUMS'], { cwd: good.dir, encoding: 'utf8', env: { ...process.env, LC_ALL: 'C' } })
-    expect(check.status, check.stderr).toBe(0)
-    expect(check.stdout).toBe(`${deb}: OK\n${appimage}: OK\n`)
-    writeFileSync(join(good.dir, deb), 'tampered\n')
-    expect(spawnSync('sha256sum', ['-c', '--quiet', 'SHA256SUMS'], { cwd: good.dir }).status).toBe(1)
-    // The acceptance record that is attached is the one of the run that tested this .deb.
-    expect(good.record?.split('\n')[0]).toContain(digest('deb contents\n'))
+    for (const version of versions) {
+      const { deb, appimage, installer } = packagesOf(version)
+      const good = goodChecksums(version)
+      expect(good.run.status, good.run.stdout + good.run.stderr).toBe(0)
+      expect(good.sums, version).toBe(`${digest(contents.deb)}  ${deb}\n${digest(contents.appimage)}  ${appimage}\n${digest(contents.installer)}  ${installer}\n`)
+      // A user's check: sha256sum -c succeeds on the downloaded files.
+      const check = spawnSync('sha256sum', ['-c', 'SHA256SUMS'], { cwd: good.dir, encoding: 'utf8', env: { ...process.env, LC_ALL: 'C' } })
+      expect(check.status, check.stderr).toBe(0)
+      expect(check.stdout).toBe(`${deb}: OK\n${appimage}: OK\n${installer}: OK\n`)
+      writeFileSync(join(good.dir, deb), 'tampered\n')
+      expect(spawnSync('sha256sum', ['-c', '--quiet', 'SHA256SUMS'], { cwd: good.dir }).status).toBe(1)
+      // The acceptance record that is attached is the one of the run that tested this .deb.
+      expect(good.record?.split('\n')[0]).toContain(digest(contents.deb))
 
-    // Anything but exactly the two packages of this version fails.
-    for (const other of [{ [deb]: 'x' }, { ...files, 'extra.deb': 'x' }, { 'Veydr-1.2.2-amd64.deb': 'x', [appimage]: 'x' }]) {
-      const bad = checksums(other, `${digest('x')}  ${deb}`)
-      expect(bad.run.status, Object.keys(other).join(' ')).toBe(1)
-      expect(bad.run.stdout).toContain('::error title=Unexpected packages::')
+      // A missing acceptance record, or one that tested another package, fails instead of attaching the wrong evidence.
+      const missing = checksums(releasePackages(version), { installer: testedLines(version).installer }, version)
+      expect(missing.run.status).toBe(1)
+      expect(missing.run.stdout).toContain('::error title=No acceptance record::')
+      for (const tested of [
+        `${digest('other\n')}  ${deb}`,
+        `${digest(contents.deb)}  Veydr-1.2.2-amd64.deb`,
+        // The AppImage's own line in SHA256SUMS is not the .deb's.
+        `${digest(contents.appimage)}  ${appimage}`,
+        `${digest(contents.deb)}  ${deb} `,
+        '',
+      ]) {
+        const mismatch = checksums(releasePackages(version), { ...testedLines(version), deb: tested }, version)
+        expect(mismatch.run.status, tested).toBe(1)
+        expect(mismatch.run.stdout, tested).toContain('::error title=Acceptance record mismatch::')
+        expect(mismatch.record, tested).toBeUndefined()
+      }
     }
-    // A missing record, or one that tested another .deb, fails instead of attaching the wrong evidence.
-    const missing = checksums(files, undefined)
-    expect(missing.run.status).toBe(1)
-    expect(missing.run.stdout).toContain('::error title=No acceptance record::')
-    for (const tested of [`${digest('other\n')}  ${deb}`, `${digest('deb contents\n')}  Veydr-1.2.2-amd64.deb`, '']) {
-      const mismatch = checksums(files, tested)
-      expect(mismatch.run.status, tested).toBe(1)
-      expect(mismatch.run.stdout, tested).toContain('::error title=Acceptance record mismatch::')
-      expect(mismatch.record, tested).toBeUndefined()
+  })
+
+  it.skipIf(process.platform !== 'linux')('[linux-only: GNU sha256sum text-mode output] [spec:release-automation/packages-carry-the-release-version] publish requires exactly the three packages named for the version', () => {
+    for (const version of versions) {
+      const { deb, appimage, installer } = packagesOf(version)
+      expect(goodChecksums(version).run.status, version).toBe(0)
+      const all = releasePackages(version)
+      const without = (name: string): Record<string, string> => Object.fromEntries(Object.entries(all).filter(([file]) => file !== name))
+      for (const files of [
+        without(installer),
+        without(deb),
+        without(appimage),
+        { ...all, 'Veydr-1.2.2-x64-setup.exe': 'x' },
+        { ...all, 'extra.deb': 'x' },
+        { ...without(installer), [`Veydr-${version}-setup.exe`]: contents.installer },
+        { ...without(installer), [`veydr-${version}-x64-setup.exe`]: contents.installer },
+        { ...without(installer), 'Veydr-0.0.0-x64-setup.exe': contents.installer },
+      ]) {
+        const bad = checksums(files, testedLines(version), version)
+        expect(bad.run.status, `${version}: ${Object.keys(files).join(' ')}`).toBe(1)
+        expect(bad.run.stdout, `${version}: ${Object.keys(files).join(' ')}`).toContain('::error title=Unexpected packages::')
+        expect(bad.sums).toBeUndefined()
+      }
+    }
+  })
+
+  it.skipIf(process.platform !== 'linux')('[linux-only: GNU sha256sum text-mode output] [spec:release-automation/checksum-of-the-windows-installer] the installer\'s line in SHA256SUMS is the SHA-256 of the attached installer', () => {
+    for (const version of versions) {
+      const { installer } = packagesOf(version)
+      const good = goodChecksums(version)
+      expect(good.run.status, good.run.stdout + good.run.stderr).toBe(0)
+      // What a user's Get-FileHash computes over the downloaded bytes, lower-cased.
+      const attached = createHash('sha256').update(readFileSync(join(good.dir, installer))).digest('hex')
+      const line = good.sums?.split('\n').find((l) => l.endsWith(`  ${installer}`))
+      expect(line, version).toBe(`${attached}  ${installer}`)
+      expect(attached).toBe(digest(contents.installer))
+    }
+  })
+
+  it.skipIf(process.platform !== 'linux')('[linux-only: GNU sha256sum text-mode output] [spec:release-automation/record-matches-the-attached-installer] attaches the Windows install record, whose first line names the attached installer\'s line in SHA256SUMS', () => {
+    expect(stepEnv('publish', 'Write SHA256SUMS')['WINDOWS_INSTALL']).toBe('${{ runner.temp }}/windows-install/steps.jsonl')
+    for (const version of versions) {
+      const good = goodChecksums(version)
+      expect(good.run.status, good.run.stdout + good.run.stderr).toBe(0)
+      const first = JSON.parse(good.windowsRecord?.split('\n')[0] ?? '{}') as { step?: string; detail?: { installer?: string } }
+      expect(first.step).toBe('installer')
+      expect(good.sums?.split('\n')).toContain(first.detail?.installer)
+      expect(first.detail?.installer).toBe(`${digest(contents.installer)}  ${packagesOf(version).installer}`)
+      // The whole record is attached unchanged: the administrator's and the standard user's steps.
+      expect(good.windowsRecord?.trim().split('\n')).toHaveLength(3)
+    }
+  })
+
+  it.skipIf(process.platform !== 'linux')('[linux-only: GNU sha256sum text-mode output] [spec:release-automation/record-names-another-installer] fails before the push step when the Windows install record names another installer, or is missing', () => {
+    // The check is in Write SHA256SUMS, which runs before Tag and push; a failed step ends the job.
+    expect(stepNames('publish').indexOf('Write SHA256SUMS')).toBeLessThan(stepNames('publish').indexOf('Tag and push'))
+    for (const version of versions) {
+      const { deb, installer } = packagesOf(version)
+      const line = testedLines(version).installer
+      const others = [
+        `${digest('another installer')}  ${installer}`,
+        `${digest(contents.installer)}  Veydr-1.2.2-x64-setup.exe`,
+        // The .deb's line in SHA256SUMS is not the installer's.
+        `${digest(contents.deb)}  ${deb}`,
+        `${digest(contents.installer).toUpperCase()}  ${installer}`,
+        `${digest(contents.installer)} *${installer}`,
+        `${line}\n${line}`,
+        '',
+      ]
+      for (const tested of others) {
+        const mismatch = checksums(releasePackages(version), { ...testedLines(version), installer: tested }, version)
+        expect(mismatch.run.status, tested).toBe(1)
+        expect(mismatch.run.stdout, tested).toContain('::error title=Windows install record mismatch::')
+        expect(mismatch.windowsRecord, tested).toBeUndefined()
+      }
+      // A record whose first line is not JSON, or has no installer, or is missing entirely.
+      const first = JSON.stringify({ step: 'installer', ok: true, detail: { installer: line } })
+      for (const windowsRecord of ['not json\n', `${JSON.stringify({ step: 'installer', ok: true, detail: {} })}\n`, `${JSON.stringify({ step: 'installer', ok: true, detail: { installer: [line] } })}\n`, `\n${first}\n`]) {
+        const bad = checksums(releasePackages(version), { ...testedLines(version), windowsRecord }, version)
+        expect(bad.run.status, windowsRecord).toBe(1)
+        expect(bad.run.stdout, windowsRecord).toContain('::error title=Windows install record mismatch::')
+      }
+      const missing = checksums(releasePackages(version), { deb: testedLines(version).deb }, version)
+      expect(missing.run.status).toBe(1)
+      expect(missing.run.stdout).toContain('::error title=No Windows install record::')
+      expect(missing.windowsRecord).toBeUndefined()
     }
   })
 
@@ -2142,6 +2470,8 @@ if (args[0] === 'api') {
       'Check the remote',
       'Download packages',
       'Download the acceptance record',
+      'Download the Windows installer',
+      'Download the Windows install record',
       'Write SHA256SUMS',
       'Attest build provenance',
       'Tag and push',
@@ -2150,12 +2480,42 @@ if (args[0] === 'api') {
     expect(w.field(w.steps('publish').find((s) => w.field(s, 'name') === 'Write SHA256SUMS') as Range, 'working-directory')).toBe('${{ runner.temp }}/release')
   })
 
-  it('[spec:release-automation/draft-created] creates a draft with generated notes, the packages, SHA256SUMS and the acceptance record', () => {
-    // The packages publish attaches are the ones package uploaded, and the record is acceptance's.
+  it('documents the release in docs/ci.md with exactly its jobs and artifacts, and says the Windows path has not run yet (add-windows-packaging task 5.4)', () => {
+    const doc = readFileSync(join(root, 'docs', 'ci.md'), 'utf8')
+    const start = doc.indexOf('\n## Releasing\n')
+    expect(start).toBeGreaterThan(0)
+    const end = doc.indexOf('\n## ', start + 1)
+    const section = doc.slice(start, end < 0 ? undefined : end)
+    // The job table names every job of release.yml, in order, and nothing else.
+    const table = section.split('\n').filter((line) => /^\| `[a-z0-9-]+` \|/.test(line))
+    expect(table.map((line) => /^\| `([a-z0-9-]+)` \|/.exec(line)?.[1])).toEqual(w.jobs.map((j) => j.name))
+    // Every artifact the section names is one release.yml uploads, and every one it uploads is named.
+    const artifacts = (step: string): string[] =>
+      w.jobs.flatMap((j) => w.stepsUsing(j.name, `actions/${step}`)).flatMap((s) => w.withValue(s, 'name') ?? [])
+    const uploaded = [...new Set(artifacts('upload-artifact'))].sort()
+    const named = [...new Set([...section.matchAll(/`(release-[a-z0-9-]+)`/g)].map((m) => m[1] as string))].sort()
+    expect(named).toEqual(uploaded)
+    for (const name of artifacts('download-artifact')) expect(uploaded, name).toContain(name)
+    // The attached files are the draft step's list.
+    for (const file of ['SHA256SUMS', 'acceptance-linux-steps.jsonl', 'install-windows-steps.jsonl', 'Veydr-X.Y.Z-x64-setup.exe']) expect(section, file).toContain(`\`${file}\``)
+    expect(w.scripts('publish').join('\n')).toContain('install-windows-steps.jsonl')
+    // What has not run yet, and what a failed gate job does.
+    expect(section).toContain('**The Windows release path has not run yet.**')
+    expect(section).toContain('A failure in any gate job, Windows ones included, stops the release before `publish` pushes anything.')
+    for (const heading of ['### Before publishing the draft', '### Verifying a release package', '### Recovering from a failed release']) expect(section, heading).toContain(`\n${heading}\n`)
+    expect(section).toContain('Get-FileHash')
+    expect(section).toContain('gh attestation verify Veydr-X.Y.Z-x64-setup.exe')
+  })
+
+  it('[spec:release-automation/draft-created] creates a draft with generated notes, the packages, the Windows installer, SHA256SUMS and both records', () => {
+    // The packages publish attaches are the ones package and windows-package uploaded, and the
+    // records are acceptance's and windows-package's.
     const downloads = w.stepsUsing('publish', 'actions/download-artifact').map((s) => [w.withValue(s, 'name'), w.withValue(s, 'path')])
     expect(downloads).toEqual([
       ['release-packages', '${{ runner.temp }}/release'],
       ['release-acceptance-linux', '${{ runner.temp }}/acceptance'],
+      ['release-windows-package', '${{ runner.temp }}/release'],
+      ['release-windows-install', '${{ runner.temp }}/windows-install'],
     ])
     const upload = w.stepsUsing('acceptance', 'actions/upload-artifact')
     expect(upload).toHaveLength(1)

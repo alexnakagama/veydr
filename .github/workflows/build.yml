@@ -1,5 +1,6 @@
-# Manual package build of any ref (docs/ci.md#manual-builds). It produces downloadable packages and
-# SHA256SUMS as workflow artifacts and never changes the version, pushes, tags or releases.
+# Manual package build of any ref (docs/ci.md#manual-builds). It produces the downloadable Linux
+# packages and the Windows installer, each set with its SHA256SUMS, as workflow artifacts, and never
+# changes the version, pushes, tags or releases.
 name: Build
 
 on:
@@ -63,6 +64,78 @@ jobs:
             dist/SHA256SUMS
           retention-days: 14
           if-no-files-found: error
+
+  # The Windows installer of the same ref, with a SHA256SUMS of its own (add-windows-packaging design
+  # D6). It runs the same script as ci.yml's windows-package job, so the installer is uploaded only
+  # after the Windows packaging tests passed against it. Nothing is signed (design D8).
+  windows-package:
+    name: windows-package
+    runs-on: windows-2025
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+      # On Windows, electron: "true" installs only the dependencies; dist:windows downloads Electron
+      # itself (scripts/ensure-electron.cjs). The npm cache stays on, as for the Linux package job:
+      # a manual build is not a release, and only the release turns every cache off.
+      - uses: ./.github/actions/setup
+        with:
+          electron: "true"
+      # dist:windows builds the helper from source first, in an && chain: a failed helper build ends
+      # the script before electron-builder runs, so no installer is built and the job fails.
+      - name: Build the Windows installer and run the Windows packaging tests
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+        run: npm run test:packaging:windows
+      # Git for Windows' sha256sum writes binary-mode lines (`*name`), so the GNU text-mode file comes
+      # from scripts/sha256sums.mjs, which also verifies what it wrote. Bash, as on Linux: the name
+      # check is the same script the policy test runs.
+      - name: Write SHA256SUMS
+        shell: bash
+        run: |
+          shopt -s nullglob
+          version="$(node -p 'require("./package.json").version')"
+          expected="Veydr-$version-x64-setup.exe"
+          found=(dist/*.exe)
+          if [ "${#found[@]}" -ne 1 ] || [ "${found[0]}" != "dist/$expected" ]; then
+            echo "::error title=Unexpected installer::expected exactly $expected in dist/, found: ${found[*]}"
+            exit 1
+          fi
+          node scripts/sha256sums.mjs dist "$expected"
+      # The check a Windows user runs (docs/ci.md#manual-builds), independent of the script above.
+      - name: Check SHA256SUMS with Get-FileHash
+        shell: pwsh
+        run: |
+          $lines = @(Get-Content -LiteralPath dist/SHA256SUMS)
+          if ($lines.Count -ne 1 -or $lines[0] -cnotmatch '^([0-9a-f]{64})  (Veydr-[0-9A-Za-z.-]+-x64-setup\.exe)$') {
+            throw "dist/SHA256SUMS is not one line for the installer: $($lines -join ' | ')"
+          }
+          $expected = $Matches[1]
+          $name = $Matches[2]
+          $actual = (Get-FileHash -LiteralPath (Join-Path dist $name) -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actual -ne $expected) { throw "Get-FileHash gives $actual for $name, SHA256SUMS has $expected" }
+          "${name}: OK ($actual)"
+      - name: Upload installer
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: windows-package
+          path: |
+            dist/*-x64-setup.exe
+            dist/SHA256SUMS
+          retention-days: 14
+          if-no-files-found: error
+      - name: Upload test results
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: windows-package-test-results
+          path: test-results/
+          retention-days: 14
+          if-no-files-found: ignore
 
   # Tests the packages the package job uploaded, not a rebuild.
   smoke:
