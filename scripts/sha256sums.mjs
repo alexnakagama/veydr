@@ -66,12 +66,8 @@ export function parseSums(text) {
     })
 }
 
-/**
- * Throws unless every name can be listed, is unique, and is a regular file (not a link) in `directory`.
- * The files are opened by name afterwards, so a link swapped in between would be followed; the
- * directory is the job's own `dist/`, which nothing else writes to while the script runs.
- */
-function checkNames(directory, names) {
+/** Throws unless there is at least one name, and every name can be listed and is unique. Touches nothing on disk. */
+function checkNameList(names) {
   if (!Array.isArray(names) || names.length === 0) throw new Error('no file to checksum')
   const seen = new Set()
   for (const name of names) {
@@ -79,6 +75,16 @@ function checkNames(directory, names) {
     if (problem !== undefined) throw new Error(problem)
     if (seen.has(name)) throw new Error(`${JSON.stringify(name)} is named twice`)
     seen.add(name)
+  }
+}
+
+/**
+ * Throws unless every name is a regular file (not a link) in `directory`. The files are opened by
+ * name afterwards, so a link swapped in between would be followed; the directory is the job's own
+ * `dist/`, which nothing else writes to while the script runs.
+ */
+function checkFiles(directory, names) {
+  for (const name of names) {
     let stat
     try {
       stat = lstatSync(join(directory, name))
@@ -98,9 +104,12 @@ export async function writeSums(directory, names) {
   if (!lstatSync(directory).isDirectory()) throw new Error(`${directory} is not a directory`)
   const target = join(directory, SUMS_FILE)
   const partial = join(directory, `.${SUMS_FILE}.${process.pid}.partial`)
-  // A SHA256SUMS from an earlier run must not survive a failed one and be uploaded.
+  // The names are checked before anything is removed: on Windows a refused name such as
+  // `sha256sums` is the same file as the target, and must survive its refusal.
+  checkNameList(names)
+  // A SHA256SUMS from an earlier run must not survive a failed run and be uploaded.
   rmSync(target, { force: true })
-  checkNames(directory, names)
+  checkFiles(directory, names)
   try {
     const lines = []
     for (const name of names) lines.push(formatLine(await sha256File(join(directory, name)), name))

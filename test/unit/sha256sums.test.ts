@@ -86,8 +86,23 @@ describe('sha256sums.mjs', () => {
     const run = cli(dir, ...names)
     expect(run.status, run.stdout).toBe(1)
     expect(run.stderr).toContain(message)
-    if (names.length > 0) expect(existsSync(join(dir, 'SHA256SUMS'))).toBe(false)
+    // A refused name is refused before anything is removed; a file found missing or not regular
+    // afterwards removes the stale SHA256SUMS, so it cannot be uploaded.
+    const sums = existsSync(join(dir, 'SHA256SUMS')) ? readFileSync(join(dir, 'SHA256SUMS'), 'utf8') : undefined
+    expect(sums).toBe(message.includes('does not exist') ? undefined : 'stale\n')
     expect(readdirSync(dir).filter((name) => name.includes('partial'))).toEqual([])
+  })
+
+  // On Windows `sha256sums` is the target itself. On every system, the untouched stale SHA256SUMS
+  // shows that the refusal came before the removal, so the case-variant file would survive too.
+  it('refuses a name that is SHA256SUMS in another case before removing anything', async () => {
+    const dir = folder({ [installer]: 'x', sha256sums: 'mine\n', SHA256SUMS: 'stale\n' })
+    const run = cli(dir, installer, 'sha256sums')
+    expect(run.status).toBe(1)
+    expect(run.stderr).toContain('SHA256SUMS cannot list itself')
+    await expect(writeSums(dir, ['sha256sums'])).rejects.toThrow('SHA256SUMS cannot list itself')
+    expect(existsSync(join(dir, 'sha256sums'))).toBe(true)
+    expect(readFileSync(join(dir, 'SHA256SUMS'), 'utf8')).toBe('stale\n')
   })
 
   it('exits 1 for a directory, a missing directory, or no directory', () => {
