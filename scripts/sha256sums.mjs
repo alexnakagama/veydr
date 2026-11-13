@@ -7,9 +7,10 @@
 // so the Windows jobs of build.yml cannot produce the format users check with `sha256sum -c` and the
 // release compares against. It runs the same on every system.
 //
-// Each <file> is a plain file name inside <directory>, never a path: a name with a path separator,
-// a missing or non-regular file, a repeated name, or no name at all exits 1 and leaves no
-// SHA256SUMS behind. The file is written beside the packages under a temporary name and renamed into
+// Each <file> is a plain file name inside <directory>, never a path. A refused name (one with a
+// path separator, a repeated name, SHA256SUMS itself in any case) or no name at all exits 1 and
+// changes nothing on disk. A missing or non-regular file, or a failure while writing or verifying,
+// exits 1 and leaves no SHA256SUMS behind, an earlier one included. The file is written beside the packages under a temporary name and renamed into
 // place, so a reader never sees a partial file.
 import { createHash } from 'node:crypto'
 import { createReadStream, lstatSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs'
@@ -98,7 +99,8 @@ function checkFiles(directory, names) {
 
 /**
  * Writes `<directory>/SHA256SUMS` for `names`, in the given order, and verifies it by reading it
- * back and hashing every file again. Returns the text written. On any failure no SHA256SUMS is left.
+ * back and hashing every file again. Returns the text written. A refused name changes nothing; any
+ * later failure leaves no SHA256SUMS.
  */
 export async function writeSums(directory, names) {
   if (!lstatSync(directory).isDirectory()) throw new Error(`${directory} is not a directory`)
