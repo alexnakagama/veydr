@@ -111,7 +111,10 @@ describe('archive validation on Windows, documented', () => {
     expect(integrity).toContain('What the validation covers: an archive whose index was changed is refused at startup')
     expect(integrity).toContain('a file whose bytes were changed with the index untouched is refused when it is read')
     expect(integrity).toContain('on Windows the bytes-only limit that the design predicted does not exist')
-    expect(integrity).toContain('Both were measured by changing the main bundle; other files of the archive were not modified in a test.')
+    // Measured on the main bundle (require) and, bytes only, on the renderer's page (the app:// handler's readFile).
+    expect(integrity).toContain('Both were measured on the main bundle, which Electron loads through `require`, and the bytes-only case also on the renderer\'s page, which Veydr\'s own `app://` handler reads with `fs.promises.readFile`')
+    expect(integrity).toContain('Other files of the archive were not modified in a test; they are read through the same two paths.')
+    expect(integrity).not.toMatch(/documented behavior/)
     const fuses = readFileSync(join(root, 'test/packaging-windows/fuses.test.ts'), 'utf8')
     expect(fuses).toMatch(/\bit\(\s*'\[spec:desktop-shell\/modified-archive-refused-on-windows\] refuses to start with an archive whose index was changed/)
     expect(fuses).toMatch(/\bit\(\s*'refuses to start with an archive whose file bytes alone changed, its index untouched/)

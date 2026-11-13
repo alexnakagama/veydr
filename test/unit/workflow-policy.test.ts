@@ -2508,7 +2508,8 @@ if (args[0] === 'api') {
     expect(section).toContain('Get-FileHash')
     expect(section).toContain('gh attestation verify Veydr-X.Y.Z-x64-setup.exe')
     // The one known intermittent Windows failure is named where a maintainer recovers from it.
-    expect(section.replace(/\s+/g, ' ')).toContain('One intermittent failure is known: in one run of 2026-11-13 (`build.yml` run 43456337022), `administrator/uninstall` failed')
+    expect(section.replace(/\s+/g, ' ')).toContain('One intermittent failure is known and not understood: in one run of 2026-11-13 (CI run 43474249998')
+    expect(section.replace(/\s+/g, ' ')).toContain('(`snapshot` in the `standard-user/install` line of the record)')
   })
 
   it('[spec:release-automation/draft-created] creates a draft with generated notes, the packages, the Windows installer, SHA256SUMS and both records', () => {

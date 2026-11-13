@@ -107,6 +107,13 @@ export const RESOURCES = Object.freeze(['app.asar', 'veydr-helper.exe'])
 
 /** electron-builder's limits for a silent install or uninstall (as the W0 probe measured them). */
 export const INSTALL_MS = 180_000
+/**
+ * How long before INSTALL_MS a still-running installer has the account's processes listed, so a
+ * timeout can be diagnosed: once (CI run 43474249998) the standard user's silent install, usually
+ * about 20 s, did not finish in 180 s, and nothing showed what it was waiting for.
+ */
+export const INSTALL_SNAPSHOT_BEFORE_MS = 15_000
+const SNAPSHOT_MS = 10_000
 /** The uninstaller copies itself to a temporary file and returns; the directory goes after that. */
 export const UNINSTALL_GONE_MS = 120_000
 /** How long a Veydr.exe the silent install might have started is looked for. */
@@ -185,7 +192,7 @@ export const installedProcesses = (processes, installDir) => processes.filter((p
 export function installAnswer({ run, installDir, profile, state, processes }) {
   const data = { installDir, code: run.code, ...(run.ms === undefined ? {} : { ms: run.ms }) }
   const stopped = notFinished('the installer', run, INSTALL_MS)
-  if (stopped !== undefined) return { answer: null, detail: stopped, data }
+  if (stopped !== undefined) return { answer: null, detail: stopped, data: { ...data, ...(run.snapshot === undefined ? {} : { snapshot: run.snapshot }) } }
   if (run.code !== 0) return { answer: 'no', detail: `the silent install ${describeExit(run)}: ${outputTail(`${run.stdout} ${run.stderr}`)}`, data }
   const problems = []
   if (!isBelow(installDir, profile)) problems.push(`${installDir} is not below the account's profile ${profile}`)
@@ -490,6 +497,28 @@ async function runControl(electron, dir) {
   return { version, window, loaded }
 }
 
+/** The account's processes, as `tasklist /V /FO CSV` lists them (no WMI), or why they could not be listed. */
+async function listOwnProcesses() {
+  const tasklist = winJoin(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'tasklist.exe')
+  const run = await runProgram(tasklist, ['/V', '/FO', 'CSV', '/FI', `USERNAME eq ${process.env.USERNAME ?? ''}`], { timeoutMs: SNAPSHOT_MS })
+  if (run.error !== undefined || run.code !== 0) return `tasklist ${describeExit(run)}: ${outputTail(`${run.stdout} ${run.stderr}`)}`
+  return run.stdout.split(/\r?\n/).filter((line) => line !== '').slice(0, 60)
+}
+
+/** Runs the installer; if it is still running INSTALL_SNAPSHOT_BEFORE_MS before its limit, records the account's processes. */
+async function runInstaller(installer) {
+  let snapshot
+  const timer = setTimeout(() => {
+    snapshot = listOwnProcesses().catch((error) => `tasklist failed: ${messageOf(error)}`)
+  }, INSTALL_MS - INSTALL_SNAPSHOT_BEFORE_MS)
+  try {
+    const run = await timed(() => runProgram(installer, ['/S'], { timeoutMs: INSTALL_MS, env: appEnv() }))
+    return snapshot === undefined ? run : { ...run, snapshot: await snapshot }
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
 const timed = async (body) => {
   const started = Date.now()
   const run = await body()
@@ -506,7 +535,7 @@ export const WINDOWS_STEPS = Object.freeze({
     return await sha256File(file)
   },
   exists: (path) => existsSync(path),
-  install: (installer) => timed(() => runProgram(installer, ['/S'], { timeoutMs: INSTALL_MS, env: appEnv() })),
+  install: runInstaller,
   inspect,
   watchProcesses: (installDir) => watchProcesses(installDir),
   permissions: readPermissions,

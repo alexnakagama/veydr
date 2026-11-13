@@ -251,7 +251,10 @@ describe.skipIf(process.platform !== 'win32')('[windows-only: the packaged Windo
     // The unmodified copy passes (the control above), and a title in capitals changes nothing the
     // smoke test checks, so a passing smoke test here means the changed bytes were served.
     expect(report?.result).not.toBe('pass')
+    // Refused for the file's hash when the handler read it (CI run 43474232791), not for some
+    // other startup failure: Electron exits, and no smoke report is printed.
     expect(result.timedOut).toBe(false)
     expect(result.code).not.toBe(0)
+    expect(result.stderr).toMatch(/ASAR Integrity Violation: got a hash mismatch/)
   })
 })

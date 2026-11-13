@@ -181,7 +181,9 @@ describe('docs/install-windows.md', () => {
     expect(updating).toContain('Do not run the installer while Veydr is running: it may close Veydr')
     expect(updating).toContain('That case is not tested.')
     const uninstalling = flat(section('Uninstalling'))
-    expect(uninstalling).toContain('Uninstalling removes the install directory, the Start menu entry and the uninstall entry (once in CI the Start menu entry was left; see the end of [Not verified](#not-verified)).')
+    expect(uninstalling).toContain('Uninstalling removes the install directory, the Start menu entry and the uninstall entry. If another program briefly holds the Start menu entry open, as a virus scanner may, the uninstaller retries removing it for up to 10 seconds.')
+    // The fix is described with its limit, and the tested hold (5 s) is shorter than the retry (10 s).
+    expect(flat(doc)).toContain('The uninstaller now retries for up to 10 seconds, and CI tests the uninstall with the entry held open for 5. A program that holds it longer can still leave it')
     expect(uninstalling).toContain('To remove it too, delete that folder.')
   })
 
@@ -203,8 +205,9 @@ describe('docs/install-windows.md', () => {
     expect(integrity).toContain('at startup, an archive whose index was changed is refused')
     expect(integrity).toContain('an archive whose file bytes alone were changed, its index untouched, is refused as well')
     expect(integrity).not.toMatch(/bytes[^.]*(?:still load|are not checked|not validated)/)
-    // Measured with the main bundle only, and said so.
-    expect(integrity).toContain('by changing the main bundle (`test/packaging-windows/fuses.test.ts`); other files of the archive were not modified in a test')
+    // Measured on the main bundle and on the renderer's page, and only those, and said so.
+    expect(integrity).toContain('by changing the main bundle, which Electron loads as code, and, for changed bytes, also the page of Veydr\'s window, which Veydr reads as a file. Other files of the archive were not modified in a test')
+    expect(integrity).not.toMatch(/documented behavior/)
     // The tests that measured it exist and are real tests, not placeholders.
     const fuses = read('test/packaging-windows/fuses.test.ts')
     expect(integrity).toContain('`test/packaging-windows/fuses.test.ts`')

@@ -23,6 +23,7 @@ export const UNINSTALLER_NAME: string
 export const RESOURCES: readonly string[]
 export const INSTALL_MS: number
 export const UNINSTALL_GONE_MS: number
+export const INSTALL_SNAPSHOT_BEFORE_MS: number
 export const NO_PROCESS_WATCH_MS: number
 export const CONTROL_WINDOW_MS: number
 export const SMOKE_CHECKS: readonly string[]
@@ -37,7 +38,8 @@ export interface ParsedInstallerArgs {
 export function parseInstallerArgs(args: readonly string[]): ParsedInstallerArgs
 
 /** A program run with how long it took. */
-export type TimedRun = ProgramResult & { ms?: number }
+/** `snapshot`: the account's processes (tasklist CSV lines, or why not), taken when an install neared its limit. */
+export type TimedRun = ProgramResult & { ms?: number; snapshot?: string[] | string }
 
 export interface UninstallEntry {
   key: string

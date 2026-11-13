@@ -103,7 +103,7 @@ Quit Veydr, then remove it in **Settings › Apps › Installed apps** (choose *
 Start-Process -Wait "$env:LOCALAPPDATA\Programs\veydr\Uninstall Veydr.exe" -ArgumentList '/S'
 ```
 
-Uninstalling removes the install directory, the Start menu entry and the uninstall entry (once in CI the Start menu entry was left; see the end of [Not verified](#not-verified)). The uninstaller copies itself and returns before it has finished, so the directory may take a few seconds to disappear. Your configuration in `%APPDATA%\Veydr` is kept, as removing the `.deb` keeps `~/.config/Veydr`. To remove it too, delete that folder.
+Uninstalling removes the install directory, the Start menu entry and the uninstall entry. If another program briefly holds the Start menu entry open, as a virus scanner may, the uninstaller retries removing it for up to 10 seconds. The uninstaller copies itself and returns before it has finished, so the directory may take a few seconds to disappear. Your configuration in `%APPDATA%\Veydr` is kept, as removing the `.deb` keeps `~/.config/Veydr`. To remove it too, delete that folder.
 
 ## Permissions of the install directory
 
@@ -118,7 +118,7 @@ The application's code is in `resources\app.asar`. `Veydr.exe` holds the SHA-256
 - at startup, an archive whose index was changed is refused: Veydr does not start, and the changed code does not run;
 - when a file is read from the archive, its bytes are checked against its hash in the index: an archive whose file bytes alone were changed, its index untouched, is refused as well.
 
-Both were measured in CI on the packaged build, by changing the main bundle (`test/packaging-windows/fuses.test.ts`); other files of the archive were not modified in a test, so for them this is Electron's documented behavior, not a measurement. What the validation does not cover:
+Both were measured in CI on the packaged build (`test/packaging-windows/fuses.test.ts`): by changing the main bundle, which Electron loads as code, and, for changed bytes, also the page of Veydr's window, which Veydr reads as a file. Other files of the archive were not modified in a test; they are read in the same two ways. What the validation does not cover:
 
 - `Veydr.exe` itself, which holds the expected hash and is unsigned: whoever can write the install directory can replace it together with the archive;
 - files outside the archive: the helper, the uninstaller, and Electron's own libraries and resources beside `Veydr.exe`;
@@ -168,4 +168,4 @@ The CI runner is a Windows Server 2025 virtual machine without an interactive de
 
 The names in parentheses are the probe checks of [windows-evidence.md](windows-evidence.md#not-verifiable-on-the-runner), where each is listed with what would verify it. The conditions of the Windows sections of [processes.md](processes.md#not-verified-on-the-ci-runner) apply to the installed application as well.
 
-In one CI run of 2026-11-13, the administrator's Start menu entry was still there 120 seconds after a silent uninstall that had removed the install directory and the uninstall entry. It did not happen again in later runs and was not reproduced. If a `Veydr.lnk` is left after uninstalling, delete it from your Start menu's Programs folder.
+In two CI runs before the fix, the Start menu entry was left after a silent uninstall that removed everything else: the uninstaller tried to delete it once, while another process held it open. The uninstaller now retries for up to 10 seconds, and CI tests the uninstall with the entry held open for 5. A program that holds it longer can still leave it; if a `Veydr.lnk` is left after uninstalling, delete it from your Start menu's Programs folder.

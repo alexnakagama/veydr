@@ -14,6 +14,7 @@ import {
   HELPER_ID,
   INSTALL_ID,
   INSTALLER_ID,
+  INSTALL_SNAPSHOT_BEFORE_MS,
   PERMISSIONS_ID,
   PROTOCOL_VERSION,
   SMOKE_CASES,
@@ -266,6 +267,14 @@ describe('installer-standard-user.mjs', () => {
     expect(result.byId.get(INSTALL_ID)).toMatchObject({ answer: null, detail: 'the installer did not finish within 180 s' })
     expect(result.byId.get(UNINSTALL_ID)).toMatchObject({ answer: null, detail: expect.stringContaining('does not exist') as string })
     expect(nothing.calls).not.toContain('uninstall')
+
+    // An install that timed out carries the account's processes listed before the limit, to diagnose it.
+    const snapshot = ['"Image Name","PID"', '"Veydr-0.1.0-rc.1-x64-setup.exe","4242"', '"powershell.exe","4300"']
+    const hung = fakeSteps({ install: () => Promise.resolve({ ...program({ code: null, signal: 'SIGTERM' }), ms: 183_000, snapshot }), exists: () => false })
+    expect((await drive(hung.steps)).byId.get(INSTALL_ID)).toMatchObject({ answer: null, data: { snapshot } })
+    // Taken INSTALL_SNAPSHOT_BEFORE_MS before the limit, with time left for tasklist.
+    expect(INSTALL_SNAPSHOT_BEFORE_MS).toBeGreaterThan(10_000)
+    expect(INSTALL_SNAPSHOT_BEFORE_MS).toBeLessThan(180_000 / 2)
   })
 
   it('install succeeds but leaves the wrong things: each is named', async () => {
