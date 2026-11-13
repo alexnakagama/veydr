@@ -76,6 +76,7 @@ describe('sha256sums.mjs', () => {
     ['a name starting with "-"', ['-c'], 'is not a plain file name'],
     ['an empty name', [''], 'an empty file name'],
     ['SHA256SUMS itself', ['SHA256SUMS'], 'SHA256SUMS cannot list itself'],
+    ['SHA256SUMS in another case (the same file on Windows)', ['sha256sums'], 'SHA256SUMS cannot list itself'],
     ['a name given twice', [installer, installer], 'is named twice'],
     ['a valid name next to a missing one', [installer, 'missing.exe'], 'missing.exe does not exist in'],
   ])('exits 1 for %s, and leaves no SHA256SUMS', (_case, names, message) => {

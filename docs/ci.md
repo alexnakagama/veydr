@@ -363,7 +363,7 @@ Nothing reaches the remote repository before step 5. The attestation reads `SHA2
 
 `publish` stores its write credentials in the checkout, so the steps after it (the setup action from the source commit, the official download and attestation actions, and the scripts above) run next to them. It never runs `npm ci`, so no dependency's install script does.
 
-The acceptance record names the SHA-256 of the `.deb` it tested, and the Windows install record that of the installer it tested; `publish` checks each against the attached file. The AppImage has no such record of its own: it is tied to the gate only by coming from the same `release-packages` artifact that `smoke` tested. Only one release runs at a time: a second run waits for the first, and a running release is never cancelled by a new one. (GitHub keeps only one waiting run per concurrency group, so starting a third run while one is waiting cancels the waiting one.)
+The acceptance record names the SHA-256 of the `.deb` it tested, and the Windows install record that of the installer it tested; `publish` checks each against the attached file. It does not read the later steps of either record: that they passed follows from the gate job having succeeded, and you read them before publishing (below). The AppImage has no such record of its own: it is tied to the gate only by coming from the same `release-packages` artifact that `smoke` tested. Only one release runs at a time: a second run waits for the first, and a running release is never cancelled by a new one. (GitHub keeps only one waiting run per concurrency group, so starting a third run while one is waiting cancels the waiting one.)
 
 ### Before publishing the draft
 

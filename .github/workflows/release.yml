@@ -273,7 +273,8 @@ jobs:
         run: node scripts/release-version.mjs apply "$VERSION"
       # As in ci.yml: the helper is built from source, and the test steps require the build step's
       # success, so after a failed build no Windows test is reported, neither passed nor skipped, and
-      # the failed build fails the job. A failed version step skips the build, and so the tests.
+      # the failed build fails the job. The build step has no if:, so it runs only when every earlier
+      # step succeeded (the default success()): a failed version step skips it, and so the tests.
       - id: helper
         name: Build Windows helper
         run: node scripts/build-windows-helper.mjs
@@ -346,7 +347,8 @@ jobs:
           if-no-files-found: error
           overwrite: true
       # The install record (design D3): its first line names the SHA-256 of the installer tested,
-      # which publish checks against the attached installer. Uploaded on failure too, to diagnose it.
+      # which publish checks against the attached installer. Uploaded on failure too, to diagnose it;
+      # a missing record is not an error here (the job's own failure says why), and publish refuses one.
       - name: Upload install record
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -354,7 +356,7 @@ jobs:
           name: release-windows-install
           path: test-results/windows-install/
           retention-days: 14
-          if-no-files-found: error
+          if-no-files-found: ignore
           overwrite: true
       - name: Upload test results
         if: failure()
@@ -494,7 +496,7 @@ jobs:
           # SHA256SUMS lists the .deb on line 1 and the installer on line 3.
           deb_tested="$(tested "$ACCEPTANCE" deb)"
           if [ -z "$deb_tested" ] || [ "$deb_tested" != "$(sed -n 1p SHA256SUMS)" ]; then
-            echo "::error title=Acceptance record mismatch::the acceptance record tested '$deb_tested', which is not the attached $deb"
+            echo "::error title=Acceptance record mismatch::the acceptance record tested '${deb_tested:-(unreadable record: no detail.deb on its first line)}', which is not the attached $deb"
             exit 1
           fi
           if [ ! -s "$WINDOWS_INSTALL" ]; then
@@ -503,7 +505,7 @@ jobs:
           fi
           installer_tested="$(tested "$WINDOWS_INSTALL" installer)"
           if [ -z "$installer_tested" ] || [ "$installer_tested" != "$(sed -n 3p SHA256SUMS)" ]; then
-            echo "::error title=Windows install record mismatch::the Windows install record tested '$installer_tested', which is not the attached $installer"
+            echo "::error title=Windows install record mismatch::the Windows install record tested '${installer_tested:-(unreadable record: no detail.installer on its first line)}', which is not the attached $installer"
             exit 1
           fi
           cp -- "$ACCEPTANCE" acceptance-linux-steps.jsonl

@@ -80,7 +80,8 @@ jobs:
           ref: ${{ inputs.ref }}
           persist-credentials: false
       # On Windows, electron: "true" installs only the dependencies; dist:windows downloads Electron
-      # itself (scripts/ensure-electron.cjs).
+      # itself (scripts/ensure-electron.cjs). The npm cache stays on, as for the Linux package job:
+      # a manual build is not a release, and only the release turns every cache off.
       - uses: ./.github/actions/setup
         with:
           electron: "true"

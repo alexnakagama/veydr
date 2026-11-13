@@ -32,7 +32,8 @@ export function nameProblem(name) {
   if (typeof name !== 'string' || name === '') return 'an empty file name'
   if (/[/\\]/.test(name)) return `${JSON.stringify(name)} has a path separator: name a file inside the directory`
   if (!SAFE_NAME.test(name)) return `${JSON.stringify(name)} is not a plain file name (letters, digits, ".", "_", "+" and "-", not starting with "." or "-")`
-  if (name === SUMS_FILE) return `${SUMS_FILE} cannot list itself`
+  // Case-insensitively: on Windows `sha256sums` is the same file, which writeSums removes first.
+  if (name.toUpperCase() === SUMS_FILE) return `${SUMS_FILE} cannot list itself`
   return undefined
 }
 
@@ -65,7 +66,11 @@ export function parseSums(text) {
     })
 }
 
-/** Throws unless every name can be listed, is unique, and is a regular file (not a link) in `directory`. */
+/**
+ * Throws unless every name can be listed, is unique, and is a regular file (not a link) in `directory`.
+ * The files are opened by name afterwards, so a link swapped in between would be followed; the
+ * directory is the job's own `dist/`, which nothing else writes to while the script runs.
+ */
 function checkNames(directory, names) {
   if (!Array.isArray(names) || names.length === 0) throw new Error('no file to checksum')
   const seen = new Set()

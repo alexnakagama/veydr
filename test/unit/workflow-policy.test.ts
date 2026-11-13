@@ -2146,7 +2146,7 @@ if (args[0] === 'api') {
     const windowsUploads = w.stepsUsing('windows-package', 'actions/upload-artifact').map((s) => [w.field(s, 'if'), w.withValue(s, 'name'), w.withValue(s, 'path'), w.withValue(s, 'if-no-files-found')])
     expect(windowsUploads).toEqual([
       [undefined, 'release-windows-package', 'dist/*-x64-setup.exe', 'error'],
-      ['${{ !cancelled() }}', 'release-windows-install', 'test-results/windows-install/', 'error'],
+      ['${{ !cancelled() }}', 'release-windows-install', 'test-results/windows-install/', 'ignore'],
       ['failure()', 'release-windows-package-test-results', 'test-results/', 'ignore'],
     ])
     expect(stepNames('windows-package')).toEqual([
