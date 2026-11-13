@@ -1,7 +1,7 @@
 import { spawn, spawnSync } from 'node:child_process'
 import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
-import { join } from 'node:path'
+import { join, sep } from 'node:path'
 import { appDirFor, appEnv, configHomePath, expect, test } from './support/fixtures'
 import { removeDir, tempDir } from './support/temp'
 
@@ -37,6 +37,22 @@ function snapshot(dir: string): Record<string, string> {
   }
   if (existsSync(dir)) walk(dir)
   return out
+}
+
+/**
+ * The entries of the configuration directory that are Veydr's configuration, as opposed to the
+ * Chromium profile the running first instance keeps in the same directory: `config.json` and its
+ * backup and temporary files, the `runtime` ledger directory, and the single-instance lock
+ * (`lockfile` on Windows, `Singleton*` on Linux). Chromium flushes its profile databases
+ * (`DIPS-wal`, `*-journal`, `declarative_performance_observer.db`) on its own schedule, so a
+ * write by the first instance could land between the two snapshots (Windows CI run 43483336946);
+ * those are not the second launch's doing, and the second process's own file access is covered
+ * by the fs guard.
+ */
+const CONFIGURATION_ENTRY = /^[\\/](?:config\b|runtime(?:$|[\\/])|lockfile$|Singleton)/
+
+function configurationEntries(entries: Record<string, string>): Record<string, string> {
+  return Object.fromEntries(Object.entries(entries).filter(([path]) => CONFIGURATION_ENTRY.test(path)))
 }
 
 function launchSecondInstance(
@@ -128,9 +144,11 @@ test('[spec:desktop-shell/second-launch-focuses-existing-instance] [spec:config-
   const after = snapshot(configDir)
 
   expect(result).toEqual({ code: 0, signal: null })
-  // Nothing in the configuration directory changed, and the second process
-  // made no Node fs call on any path inside it (reads included).
-  expect(after).toEqual(before)
+  // Nothing of Veydr's configuration changed, and the second process made no Node fs call on
+  // any path inside the configuration directory (reads included).
+  const configuration = configurationEntries(before)
+  expect(Object.keys(configuration)).toEqual(expect.arrayContaining([`${sep}config.json`]))
+  expect(configurationEntries(after)).toEqual(configuration)
   expect(readFsGuardLog(guardLog).map(({ api, path, kind }) => ({ api, path, kind }))).toEqual([
     { api: 'guard', path: null, kind: 'installed' },
   ])
