@@ -246,6 +246,17 @@ describe('links to docs/install-windows.md', () => {
     expect(pages.flatMap((page) => brokenLinks(root, page))).toEqual([])
   })
 
+  it('resolves link targets with `/` on every system', () => {
+    const toPage = relativeLinks(root, 'README.md').filter((link) => link.raw.startsWith('docs/install-windows.md'))
+    expect(toPage.length).toBeGreaterThan(0)
+    for (const link of toPage) expect(link.file).toBe('docs/install-windows.md')
+    const fromDocs = relativeLinks(root, 'docs/install-windows.md')
+    expect(fromDocs.find((link) => link.raw.startsWith('../README.md'))?.file).toBe('README.md')
+    expect(fromDocs.find((link) => link.raw.startsWith('ci.md'))?.file).toBe('docs/ci.md')
+    expect(fromDocs.find((link) => link.raw.startsWith('#'))?.file).toBe('docs/install-windows.md')
+    for (const link of fromDocs) expect(link.file, link.raw).not.toContain('\\')
+  })
+
   it('checks anchors the way GitHub writes them', () => {
     expect(headingAnchor('Windows (preview)')).toBe('windows-preview')
     expect(headingAnchor('Packaging toolchain (task 9.1)')).toBe('packaging-toolchain-task-91')

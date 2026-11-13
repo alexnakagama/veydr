@@ -1,5 +1,5 @@
 import { existsSync, readFileSync } from 'node:fs'
-import { dirname, join, relative } from 'node:path'
+import { join, posix } from 'node:path'
 
 // Relative links of the Markdown documents, checked down to the heading they point at
 // (add-windows-packaging task 6.3). Limits: only inline links `[text](target)` are checked, not
@@ -37,20 +37,23 @@ export function headingAnchors(text: string): Set<string> {
 export interface Link {
   /** The link as written. */
   readonly raw: string
-  /** The target file, relative to the repository root ('' for a link to the same document). */
+  /** The target file, relative to the repository root, with `/` on every system (`file` for a link within it). */
   readonly file: string
   /** The anchor after `#`, or undefined. */
   readonly anchor: string | undefined
 }
 
-/** The relative Markdown links of `file` (relative to `root`), outside code blocks. */
+/**
+ * The relative Markdown links of `file` (relative to `root`, written with `/`), outside code blocks.
+ * Targets are resolved with POSIX paths, so they read the same on Windows as on Linux.
+ */
 export function relativeLinks(root: string, file: string): Link[] {
   const text = withoutCodeBlocks(readFileSync(join(root, file), 'utf8'))
   const links: Link[] = []
   for (const [, raw = ''] of text.matchAll(/\]\(([^)\s]+)\)/g)) {
     if (/^[a-z][a-z0-9+.-]*:/i.test(raw)) continue
     const [path = '', anchor] = raw.split('#', 2)
-    links.push({ raw, file: path === '' ? file : relative(root, join(root, dirname(file), path)), anchor })
+    links.push({ raw, file: path === '' ? file : posix.normalize(posix.join(posix.dirname(file), path)), anchor })
   }
   return links
 }
