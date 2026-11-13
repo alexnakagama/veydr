@@ -48,9 +48,6 @@ import { createReadStream, existsSync, lstatSync, mkdtempSync, readdirSync, read
 import { createServer } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join, win32 } from 'node:path'
-
-/** Windows paths, also when the unit tests run elsewhere. */
-const winJoin = win32.join
 import { pipeline } from 'node:stream/promises'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { fileURLToPath } from 'node:url'
@@ -59,6 +56,9 @@ import { describeExit } from './helper-build.mjs'
 import { aclChunks, aclViolations, READ_ACL_SCRIPT } from './install-acl.mjs'
 import { runHelperPorts } from './ports-standard-user.mjs'
 import { appEnv, outputTail, runSmoke } from './smoke-run.mjs'
+
+/** Windows paths, also when the unit tests run elsewhere. */
+const winJoin = win32.join
 
 /** The driver's own area, outside checks.mjs's PROBE_AREAS. */
 export const AREA = 'installer-standard-user'
@@ -107,6 +107,13 @@ export const RESOURCES = Object.freeze(['app.asar', 'veydr-helper.exe'])
 
 /** electron-builder's limits for a silent install or uninstall (as the W0 probe measured them). */
 export const INSTALL_MS = 180_000
+/**
+ * How long before INSTALL_MS a still-running installer has the account's processes listed, so a
+ * timeout can be diagnosed: once (CI run 43474249998) the standard user's silent install, usually
+ * about 20 s, did not finish in 180 s, and nothing showed what it was waiting for.
+ */
+export const INSTALL_SNAPSHOT_BEFORE_MS = 15_000
+const SNAPSHOT_MS = 10_000
 /** The uninstaller copies itself to a temporary file and returns; the directory goes after that. */
 export const UNINSTALL_GONE_MS = 120_000
 /** How long a Veydr.exe the silent install might have started is looked for. */
@@ -173,14 +180,19 @@ export function veydrEntries(entries, installDir) {
   return entries.filter((e) => /^veydr\b/i.test(e.displayName) || [e.uninstallString, e.installLocation].some((s) => s.toLowerCase().includes(dir)))
 }
 
-/** The Veydr.exe processes that may be the installed app: below the install directory, or of a path that cannot be read. */
+/**
+ * The Veydr.exe processes that may be the installed app: below the install directory, or of a path
+ * that cannot be read. An unreadable path is counted because it cannot be ruled out; it could also be
+ * another account's Veydr.exe, which this assumes is not running: the account is temporary, and the
+ * sequencer runs this test after every other packaging test, with no other file in parallel.
+ */
 export const installedProcesses = (processes, installDir) => processes.filter((p) => p.path === null || isBelow(p.path, installDir))
 
 /** install-std-install, from the run of the installer and what it left (`state`, InstallState). */
 export function installAnswer({ run, installDir, profile, state, processes }) {
   const data = { installDir, code: run.code, ...(run.ms === undefined ? {} : { ms: run.ms }) }
   const stopped = notFinished('the installer', run, INSTALL_MS)
-  if (stopped !== undefined) return { answer: null, detail: stopped, data }
+  if (stopped !== undefined) return { answer: null, detail: stopped, data: { ...data, ...(run.snapshot === undefined ? {} : { snapshot: run.snapshot }) } }
   if (run.code !== 0) return { answer: 'no', detail: `the silent install ${describeExit(run)}: ${outputTail(`${run.stdout} ${run.stderr}`)}`, data }
   const problems = []
   if (!isBelow(installDir, profile)) problems.push(`${installDir} is not below the account's profile ${profile}`)
@@ -322,17 +334,36 @@ export function smokeAnswer({ smoke, control, installDir }) {
   return { answer: 'no', detail: `the installed app's smoke test failed: ${problem}; ${why}`, data: { ...data, smokeCase: 'failed', problem } }
 }
 
-/** install-std-uninstall, from the uninstaller's run, whether the directory was left, and what else is. */
-export function uninstallAnswer({ run, left, state, installDir }) {
+/** What a silent uninstall must remove and `state` still shows: the directory, the Start menu entry, the uninstall entries. */
+export function uninstallRemaining(state, installDir) {
+  return [
+    ...(state.directory ? [`the directory ${installDir}`] : []),
+    ...(state.startMenu === null ? [] : [`the Start menu entry ${state.startMenu.path}`]),
+    ...veydrEntries(state.uninstall, installDir).map((e) => `the uninstall entry ${e.key}`),
+  ]
+}
+
+/**
+ * Inspects the installation until uninstallRemaining finds nothing, or until UNINSTALL_GONE_MS have
+ * passed, and returns the last state. All three are waited for, as the administrator's test does:
+ * the uninstaller copies itself and returns, and once (group 5) Veydr.lnk outlived the directory.
+ */
+export async function waitUntilUninstalled(installDir, { inspect: inspectImpl, pause, now }) {
+  const deadline = now() + UNINSTALL_GONE_MS
+  for (;;) {
+    const state = await inspectImpl(installDir)
+    if (uninstallRemaining(state, installDir).length === 0 || now() >= deadline) return state
+    await pause(POLL_MS)
+  }
+}
+
+/** install-std-uninstall, from the uninstaller's run and the state waitUntilUninstalled returned. */
+export function uninstallAnswer({ run, state, installDir }) {
   const data = { code: run.code, ...(run.ms === undefined ? {} : { ms: run.ms }) }
   const stopped = notFinished('the uninstaller', run, INSTALL_MS)
   if (stopped !== undefined) return { answer: null, detail: stopped, data }
   if (run.code !== 0) return { answer: 'no', detail: `the silent uninstall ${describeExit(run)}: ${outputTail(`${run.stdout} ${run.stderr}`)}`, data }
-  const remaining = [
-    ...(left ? [`the directory ${installDir}`] : []),
-    ...(state.startMenu === null ? [] : [`the Start menu entry ${state.startMenu.path}`]),
-    ...veydrEntries(state.uninstall, installDir).map((e) => `the uninstall entry ${e.key}`),
-  ]
+  const remaining = uninstallRemaining(state, installDir)
   if (remaining.length > 0) return { answer: 'no', detail: `still there ${UNINSTALL_GONE_MS / 1000} s after the silent uninstall: ${remaining.join('; ')}`, data: { ...data, remaining } }
   return { answer: 'yes', detail: '', data }
 }
@@ -466,10 +497,26 @@ async function runControl(electron, dir) {
   return { version, window, loaded }
 }
 
-async function waitUntilGone(directory) {
-  const deadline = Date.now() + UNINSTALL_GONE_MS
-  while (existsSync(directory) && Date.now() < deadline) await sleep(POLL_MS)
-  return existsSync(directory)
+/** The account's processes, as `tasklist /V /FO CSV` lists them (no WMI), or why they could not be listed. */
+async function listOwnProcesses() {
+  const tasklist = winJoin(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'tasklist.exe')
+  const run = await runProgram(tasklist, ['/V', '/FO', 'CSV', '/FI', `USERNAME eq ${process.env.USERNAME ?? ''}`], { timeoutMs: SNAPSHOT_MS })
+  if (run.error !== undefined || run.code !== 0) return `tasklist ${describeExit(run)}: ${outputTail(`${run.stdout} ${run.stderr}`)}`
+  return run.stdout.split(/\r?\n/).filter((line) => line !== '').slice(0, 60)
+}
+
+/** Runs the installer; if it is still running INSTALL_SNAPSHOT_BEFORE_MS before its limit, records the account's processes. */
+async function runInstaller(installer) {
+  let snapshot
+  const timer = setTimeout(() => {
+    snapshot = listOwnProcesses().catch((error) => `tasklist failed: ${messageOf(error)}`)
+  }, INSTALL_MS - INSTALL_SNAPSHOT_BEFORE_MS)
+  try {
+    const run = await timed(() => runProgram(installer, ['/S'], { timeoutMs: INSTALL_MS, env: appEnv() }))
+    return snapshot === undefined ? run : { ...run, snapshot: await snapshot }
+  } finally {
+    clearTimeout(timer)
+  }
 }
 
 const timed = async (body) => {
@@ -488,7 +535,7 @@ export const WINDOWS_STEPS = Object.freeze({
     return await sha256File(file)
   },
   exists: (path) => existsSync(path),
-  install: (installer) => timed(() => runProgram(installer, ['/S'], { timeoutMs: INSTALL_MS, env: appEnv() })),
+  install: runInstaller,
   inspect,
   watchProcesses: (installDir) => watchProcesses(installDir),
   permissions: readPermissions,
@@ -496,7 +543,8 @@ export const WINDOWS_STEPS = Object.freeze({
   smoke: (app, dir) => runSmoke(app, ['--smoke-test'], { dir }),
   control: runControl,
   uninstall: (uninstaller) => timed(() => runProgram(uninstaller, ['/S'], { timeoutMs: INSTALL_MS, env: appEnv() })),
-  waitUntilGone,
+  pause: (ms) => sleep(ms),
+  now: () => Date.now(),
   tempDir: () => mkdtempSync(join(tmpdir(), 'veydr-install-std-')),
   removeDir: (dir) => rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }),
 })
@@ -570,8 +618,9 @@ export async function installAsStandardUser(report, { installerName, sha256, ele
   if (!steps.exists(uninstaller)) return skip([UNINSTALL_ID], `not run: ${uninstaller} does not exist`)
   await attempt(UNINSTALL_ID, async () => {
     const run = await steps.uninstall(uninstaller)
-    const left = run.code === 0 ? await steps.waitUntilGone(installDir) : steps.exists(installDir)
-    return uninstallAnswer({ run, left, state: await steps.inspect(installDir), installDir })
+    // A failed uninstall is reported at once; what it left is not waited for.
+    const state = run.code === 0 ? await waitUntilUninstalled(installDir, { inspect: steps.inspect, pause: steps.pause, now: steps.now }) : await steps.inspect(installDir)
+    return uninstallAnswer({ run, state, installDir })
   })
 }
 

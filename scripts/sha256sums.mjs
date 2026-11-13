@@ -8,10 +8,11 @@
 // release compares against. It runs the same on every system.
 //
 // Each <file> is a plain file name inside <directory>, never a path. A refused name (one with a
-// path separator, a repeated name, SHA256SUMS itself in any case) or no name at all exits 1 and
-// changes nothing on disk. A missing or non-regular file, or a failure while writing or verifying,
-// exits 1 and leaves no SHA256SUMS behind, an earlier one included. The file is written beside the packages under a temporary name and renamed into
-// place, so a reader never sees a partial file.
+// path separator, one ending in ".", a name repeated in any case, SHA256SUMS itself in any case) or
+// no name at all exits 1 and changes nothing on disk. A missing or non-regular file, or a failure
+// while writing or verifying, exits 1 and leaves no SHA256SUMS behind, an earlier one included.
+// The file is written beside the packages under a temporary name and renamed into place, so a
+// reader never sees a partial file.
 import { createHash } from 'node:crypto'
 import { createReadStream, lstatSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
@@ -33,6 +34,8 @@ export function nameProblem(name) {
   if (typeof name !== 'string' || name === '') return 'an empty file name'
   if (/[/\\]/.test(name)) return `${JSON.stringify(name)} has a path separator: name a file inside the directory`
   if (!SAFE_NAME.test(name)) return `${JSON.stringify(name)} is not a plain file name (letters, digits, ".", "_", "+" and "-", not starting with "." or "-")`
+  // Windows drops a trailing dot, so `SHA256SUMS.` or `a.exe.` would name another file there.
+  if (name.endsWith('.')) return `${JSON.stringify(name)} ends with ".", which Windows drops, so it would name another file`
   // Case-insensitively: on Windows `sha256sums` is the same file, which writeSums removes first.
   if (name.toUpperCase() === SUMS_FILE) return `${SUMS_FILE} cannot list itself`
   return undefined
@@ -74,8 +77,9 @@ function checkNameList(names) {
   for (const name of names) {
     const problem = nameProblem(name)
     if (problem !== undefined) throw new Error(problem)
-    if (seen.has(name)) throw new Error(`${JSON.stringify(name)} is named twice`)
-    seen.add(name)
+    // Case-insensitively: on Windows `A.exe` and `a.exe` are the same file.
+    if (seen.has(name.toUpperCase())) throw new Error(`${JSON.stringify(name)} is named twice`)
+    seen.add(name.toUpperCase())
   }
 }
 

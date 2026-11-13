@@ -7,8 +7,8 @@ In the commands below, replace `X.Y.Z` with the version you install.
 ## Requirements
 
 - **Windows x64.** There is no build for Arm64 or 32-bit Windows.
-- **No administrator rights.** The installer installs for your user only. A silent install by a standard user succeeded in CI without elevation; whether the interactive installer shows a UAC prompt was not observed (see [Not verified](#not-verified)).
-- The **.NET Framework 4.8** runtime. Veydr's helper, `veydr-helper.exe`, is compiled with its compiler (see [dependencies.md](dependencies.md#windows-process-tree-helper-gate-g-4-2026-11-03)). Windows 10 version 1903 and later and Windows 11 include it; Windows 10 1809 and earlier, LTSC 2019 among them, ship 4.7.2 and need it installed. The helper has run only on Windows Server 2025, in CI; Windows 10 and 11 are not verified.
+- **No administrator rights.** The installer installs for your user only, and its manifest asks Windows for no elevation (`asInvoker`, checked in CI). A silent install by a standard user succeeded in CI without elevation; whether the interactive installer shows a UAC prompt was not observed (see [Not verified](#not-verified)).
+- The **.NET Framework 4.8** runtime, as a precaution. Veydr's helper, `veydr-helper.exe`, is compiled with the .NET Framework 4.8 compiler (see [dependencies.md](dependencies.md#windows-process-tree-helper-gate-g-4-2026-11-03)) and has run only with 4.8, on Windows Server 2025, in CI. Windows 10 version 1903 and later and Windows 11 include 4.8. Windows 10 1809 and earlier, LTSC 2019 among them, ship 4.7.2: the helper is expected to run on any 4.x runtime, but that was not tested, so install 4.8 there. Windows 10 and 11 are not verified.
 
 ## The installer
 
@@ -27,6 +27,8 @@ Released versions are on the [GitHub Releases page](https://github.com/alexnakag
 - `install-windows-steps.jsonl`, the record of the installation test the release ran on this installer: its first line names the installer's SHA-256, and each later line one step, as the administrator and as a standard user. It is not in `SHA256SUMS` and not attested, so it is information, not proof: anyone who could change the release could change it.
 
 Earlier releases have Linux packages only. For a version without an installer, [build it yourself](#building-the-installer).
+
+No release has carried the installer yet. The first release that does is also the first run of the release workflow's Windows path (see [ci.md](ci.md#releasing)), so the files above and the checks below have not yet been used on a real release. The same installer and checksum checks run in CI and in every manual build.
 
 Because the installer is unsigned, nothing in Windows tells you who built it. Run both checks before you start it. The checksum shows that your download is complete and matches the release's `SHA256SUMS`, but that file comes from the same release page, so it does not show where the installer came from. The attestation does: it ties the installer to this repository's release workflow. In PowerShell, in the folder with the downloaded installer and `SHA256SUMS`:
 
@@ -101,7 +103,7 @@ Quit Veydr, then remove it in **Settings › Apps › Installed apps** (choose *
 Start-Process -Wait "$env:LOCALAPPDATA\Programs\veydr\Uninstall Veydr.exe" -ArgumentList '/S'
 ```
 
-Uninstalling removes the install directory, the Start menu entry and the uninstall entry. The uninstaller copies itself and returns before it has finished, so the directory may take a few seconds to disappear. Your configuration in `%APPDATA%\Veydr` is kept, as removing the `.deb` keeps `~/.config/Veydr`. To remove it too, delete that folder.
+Uninstalling removes the install directory, the Start menu entry and the uninstall entry. If another program briefly holds the Start menu entry open, as a virus scanner may, the uninstaller retries removing it for up to 10 seconds. The uninstaller copies itself and returns before it has finished, so the directory may take a few seconds to disappear. Your configuration in `%APPDATA%\Veydr` is kept, as removing the `.deb` keeps `~/.config/Veydr`. To remove it too, delete that folder.
 
 ## Permissions of the install directory
 
@@ -116,7 +118,7 @@ The application's code is in `resources\app.asar`. `Veydr.exe` holds the SHA-256
 - at startup, an archive whose index was changed is refused: Veydr does not start, and the changed code does not run;
 - when a file is read from the archive, its bytes are checked against its hash in the index: an archive whose file bytes alone were changed, its index untouched, is refused as well.
 
-Both were measured in CI on the packaged build, by changing the main bundle (`test/packaging-windows/fuses.test.ts`); other files of the archive were not modified in a test, so for them this is Electron's documented behavior, not a measurement. What the validation does not cover:
+Both were measured in CI on the packaged build (`test/packaging-windows/fuses.test.ts`): by changing the main bundle, which Electron loads as code, and, for changed bytes, also the page of Veydr's window, which Veydr reads as a file. Other files of the archive were not modified in a test; they are read in the same two ways. What the validation does not cover:
 
 - `Veydr.exe` itself, which holds the expected hash and is unsigned: whoever can write the install directory can replace it together with the archive;
 - files outside the archive: the helper, the uninstaller, and Electron's own libraries and resources beside `Veydr.exe`;
@@ -147,7 +149,7 @@ For every pull request and push to `master`, and for every release, the `windows
 - as the runner's administrator: a silent install, the installed files, the Start menu and uninstall entries, no desktop shortcut and no logon entry, no Veydr left running, the installed application's smoke test, a command tree started and ended through the installed helper, the permissions, an install over the existing installation, and a silent uninstall that keeps the configuration (`installer.test.ts`);
 - as a temporary standard user without administrator rights: a silent install, the permissions, the installed helper (its version and the port listing), the installed application's smoke test, and a silent uninstall (`standard-user-install.test.ts`).
 
-A release attaches the record of these steps, `install-windows-steps.jsonl`, for the installer it attaches.
+A release attaches the record of these steps, `install-windows-steps.jsonl`, for the installer it attaches; no release has done so yet. Every manual build (`build.yml`) also checks its `SHA256SUMS` with the command in [Download and verify](#download-and-verify), under PowerShell 7 and Windows PowerShell 5.1.
 
 ## Not verified
 
@@ -166,4 +168,4 @@ The CI runner is a Windows Server 2025 virtual machine without an interactive de
 
 The names in parentheses are the probe checks of [windows-evidence.md](windows-evidence.md#not-verifiable-on-the-runner), where each is listed with what would verify it. The conditions of the Windows sections of [processes.md](processes.md#not-verified-on-the-ci-runner) apply to the installed application as well.
 
-In one CI run of 2026-11-13, the administrator's Start menu entry was still there 120 seconds after a silent uninstall that had removed the install directory and the uninstall entry. It did not happen again in later runs and was not reproduced. If a `Veydr.lnk` is left after uninstalling, delete it from your Start menu's Programs folder.
+In two CI runs before the fix, the Start menu entry was left after a silent uninstall that removed everything else. The uninstaller tried to delete it only once, most likely while another process held it open; that cause was not observed in those runs. The uninstaller now retries for up to 10 seconds, and CI tests the uninstall with the entry held open for 5 seconds, a simulation of that cause, which leaves the entry without the retry. The fix is verified for that case only, and a program that holds the entry longer can still leave it; if a `Veydr.lnk` is left after uninstalling, delete it from your Start menu's Programs folder.

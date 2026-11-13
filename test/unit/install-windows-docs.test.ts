@@ -90,6 +90,12 @@ describe('docs/install-windows.md', () => {
     expect(flat(section('Not verified'))).toContain('(`ux-uac-prompt`): whether the interactive installer shows one')
     // The helper's runtime: named with the Windows versions that lack it, and unverified outside CI.
     expect(requirements).toContain('Windows 10 1809 and earlier, LTSC 2019 among them, ship 4.7.2')
+    // 4.8 is what the helper ran with, not a measured minimum (group 7 review).
+    expect(requirements).toContain('The **.NET Framework 4.8** runtime, as a precaution.')
+    expect(requirements).toContain('the helper is expected to run on any 4.x runtime, but that was not tested')
+    expect(requirements).not.toMatch(/need it installed/)
+    // The manifest's requested level is checked in CI (package-contents.test.ts).
+    expect(requirements).toContain('its manifest asks Windows for no elevation (`asInvoker`, checked in CI)')
     expect(requirements).toContain('Windows 10 and 11 are not verified')
     // The Start menu entry only, and the configuration kept.
     expect([nsis['createStartMenuShortcut'], nsis['createDesktopShortcut'], nsis['deleteAppDataOnUninstall']]).toEqual([true, false, false])
@@ -127,12 +133,27 @@ describe('docs/install-windows.md', () => {
     expect(ciBlocks).toHaveLength(2)
     expect(powershellBlocks(verify)).toEqual(ciBlocks)
     expect(ciBlocks[0]).toContain('Get-FileHash -Algorithm SHA256')
+    // The checksum command users are given runs on every manual build, under PowerShell 7 and
+    // Windows PowerShell 5.1: build.yml runs it verbatim but for its first line, which names the file.
+    const userCheck = (ciBlocks[0] ?? '').trimEnd().split('\n')
+    expect(userCheck[0]).toBe(`$name = '${installerName()}'`)
+    const buildYml = read('.github/workflows/build.yml')
+    for (const shell of ['pwsh', 'powershell']) {
+      const step = new RegExp(`- name: Check SHA256SUMS as the docs tell users \\([^)]*\\)\\n\\s+shell: ${shell}\\n\\s+working-directory: dist\\n\\s+run: \\|\\n((?:\\s{10}.*\\n)+)`).exec(buildYml)
+      expect(step, shell).not.toBeNull()
+      const lines = (step?.[1] ?? '').split('\n').map((l) => l.trim()).filter((l) => l !== '')
+      expect(lines.slice(1, userCheck.length), shell).toEqual(userCheck.slice(1))
+      expect(lines.at(-1), shell).toBe('if (-not $line) { exit 1 }')
+    }
     expect(ciBlocks[1]).toContain(`gh attestation verify ${installerName()} --repo alexnakagama/veydr --signer-workflow alexnakagama/veydr/.github/workflows/release.yml`)
     expect(existsSync(join(root, '.github/workflows/release.yml'))).toBe(true)
     // Only the attestation is provenance: SHA256SUMS comes from the same release page, and the
     // install record is in neither SHA256SUMS nor the attestation (release.yml attests SHA256SUMS's subjects).
     const flatVerify = flat(verify)
     expect(flatVerify).toContain('Run both checks before you start it.')
+    // The release path is unrun until the first release with the installer (docs/ci.md#releasing).
+    expect(flatVerify).toContain('No release has carried the installer yet. The first release that does is also the first run of the release workflow\'s Windows path')
+    expect(flat(read('README.md'))).toContain('No release has carried the installer yet; the first one is also the first run of that part of the release workflow.')
     expect(flatVerify).toContain('that file comes from the same release page, so it does not show where the installer came from. The attestation does')
     expect(flatVerify).toContain('This is the provenance check.')
     expect(flatVerify).toContain('It is not in `SHA256SUMS` and not attested, so it is information, not proof')
@@ -160,7 +181,10 @@ describe('docs/install-windows.md', () => {
     expect(updating).toContain('Do not run the installer while Veydr is running: it may close Veydr')
     expect(updating).toContain('That case is not tested.')
     const uninstalling = flat(section('Uninstalling'))
-    expect(uninstalling).toContain('Uninstalling removes the install directory, the Start menu entry and the uninstall entry.')
+    expect(uninstalling).toContain('Uninstalling removes the install directory, the Start menu entry and the uninstall entry. If another program briefly holds the Start menu entry open, as a virus scanner may, the uninstaller retries removing it for up to 10 seconds.')
+    // The fix is described with its limit, and the tested hold (5 s) is shorter than the retry (10 s).
+    expect(flat(doc)).toContain('most likely while another process held it open; that cause was not observed in those runs. The uninstaller now retries for up to 10 seconds, and CI tests the uninstall with the entry held open for 5 seconds, a simulation of that cause')
+    expect(flat(doc)).toContain('The fix is verified for that case only')
     expect(uninstalling).toContain('To remove it too, delete that folder.')
   })
 
@@ -182,8 +206,9 @@ describe('docs/install-windows.md', () => {
     expect(integrity).toContain('at startup, an archive whose index was changed is refused')
     expect(integrity).toContain('an archive whose file bytes alone were changed, its index untouched, is refused as well')
     expect(integrity).not.toMatch(/bytes[^.]*(?:still load|are not checked|not validated)/)
-    // Measured with the main bundle only, and said so.
-    expect(integrity).toContain('by changing the main bundle (`test/packaging-windows/fuses.test.ts`); other files of the archive were not modified in a test')
+    // Measured on the main bundle and on the renderer's page, and only those, and said so.
+    expect(integrity).toContain('by changing the main bundle, which Electron loads as code, and, for changed bytes, also the page of Veydr\'s window, which Veydr reads as a file. Other files of the archive were not modified in a test')
+    expect(integrity).not.toMatch(/documented behavior/)
     // The tests that measured it exist and are real tests, not placeholders.
     const fuses = read('test/packaging-windows/fuses.test.ts')
     expect(integrity).toContain('`test/packaging-windows/fuses.test.ts`')

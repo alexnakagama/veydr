@@ -13,6 +13,8 @@ import { cleanEnv, distDir, PROBE_COPY_PREFIX, requirePackages, resourcesDir, ru
 
 const electronBinary = createRequire(__filename)('electron') as string
 const MAIN_BUNDLE = '/out/main/index.js'
+/** The renderer's page, read by Veydr's own app:// handler (src/main/app/protocol.ts) with fs.promises.readFile, not through require. */
+const RENDERER_PAGE = '/out/renderer/index.html'
 
 /** Electron's fuse wire (https://github.com/electron/fuses): sentinel, version byte, length byte, one byte per fuse. */
 const SENTINEL = 'dL7pKGdnNz796PbbjQWNKmHXBZaB9tsX'
@@ -88,6 +90,17 @@ function archiveWithBytesChanged(marker: string): Buffer {
   const data = Buffer.alloc(size, ' ')
   script.copy(data)
   return overwriteInPlace(bytes, MAIN_BUNDLE, data)
+}
+
+/**
+ * The packaged archive with the renderer page's bytes overwritten in place, header untouched: the
+ * title `Veydr` becomes `VEYDR`, the same size, which would change nothing the smoke test checks.
+ */
+function archiveWithRendererBytesChanged(): Buffer {
+  const bytes = readFileSync(join(resourcesDir, 'app.asar'))
+  const page = readAsar(join(resourcesDir, 'app.asar')).read(RENDERER_PAGE).toString('utf8')
+  if (!page.includes('<title>Veydr</title>')) throw new Error(`${RENDERER_PAGE} has no <title>Veydr</title>`)
+  return overwriteInPlace(bytes, RENDERER_PAGE, Buffer.from(page.replace('<title>Veydr</title>', '<title>VEYDR</title>'), 'utf8'))
 }
 
 /** Runs a stock Electron copy whose `resources\app.asar` is `archive`, and returns whether it wrote `marker`. */
@@ -226,6 +239,20 @@ describe.skipIf(process.platform !== 'win32')('[windows-only: the packaged Windo
     expect(existsSync(marker)).toBe(false)
     expect(started(result)).toBe(false)
     // Refused for the file's hash, not for some other startup failure (CI run 43278811083).
+    expect(result.timedOut).toBe(false)
+    expect(result.code).not.toBe(0)
+    expect(result.stderr).toMatch(/ASAR Integrity Violation: got a hash mismatch/)
+  })
+
+  it('refuses the renderer page whose bytes alone changed, its index untouched, though it is read by the app:// handler and not by require', async () => {
+    const result = await packagedRun(archiveWithRendererBytesChanged())
+    const report = started(result) ? smokeReportOf(result) : undefined
+    console.log(`archive with the renderer page's bytes changed: exit ${String(result.code)}, timed out ${String(result.timedOut)}, smoke ${report === undefined ? 'no report' : JSON.stringify(report.result)}; stderr: ${result.stderr.slice(-800)}`)
+    // The unmodified copy passes (the control above), and a title in capitals changes nothing the
+    // smoke test checks, so a passing smoke test here means the changed bytes were served.
+    expect(report?.result).not.toBe('pass')
+    // Refused for the file's hash when the handler read it (CI run 43474232791), not for some
+    // other startup failure: Electron exits, and no smoke report is printed.
     expect(result.timedOut).toBe(false)
     expect(result.code).not.toBe(0)
     expect(result.stderr).toMatch(/ASAR Integrity Violation: got a hash mismatch/)

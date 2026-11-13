@@ -78,6 +78,9 @@ describe('sha256sums.mjs', () => {
     ['SHA256SUMS itself', ['SHA256SUMS'], 'SHA256SUMS cannot list itself'],
     ['SHA256SUMS in another case (the same file on Windows)', ['sha256sums'], 'SHA256SUMS cannot list itself'],
     ['a name given twice', [installer, installer], 'is named twice'],
+    ['a name given twice in different cases (the same file on Windows)', [installer, installer.toLowerCase()], 'is named twice'],
+    ['SHA256SUMS with a trailing dot (the same file on Windows)', ['SHA256SUMS.'], 'ends with "."'],
+    ['a name with a trailing dot', [`${installer}.`], 'ends with "."'],
     ['a valid name next to a missing one', [installer, 'missing.exe'], 'missing.exe does not exist in'],
   ])('exits 1 for %s, and leaves no SHA256SUMS', (_case, names, message) => {
     const dir = folder({ [installer]: 'x', SHA256SUMS: 'stale\n' })

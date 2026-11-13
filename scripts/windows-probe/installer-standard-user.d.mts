@@ -23,6 +23,7 @@ export const UNINSTALLER_NAME: string
 export const RESOURCES: readonly string[]
 export const INSTALL_MS: number
 export const UNINSTALL_GONE_MS: number
+export const INSTALL_SNAPSHOT_BEFORE_MS: number
 export const NO_PROCESS_WATCH_MS: number
 export const CONTROL_WINDOW_MS: number
 export const SMOKE_CHECKS: readonly string[]
@@ -37,7 +38,8 @@ export interface ParsedInstallerArgs {
 export function parseInstallerArgs(args: readonly string[]): ParsedInstallerArgs
 
 /** A program run with how long it took. */
-export type TimedRun = ProgramResult & { ms?: number }
+/** `snapshot`: the account's processes (tasklist CSV lines, or why not), taken when an install neared its limit. */
+export type TimedRun = ProgramResult & { ms?: number; snapshot?: string[] | string }
 
 export interface UninstallEntry {
   key: string
@@ -85,7 +87,9 @@ export function helperAnswer(outcome: HelperOutcome): ProbeAnswer
 export function smokeProblem(smoke: SmokeRun, installDir: string): string | undefined
 export function controlOutcome(control: ControlRun): ControlOutcome
 export function smokeAnswer(input: { smoke: SmokeRun; control: ControlRun | undefined; installDir: string }): ProbeAnswer
-export function uninstallAnswer(input: { run: TimedRun; left: boolean; state: InstallState; installDir: string }): ProbeAnswer
+export function uninstallRemaining(state: InstallState, installDir: string): string[]
+export function waitUntilUninstalled(installDir: string, deps: { inspect: (installDir: string) => Promise<InstallState>; pause: (ms: number) => Promise<void>; now: () => number }): Promise<InstallState>
+export function uninstallAnswer(input: { run: TimedRun; state: InstallState; installDir: string }): ProbeAnswer
 
 export function requireEveryPath(paths: readonly string[], entries: readonly { readonly path: string }[]): void
 export function powershellJson(script: string, env?: Readonly<Record<string, string>>): Promise<unknown>
@@ -104,7 +108,9 @@ export interface InstallerSteps {
   smoke: (app: string, dir: string) => Promise<SmokeRun>
   control: (electron: string, dir: string) => Promise<ControlRun>
   uninstall: (uninstaller: string) => Promise<TimedRun>
-  waitUntilGone: (directory: string) => Promise<boolean>
+  /** Waits between inspections of the uninstall; the unit tests advance their own clock instead. */
+  pause: (ms: number) => Promise<void>
+  now: () => number
   tempDir: () => string
   removeDir: (dir: string) => void
 }

@@ -14,12 +14,14 @@ import {
   HELPER_ID,
   INSTALL_ID,
   INSTALLER_ID,
+  INSTALL_SNAPSHOT_BEFORE_MS,
   PERMISSIONS_ID,
   PROTOCOL_VERSION,
   SMOKE_CASES,
   SMOKE_CHECKS,
   SMOKE_ID,
   STEP_IDS,
+  UNINSTALL_GONE_MS,
   UNINSTALL_ID,
   parseInstallerArgs,
   requireEveryPath,
@@ -115,6 +117,8 @@ interface Line {
 function fakeSteps(overrides: Partial<InstallerSteps> = {}): { steps: InstallerSteps; calls: string[] } {
   const calls: string[] = []
   let installed = false
+  // The uninstall's wait runs on this clock, which only pause advances.
+  let clock = 0
   const call = <T>(name: string, value: T): T => {
     calls.push(name)
     return value
@@ -138,7 +142,12 @@ function fakeSteps(overrides: Partial<InstallerSteps> = {}): { steps: InstallerS
       installed = false
       return Promise.resolve(call('uninstall', { ...program(), ms: 2_000 }))
     },
-    waitUntilGone: () => Promise.resolve(call('waitUntilGone', false)),
+    pause: (ms) => {
+      calls.push('pause')
+      clock += ms
+      return Promise.resolve()
+    },
+    now: () => clock,
     tempDir: () => call('tempDir', 'C:\\Users\\veydr-probe\\AppData\\Local\\Temp\\veydr-install-std-1'),
     removeDir: () => {
       calls.push('removeDir')
@@ -175,7 +184,7 @@ describe('installer-standard-user.mjs', () => {
     expect(byId.get(SMOKE_ID)?.data['control']).toBeUndefined()
     expect(byId.get(UNINSTALL_ID)?.data).toMatchObject({ code: 0 })
     // The order of the steps, the control always run, and the uninstall last.
-    expect(calls).toEqual(['hash', 'install', 'inspect', 'watchProcesses', 'permissions', 'helper', 'tempDir', 'smoke', 'removeDir', 'uninstall', 'waitUntilGone', 'inspect'])
+    expect(calls).toEqual(['hash', 'install', 'inspect', 'watchProcesses', 'permissions', 'helper', 'tempDir', 'smoke', 'removeDir', 'uninstall', 'inspect'])
   })
 
   it('accepts only `<installer name> <sha256> <electron.exe> --user standard [--unavailable <reason>]`, refusing anything else before running anything', async () => {
@@ -258,6 +267,14 @@ describe('installer-standard-user.mjs', () => {
     expect(result.byId.get(INSTALL_ID)).toMatchObject({ answer: null, detail: 'the installer did not finish within 180 s' })
     expect(result.byId.get(UNINSTALL_ID)).toMatchObject({ answer: null, detail: expect.stringContaining('does not exist') as string })
     expect(nothing.calls).not.toContain('uninstall')
+
+    // An install that timed out carries the account's processes listed before the limit, to diagnose it.
+    const snapshot = ['"Image Name","PID"', '"Veydr-0.1.0-rc.1-x64-setup.exe","4242"', '"powershell.exe","4300"']
+    const hung = fakeSteps({ install: () => Promise.resolve({ ...program({ code: null, signal: 'SIGTERM' }), ms: 183_000, snapshot }), exists: () => false })
+    expect((await drive(hung.steps)).byId.get(INSTALL_ID)).toMatchObject({ answer: null, data: { snapshot } })
+    // Taken INSTALL_SNAPSHOT_BEFORE_MS before the limit, with time left for tasklist.
+    expect(INSTALL_SNAPSHOT_BEFORE_MS).toBeGreaterThan(10_000)
+    expect(INSTALL_SNAPSHOT_BEFORE_MS).toBeLessThan(180_000 / 2)
   })
 
   it('install succeeds but leaves the wrong things: each is named', async () => {
@@ -330,14 +347,41 @@ describe('installer-standard-user.mjs', () => {
   })
 
   it('the uninstall leaves the directory, the Start menu entry or the uninstall entry, or fails', async () => {
-    const left = fakeSteps({ waitUntilGone: () => Promise.resolve(true), inspect: () => Promise.resolve(installedState()) })
+    const left = fakeSteps({ inspect: () => Promise.resolve(installedState()) })
     const line = (await drive(left.steps)).byId.get(UNINSTALL_ID)
     expect(line).toMatchObject({ answer: 'no' })
+    expect(line?.detail).toContain(`still there ${UNINSTALL_GONE_MS / 1000} s after the silent uninstall`)
+    // It was waited for: polled until the limit, not judged on the first read.
+    expect(left.calls.filter((c) => c === 'pause').length).toBeGreaterThanOrEqual(UNINSTALL_GONE_MS / 1_000)
     expect(line?.detail).toContain(`the directory ${INSTALL_DIR}`)
     expect(line?.detail).toContain('the Start menu entry')
     expect(line?.detail).toContain('the uninstall entry HKEY_CURRENT_USER')
     const failed = fakeSteps({ uninstall: () => Promise.resolve(program({ code: 5 })) })
     expect((await drive(failed.steps)).byId.get(UNINSTALL_ID)).toMatchObject({ answer: 'no', detail: expect.stringContaining('the silent uninstall exited with 5') as string })
+    // A failed uninstall is not waited for.
+    expect(failed.calls).not.toContain('pause')
+  })
+
+  it('the uninstall waits for each of the three: a Start menu entry or an uninstall entry removed late passes', async () => {
+    const lateStartMenu: InstallState = { ...goneState, startMenu: installedState().startMenu }
+    const lateEntry: InstallState = { ...goneState, uninstall: installedState().uninstall }
+    for (const late of [lateStartMenu, lateEntry]) {
+      let afterUninstall = 0
+      let uninstalled = false
+      const { steps, calls } = fakeSteps()
+      const base = steps.uninstall
+      const inspect = steps.inspect
+      steps.uninstall = (u) => {
+        uninstalled = true
+        return base(u)
+      }
+      // The directory is gone at once; the other one only on the second read.
+      steps.inspect = (dir) => (uninstalled ? Promise.resolve(++afterUninstall === 1 ? late : goneState) : inspect(dir))
+      const line = (await drive(steps)).byId.get(UNINSTALL_ID)
+      expect(line).toMatchObject({ answer: 'yes' })
+      expect(afterUninstall).toBe(2)
+      expect(calls.filter((c) => c === 'pause')).toHaveLength(1)
+    }
   })
 
   describe('the smoke step, by the rule of design D5', () => {

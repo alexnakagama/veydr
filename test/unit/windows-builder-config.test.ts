@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
@@ -30,6 +30,7 @@ describe('electron-builder.yml: Windows (design D1)', () => {
       differentialPackage: false,
       createDesktopShortcut: false,
       createStartMenuShortcut: true,
+      include: 'build/windows/installer.nsh',
       deleteAppDataOnUninstall: false,
       artifactName: '${productName}-${version}-x64-setup.${ext}',
     })
@@ -46,7 +47,32 @@ describe('electron-builder.yml: Windows (design D1)', () => {
     const text = readFileSync(resolve(root, 'electron-builder.yml'), 'utf8')
     // Every source electron-builder takes a Windows certificate or signing hook from in the
     // configuration (windowsSignToolManager.js: cscLink, signtoolOptions.*, azureSignOptions).
-    expect(text).not.toMatch(/^\s*(?:cscLink|cscKeyPassword|certificateFile|certificatePassword|certificateSubjectName|certificateSha1|signtoolOptions|azureSignOptions|sign|signDlls|signExts|forceCodeSigning|publisherName|requestedExecutionLevel|include|script):/m)
+    expect(text).not.toMatch(/^\s*(?:cscLink|cscKeyPassword|certificateFile|certificatePassword|certificateSubjectName|certificateSha1|signtoolOptions|azureSignOptions|sign|signDlls|signExts|forceCodeSigning|publisherName|requestedExecutionLevel|script|installerHeader|installerSidebar|license):/m)
+    // `include` appears once, as nsis.include (checked above and below).
+    expect(text.match(/^\s*include:/gm)).toHaveLength(1)
+  })
+
+  it('includes one NSIS hook, which only deletes the Start menu entry, retrying, when electron-builder would', () => {
+    // electron-builder also picks up build/installer.nsh by default; only the configured file exists.
+    expect(existsSync(resolve(root, 'build/installer.nsh'))).toBe(false)
+    const nsh = readFileSync(resolve(root, 'build/windows/installer.nsh'), 'utf8')
+    const code = nsh
+      .split('\n')
+      .map((line) => line.trim())
+      .filter((line) => line !== '' && !line.startsWith(';'))
+    // Exactly one macro, the uninstall hook, and no other definition.
+    expect(code.filter((line) => line.startsWith('!'))).toEqual(['!macro customUnInstall', '!macroend'])
+    // The instructions it uses, and nothing that runs a program, writes the registry or a file,
+    // changes permissions or elevation, or loads another plug-in.
+    const instructions = new Set(code.slice(1, -1).map((line) => line.split(/\s+/)[0]))
+    expect([...instructions].sort()).toEqual(
+      ['${break}', '${do}', '${endIf}', '${endif}', '${if}', '${ifNot}', '${loop}', 'ClearErrors', 'Delete', 'DetailPrint', 'IntOp', 'Sleep', 'StrCpy', 'Var', 'WinShell::UninstShortcut'].sort(),
+    )
+    // Under electron-builder's own condition, on its own variable, bounded: 40 tries 250 ms apart.
+    expect(code).toContain('${ifNot} ${isKeepShortcuts}')
+    expect(code.filter((line) => line.startsWith('Delete '))).toEqual(['Delete "$oldStartMenuLink"'])
+    expect(code).toContain('${if} $veydrLinkTries >= 40')
+    expect(code).toContain('Sleep 250')
   })
 
   it('keeps publish: null, the shared files list and the six fuses unchanged', () => {

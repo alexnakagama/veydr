@@ -29,7 +29,7 @@ Veydr is a desktop app for developers who run several long-lived commands across
 Veydr does nothing unless you ask it to. A command starts only when you press **Start**, a command that exits is never restarted on its own, and when you quit, Veydr stops what it started. It runs entirely on your machine: no accounts, no cloud sync, no telemetry, and no network access of its own.
 
 > [!NOTE]
-> **Linux; Windows in preview.** Veydr is an early release. It runs on Linux x64. **Windows: preview. Unsigned installer; verified in CI on Windows Server 2025.** See [Installing on Windows](docs/install-windows.md). macOS is not supported. Released versions are published on [GitHub Releases](https://github.com/alexnakagama/veydr/releases): the Linux packages, and the Windows installer in releases made after it was added. You can always build them from source (see [Installation](#installation)).
+> **Linux; Windows in preview.** Veydr is an early release. It runs on Linux x64. **Windows: preview. Unsigned installer; verified in CI on Windows Server 2025.** See [Installing on Windows](docs/install-windows.md). macOS is not supported. Released versions are published on [GitHub Releases](https://github.com/alexnakagama/veydr/releases): the Linux packages, and the Windows installer in releases made after it was added (none yet). You can always build them from source (see [Installation](#installation)).
 
 ## Contents
 
@@ -139,7 +139,7 @@ Download the packages from the [GitHub Releases page](https://github.com/alexnak
 - `SHA256SUMS`, the checksums of every package of the release;
 - `acceptance-linux-steps.jsonl`, the record of the acceptance test the release ran on exactly these packages.
 
-Releases made after the Windows installer was added also have `Veydr-X.Y.Z-x64-setup.exe`, the Windows installer, covered by the same `SHA256SUMS`, and `install-windows-steps.jsonl`, the record of the installation test the release ran on exactly that installer. On Windows, verify and install it as described in [Install on Windows](#install-on-windows).
+Releases made after the Windows installer was added also have `Veydr-X.Y.Z-x64-setup.exe`, the Windows installer, covered by the same `SHA256SUMS`, and `install-windows-steps.jsonl`, the record of the installation test the release ran on exactly that installer. No release has carried the installer yet; the first one is also the first run of that part of the release workflow. On Windows, verify and install it as described in [Install on Windows](#install-on-windows).
 
 Check a Linux download before installing it. In the folder you downloaded to:
 
