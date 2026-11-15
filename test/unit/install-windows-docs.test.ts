@@ -151,9 +151,11 @@ describe('docs/install-windows.md', () => {
     // install record is in neither SHA256SUMS nor the attestation (release.yml attests SHA256SUMS's subjects).
     const flatVerify = flat(verify)
     expect(flatVerify).toContain('Run both checks before you start it.')
-    // The release path is unrun until the first release with the installer (docs/ci.md#releasing).
-    expect(flatVerify).toContain('No release has carried the installer yet. The first release that does is also the first run of the release workflow\'s Windows path')
-    expect(flat(read('README.md'))).toContain('No release has carried the installer yet; the first one is also the first run of that part of the release workflow.')
+    // The installer ships from 0.2.0-rc.1 on, the first run of the release workflow's Windows path (docs/ci.md#releasing).
+    expect(flatVerify).toContain('From 0.2.0-rc.1 on, each release carries, besides the Linux packages:')
+    expect(flatVerify).toContain('The release workflow\'s Windows path first ran for 0.2.0-rc.1')
+    expect(flat(read('README.md'))).toContain('Releases from 0.2.0-rc.1 on also have `Veydr-X.Y.Z-x64-setup.exe`')
+    expect(flat(read('README.md'))).not.toMatch(/No release has carried the installer yet|\(none yet\)/)
     expect(flatVerify).toContain('that file comes from the same release page, so it does not show where the installer came from. The attestation does')
     expect(flatVerify).toContain('This is the provenance check.')
     expect(flatVerify).toContain('It is not in `SHA256SUMS` and not attested, so it is information, not proof')
