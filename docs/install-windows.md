@@ -20,15 +20,15 @@ The installer is `Veydr-X.Y.Z-x64-setup.exe`: an NSIS installer built by electro
 
 ## Download and verify
 
-Released versions are on the [GitHub Releases page](https://github.com/alexnakagama/veydr/releases). A release made after the Windows installer was added carries, besides the Linux packages:
+Released versions are on the [GitHub Releases page](https://github.com/alexnakagama/veydr/releases). From 0.2.0-rc.1 on, each release carries, besides the Linux packages:
 
 - `Veydr-X.Y.Z-x64-setup.exe`, the installer;
 - `SHA256SUMS`, the checksums of every package of the release, the installer included;
 - `install-windows-steps.jsonl`, the record of the installation test the release ran on this installer: its first line names the installer's SHA-256, and each later line one step, as the administrator and as a standard user. It is not in `SHA256SUMS` and not attested, so it is information, not proof: anyone who could change the release could change it.
 
-Earlier releases have Linux packages only. For a version without an installer, [build it yourself](#building-the-installer).
+Earlier releases (0.1.0-rc.1) have Linux packages only. For a version without an installer, [build it yourself](#building-the-installer).
 
-No release has carried the installer yet. The first release that does is also the first run of the release workflow's Windows path (see [ci.md](ci.md#releasing)), so the files above and the checks below have not yet been used on a real release. The same installer and checksum checks run in CI and in every manual build.
+The release workflow's Windows path first ran for 0.2.0-rc.1 (see [ci.md](ci.md#releasing)). The same installer and checksum checks also run in CI and in every manual build.
 
 Because the installer is unsigned, nothing in Windows tells you who built it. Run both checks before you start it. The checksum shows that your download is complete and matches the release's `SHA256SUMS`, but that file comes from the same release page, so it does not show where the installer came from. The attestation does: it ties the installer to this repository's release workflow. In PowerShell, in the folder with the downloaded installer and `SHA256SUMS`:
 

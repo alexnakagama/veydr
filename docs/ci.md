@@ -300,7 +300,7 @@ A run's results become evidence only after review (design D4, tasks 8.1):
 
 `.github/workflows/release.yml` turns `master` into a release. It is the only workflow that writes to the repository, and it does so only after the full gate passed on the exact tree it is about to push (design D6), on Linux and on Windows.
 
-**The Windows release path has not run yet.** The two Windows gate jobs and the installer in the draft were added by `add-windows-packaging` (design D6). Their steps are covered by `workflow-policy.test.ts`, which runs the changed `publish` script against fixtures, and by the same packaging script running in `ci.yml` and `build.yml`, but the release itself first runs them at the first release after that change. A failure in any gate job, Windows ones included, stops the release before `publish` pushes anything. Check that first draft as described in [Before publishing the draft](#before-publishing-the-draft).
+**The Windows release path** (the two Windows gate jobs and the installer in the draft) was added by `add-windows-packaging` (design D6) and first ran for `0.2.0-rc.1`. A failure in any gate job, Windows ones included, stops the release before `publish` pushes anything. Check every draft as described in [Before publishing the draft](#before-publishing-the-draft).
 
 ### One-time repository setup
 

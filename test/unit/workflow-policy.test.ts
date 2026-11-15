@@ -2482,7 +2482,7 @@ if (args[0] === 'api') {
     expect(w.field(w.steps('publish').find((s) => w.field(s, 'name') === 'Write SHA256SUMS') as Range, 'working-directory')).toBe('${{ runner.temp }}/release')
   })
 
-  it('documents the release in docs/ci.md with exactly its jobs and artifacts, and says the Windows path has not run yet (add-windows-packaging task 5.4)', () => {
+  it('documents the release in docs/ci.md with exactly its jobs and artifacts, and says when the Windows path first ran (add-windows-packaging task 5.4)', () => {
     const doc = readFileSync(join(root, 'docs', 'ci.md'), 'utf8')
     const start = doc.indexOf('\n## Releasing\n')
     expect(start).toBeGreaterThan(0)
@@ -2501,8 +2501,9 @@ if (args[0] === 'api') {
     // The attached files are the draft step's list.
     for (const file of ['SHA256SUMS', 'acceptance-linux-steps.jsonl', 'install-windows-steps.jsonl', 'Veydr-X.Y.Z-x64-setup.exe']) expect(section, file).toContain(`\`${file}\``)
     expect(w.scripts('publish').join('\n')).toContain('install-windows-steps.jsonl')
-    // What has not run yet, and what a failed gate job does.
-    expect(section).toContain('**The Windows release path has not run yet.**')
+    // When the Windows path first ran, and what a failed gate job does.
+    expect(section).toContain('was added by `add-windows-packaging` (design D6) and first ran for `0.2.0-rc.1`.')
+    expect(section).not.toContain('has not run yet')
     expect(section).toContain('A failure in any gate job, Windows ones included, stops the release before `publish` pushes anything.')
     for (const heading of ['### Before publishing the draft', '### Verifying a release package', '### Recovering from a failed release']) expect(section, heading).toContain(`\n${heading}\n`)
     expect(section).toContain('Get-FileHash')
